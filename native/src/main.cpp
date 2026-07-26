@@ -1,5 +1,8 @@
 #include <windows.h>
 
+#include <cstdint>
+#include <cstdio>
+#include <cwctype>
 #include <string>
 
 #include "include/cef_app.h"
@@ -45,6 +48,22 @@ std::wstring RootCachePath() {
   return path;
 }
 
+// The single-instance guard exists because two browser processes cannot share
+// one profile directory. Scope the mutex to that directory (like Chrome does)
+// so a different profile can still run independently.
+std::wstring SingletonName(const std::wstring& profile_path) {
+  std::wstring name = L"MTKBrowser.SingleInstance.";
+  uint64_t hash = 1469598103934665603ULL;
+  for (const wchar_t character : profile_path) {
+    hash ^= static_cast<uint64_t>(towlower(character));
+    hash *= 1099511628211ULL;
+  }
+  wchar_t suffix[17]{};
+  swprintf(suffix, 17, L"%016llx", static_cast<unsigned long long>(hash));
+  name += suffix;
+  return name;
+}
+
 // A second browser process cannot share the profile directory, which used to
 // look like "the app does not start". Focus the running window instead.
 bool FocusRunningInstance() {
@@ -76,7 +95,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.
-  HANDLE singleton = CreateMutexW(nullptr, FALSE, L"MTKBrowser.SingleInstance");
+  const std::wstring profile_path = RootCachePath();
+  HANDLE singleton =
+      CreateMutexW(nullptr, FALSE, SingletonName(profile_path).c_str());
   if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
     if (!FocusRunningInstance()) {
       MessageBoxW(nullptr,
@@ -98,7 +119,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   settings.no_sandbox = true;
 #endif
   settings.persist_session_cookies = false;
-  CefString(&settings.root_cache_path) = RootCachePath();
+  CefString(&settings.root_cache_path) = profile_path;
   CefString(&settings.accept_language_list) = "en-US,en,hi";
 
   if (!CefInitialize(

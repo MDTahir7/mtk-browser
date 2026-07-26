@@ -29,23 +29,131 @@ std::string BlockPage(const std::wstring& reason) {
          "</p></main>";
 }
 
+// Collapses the layout space that a blocked ad leaves behind, so the page looks
+// like the ad slot was never there instead of showing an empty reserved box.
+// Only containers with no remaining visible content are hidden; nothing that
+// still renders text, media or controls is touched.
+constexpr char kCollapseScript[] = R"JS(
+(() => {
+  if (window.__mtkCollapse) { window.__mtkCollapse(); return; }
+
+  const AD_HINTS = [
+    'ins.adsbygoogle', '[id^="div-gpt-ad"]', '[id^="google_ads"]',
+    '[id^="google_ads_iframe"]', '[data-ad-slot]', '[data-ad-client]',
+    '[data-google-query-id]', '[class*="adsbygoogle"]',
+    'iframe[src*="doubleclick.net"]', 'iframe[src*="googlesyndication"]',
+    'iframe[src*="adnxs.com"]', 'iframe[src*="amazon-adsystem"]',
+    'iframe[src*="criteo"]', 'iframe[src*="taboola"]',
+    'iframe[src*="outbrain"]'
+  ].join(',');
+
+  // Wrapper labels that sites print above a reserved ad box.
+  const LABEL = /^(advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928)$/i;
+  const KEEP = /^(body|html|head|main|nav|header|footer|article|form|table|tbody|tr)$/;
+  const CONTENT =
+    'img,video,canvas,picture,svg,input,select,textarea,button,a[href]';
+
+  const hide = element => {
+    element.style.setProperty('display', 'none', 'important');
+    element.setAttribute('data-mtk-collapsed', '');
+  };
+
+  // True when the element still shows something a reader would care about.
+  // innerText is used deliberately: it ignores hidden subtrees.
+  const meaningful = element => {
+    const text = (element.innerText || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 2 && !LABEL.test(text)) return true;
+    for (const node of element.querySelectorAll(CONTENT)) {
+      const box = node.getBoundingClientRect();
+      if (box.width > 4 && box.height > 4) return true;
+    }
+    return false;
+  };
+
+  const collapseFrom = seed => {
+    let node = seed;
+    for (let depth = 0; depth < 5 && node; ++depth) {
+      const parent = node.parentElement;
+      if (!parent || KEEP.test(parent.tagName.toLowerCase())) break;
+      if (parent.hasAttribute('data-mtk-collapsed')) break;
+      if (meaningful(parent)) break;
+      const box = parent.getBoundingClientRect();
+      if (box.height === 0 && box.width === 0) break;
+      hide(parent);
+      node = parent;
+    }
+  };
+
+  const run = () => {
+    const seeds = [];
+    for (const element of document.querySelectorAll(AD_HINTS)) {
+      if (!element.hasAttribute('data-mtk-collapsed')) hide(element);
+      seeds.push(element);
+    }
+    // Elements the cosmetic stylesheet already hid still reserve their
+    // wrapper's height, so treat them as seeds too.
+    for (const element of document.querySelectorAll('[data-mtk-hidden-ad]')) {
+      seeds.push(element);
+    }
+    // Leaf "ADVERTISEMENT" captions: hiding the caption alone would leave the
+    // gap, so it seeds an upward collapse as well.
+    let scanned = 0;
+    for (const element of document.querySelectorAll(
+             'div,span,p,ins,section,aside,h2,h3,h4,h5,strong,small,font')) {
+      if (++scanned > 4000) break;
+      if (element.children.length > 0) continue;
+      const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 24 || !LABEL.test(text)) continue;
+      if (!element.hasAttribute('data-mtk-collapsed')) hide(element);
+      seeds.push(element);
+    }
+    for (const seed of seeds) collapseFrom(seed);
+  };
+
+  window.__mtkCollapse = run;
+  run();
+
+  if (window === window.top) {
+    // Bounded, finite follow-up passes for late/lazy ad slots. No permanent
+    // observer runs here: a mutation observer on ad-heavy pages was measured
+    // to starve the renderer.
+    for (const delay of [400, 1200, 2500, 5000, 9000]) setTimeout(run, delay);
+    let lastRun = 0;
+    let remaining = 40;
+    addEventListener('scroll', () => {
+      const now = Date.now();
+      if (remaining <= 0 || now - lastRun < 600) return;
+      lastRun = now;
+      --remaining;
+      run();
+    }, { passive: true });
+  }
+})();
+)JS";
+
 // Applies the cosmetic selectors that the filter engine resolved for this site.
 // Selectors are injected as a stylesheet, so no page node is ever removed.
 std::string CosmeticScript(const std::string& selectors) {
-  if (selectors.empty()) return {};
   std::string escaped;
   for (const char character : selectors) {
     if (character == '`' || character == '\\') escaped.push_back('\\');
     if (character == '\r' || character == '\n') continue;
     escaped.push_back(character);
   }
-  return
-      "(() => { const id='mtk-cosmetic-filter';"
-      "let style=document.getElementById(id);"
-      "if(!style){style=document.createElement('style');style.id=id;"
-      "(document.head||document.documentElement).appendChild(style);}"
-      "const rules=`" + escaped + "{display:none !important;}`;"
-      "if(style.textContent!==rules){style.textContent=rules;} })();";
+
+  std::string script;
+  if (!escaped.empty()) {
+    script =
+        "(() => { const id='mtk-cosmetic-filter';"
+        "let style=document.getElementById(id);"
+        "if(!style){style=document.createElement('style');style.id=id;"
+        "(document.head||document.documentElement).appendChild(style);}"
+        "const rules=`" + escaped + "{display:none !important;}`;"
+        "if(style.textContent!==rules){style.textContent=rules;}"
+        "for(const node of document.querySelectorAll(`" + escaped + "`)){"
+        "node.setAttribute('data-mtk-hidden-ad','');} })();";
+  }
+  return script + kCollapseScript;
 }
 
 mtk::policy::ResourceType MapResourceType(CefRequest::ResourceType type) {
