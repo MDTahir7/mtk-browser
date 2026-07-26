@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(MTKBrowser LANGUAGES CXX)
+project(MTKBrowser VERSION 0.3.0 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "The first MTK Browser target is Windows-only.")

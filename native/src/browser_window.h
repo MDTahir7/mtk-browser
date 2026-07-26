@@ -16,7 +16,6 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool Create(int show_command);
 
   void OnBrowserCreated(BrowserClient* client) override;
-  void OnBrowserCloseReady(BrowserClient* client) override;
   void OnBrowserClosed(BrowserClient* client) override;
   void OnBrowserAddressChanged(BrowserClient* client,
                                const std::wstring& url) override;
@@ -44,7 +43,6 @@ class BrowserWindow final : public BrowserClientDelegate {
     bool loading = false;
     bool can_go_back = false;
     bool can_go_forward = false;
-    bool close_ready = false;
   };
 
   static LRESULT CALLBACK WindowProc(HWND window, UINT message,
@@ -60,7 +58,7 @@ class BrowserWindow final : public BrowserClientDelegate {
   LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
   bool HandleShortcut(int virtual_key, bool control, bool alt, bool shift);
   void CreateControls();
-  void CreateTab(const std::string& initial_url);
+  bool CreateTab(const std::string& initial_url);
   void ShowFindBar();
   void HideFindBar();
   void RunFind(bool forward, bool find_next);
@@ -72,6 +70,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ShowDownloadsDialog();
   void OpenLibraryEntry(bool bookmarks, size_t index);
   void ScheduleLibrarySave();
+  void ScheduleSessionSave();
+  void SaveSessionSnapshot();
+  void CreateStartupTabs();
   void SelectTab(size_t index);
   void CloseTab(size_t index);
   void NavigateFromOmnibox();
@@ -102,6 +103,7 @@ class BrowserWindow final : public BrowserClientDelegate {
   HWND reload_ = nullptr;
   HWND home_ = nullptr;
   HWND shield_ = nullptr;
+  HWND downloads_ = nullptr;
   HWND menu_ = nullptr;
   HFONT ui_font_ = nullptr;
   HFONT tab_font_ = nullptr;
@@ -109,6 +111,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   HFONT badge_font_ = nullptr;
   HBRUSH edit_brush_ = nullptr;
   std::vector<Tab> tabs_;
+  // Tabs disappear from the strip immediately, but their clients stay alive
+  // here until CEF delivers OnBeforeClose.
+  std::vector<CefRefPtr<BrowserClient>> closing_clients_;
   size_t active_tab_ = 0;
   size_t hovered_tab_ = static_cast<size_t>(-1);
   bool hovered_tab_close_ = false;

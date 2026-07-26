@@ -39,6 +39,7 @@ Copy-Item (Join-Path $repoRoot 'LICENSES.md') $legal
 Copy-Item (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') $legal
 Copy-Item (Join-Path $repoRoot 'UPSTREAM.md') $legal
 Copy-Item (Join-Path $repoRoot 'SOURCE_OFFER_REQUIREMENTS.md') $legal
+Copy-Item (Join-Path $repoRoot 'RELEASE_NOTES_0.3.0.md') $target
 Copy-Item (Join-Path $repoRoot 'vendor\cef-sdk\LICENSE.txt') (Join-Path $legal 'CEF_LICENSE.txt')
 Copy-Item (Join-Path $repoRoot 'vendor\cef-sdk\CREDITS.html') (Join-Path $legal 'CEF_CREDITS.html')
 

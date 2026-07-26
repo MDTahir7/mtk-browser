@@ -4,20 +4,34 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <string>
+#include <unordered_map>
 
+#include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_callback.h"
 #include "include/cef_frame.h"
 #include "include/cef_menu_model.h"
 #include "include/cef_request.h"
+#include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
 #include "filter_engine.h"
 #include "policy.h"
 
 namespace {
 
+constexpr int kOpenLinkInNewTabId = MENU_ID_USER_FIRST;
+constexpr int kCopyLinkAddressId = MENU_ID_USER_FIRST + 1;
+constexpr int kSaveImageId = MENU_ID_USER_FIRST + 2;
+
 std::atomic<unsigned long> g_blocked_count{0};
+std::unordered_map<uint32_t, CefRefPtr<CefDownloadItemCallback>>
+    g_download_callbacks;
+
+void DestroyBrowserChild(CefWindowHandle window) {
+  if (window && IsWindow(window)) DestroyWindow(window);
+}
 
 // Hostnames are already normalised to lowercase ASCII by the policy layer.
 std::wstring AsciiToWide(const std::string& value) {
@@ -221,9 +235,88 @@ CefRefPtr<CefPermissionHandler> BrowserClient::GetPermissionHandler() {
 CefRefPtr<CefRequestHandler> BrowserClient::GetRequestHandler() { return this; }
 
 void BrowserClient::OnBeforeContextMenu(
-    CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
-    CefRefPtr<CefContextMenuParams>, CefRefPtr<CefMenuModel> model) {
-  if (model) model->Clear();
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>,
+    CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model) {
+  if (!model || !params) return;
+  model->Clear();
+
+  if (browser) {
+    model->AddItem(MENU_ID_BACK, L"Back");
+    model->SetEnabled(MENU_ID_BACK, browser->CanGoBack());
+    model->AddItem(MENU_ID_FORWARD, L"Forward");
+    model->SetEnabled(MENU_ID_FORWARD, browser->CanGoForward());
+    model->AddItem(MENU_ID_RELOAD, L"Reload");
+  }
+
+  const std::string link = params->GetLinkUrl();
+  if (!link.empty()) {
+    model->AddSeparator();
+    model->AddItem(kOpenLinkInNewTabId, L"Open link in new tab");
+    model->AddItem(kCopyLinkAddressId, L"Copy link address");
+    const bool allowed = mtk::policy::EvaluateNavigation(link).allow;
+    model->SetEnabled(kOpenLinkInNewTabId, allowed);
+    model->SetEnabled(kCopyLinkAddressId, allowed);
+  }
+
+  if (params->HasImageContents() && !params->GetSourceUrl().empty()) {
+    model->AddItem(kSaveImageId, L"Save image");
+    model->SetEnabled(
+        kSaveImageId,
+        mtk::policy::EvaluateNavigation(params->GetSourceUrl().ToString()).allow);
+  }
+
+  const auto edit_flags = params->GetEditStateFlags();
+  const bool can_copy = (edit_flags & CM_EDITFLAG_CAN_COPY) != 0;
+  const bool can_paste = (edit_flags & CM_EDITFLAG_CAN_PASTE) != 0;
+  const bool can_select_all = (edit_flags & CM_EDITFLAG_CAN_SELECT_ALL) != 0;
+  if (can_copy || can_paste || can_select_all) {
+    model->AddSeparator();
+    if (can_copy) model->AddItem(MENU_ID_COPY, L"Copy");
+    if (can_paste && params->IsEditable()) model->AddItem(MENU_ID_PASTE, L"Paste");
+    if (can_select_all) model->AddItem(MENU_ID_SELECT_ALL, L"Select all");
+  }
+}
+
+bool BrowserClient::OnContextMenuCommand(
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>,
+    CefRefPtr<CefContextMenuParams> params, int command_id, EventFlags) {
+  if (!params) return false;
+  if (command_id == kOpenLinkInNewTabId) {
+    const auto decision =
+        mtk::policy::EvaluateNavigation(params->GetLinkUrl().ToString());
+    if (decision.allow && delegate_) {
+      delegate_->OnBrowserPopupRequested(this, decision.url);
+    }
+    return true;
+  }
+  if (command_id == kCopyLinkAddressId) {
+    const auto decision =
+        mtk::policy::EvaluateNavigation(params->GetLinkUrl().ToString());
+    if (!decision.allow || !OpenClipboard(nullptr)) return true;
+    EmptyClipboard();
+    const std::wstring text = AsciiToWide(decision.url);
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory) {
+      void* target = GlobalLock(memory);
+      if (target) {
+        memcpy(target, text.c_str(), bytes);
+        GlobalUnlock(memory);
+        if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+      } else {
+        GlobalFree(memory);
+      }
+    }
+    CloseClipboard();
+    return true;
+  }
+  if (command_id == kSaveImageId) {
+    const auto decision =
+        mtk::policy::EvaluateNavigation(params->GetSourceUrl().ToString());
+    if (decision.allow && browser) browser->GetHost()->StartDownload(decision.url);
+    return true;
+  }
+  return false;
 }
 
 bool BrowserClient::CanDownload(CefRefPtr<CefBrowser>, const CefString& url,
@@ -330,8 +423,13 @@ void BrowserClient::OnDownloadUpdated(
                                   [id](const mtk::downloads::Item& item) {
                                     return item.id == id;
                                   });
-  // Downloads that were never accepted by OnBeforeDownload are not tracked.
-  if (match == items.end()) return;
+  // Downloads that were never accepted by OnBeforeDownload are not tracked and
+  // must not retain a live CEF callback.
+  if (match == items.end()) {
+    g_download_callbacks.erase(id);
+    return;
+  }
+  if (callback) g_download_callbacks[id] = callback;
 
   mtk::downloads::Item item = *match;
   item.received_bytes = download_item->GetReceivedBytes();
@@ -354,22 +452,25 @@ void BrowserClient::OnDownloadUpdated(
   if (now_large) item.detail = L"large file, over 2 GB";
   if (now_large) item.size_warned = true;
 
-  if (manager.TakeCancelRequest(id) && callback) {
-    callback->Cancel();
-    item.state = mtk::downloads::State::kCanceled;
-    item.detail = L"canceled from Downloads";
-  } else if (download_item->IsComplete()) {
+  if (download_item->IsComplete()) {
     item.state = mtk::downloads::State::kComplete;
     item.percent = 100;
   } else if (download_item->IsCanceled()) {
     item.state = mtk::downloads::State::kCanceled;
   } else if (download_item->IsInterrupted()) {
     item.state = mtk::downloads::State::kFailed;
+  } else if (download_item->IsPaused()) {
+    item.state = mtk::downloads::State::kPaused;
   } else if (download_item->IsInProgress()) {
     item.state = mtk::downloads::State::kInProgress;
   }
 
   manager.Upsert(item);
+  if (item.state == mtk::downloads::State::kComplete ||
+      item.state == mtk::downloads::State::kCanceled ||
+      item.state == mtk::downloads::State::kFailed) {
+    g_download_callbacks.erase(id);
+  }
   if (delegate_) delegate_->OnBrowserDownloadsChanged(this);
 
   if (warn_now && item.state == mtk::downloads::State::kInProgress) {
@@ -397,10 +498,15 @@ void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
   if (delegate_) delegate_->OnBrowserCreated(this);
 }
 
-bool BrowserClient::DoClose(CefRefPtr<CefBrowser>) {
-  if (delegate_) delegate_->OnBrowserCloseReady(this);
-  // BrowserWindow performs the required Win32 hierarchy tear-down. Returning
-  // true prevents CEF from sending a second ambiguous WM_CLOSE to the parent.
+bool BrowserClient::DoClose(CefRefPtr<CefBrowser> browser) {
+  // Alloy is hosted as a Win32 child, so MTK owns hierarchy tear-down. Defer
+  // DestroyWindow until after this callback returns to avoid re-entering CEF's
+  // close stack; OnBeforeClose remains the authoritative final notification.
+  if (browser) {
+    CefPostTask(TID_UI,
+                base::BindOnce(&DestroyBrowserChild,
+                               browser->GetHost()->GetWindowHandle()));
+  }
   return true;
 }
 
@@ -516,6 +622,32 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
 
 unsigned long BrowserClient::blocked_count() {
   return g_blocked_count.load(std::memory_order_relaxed);
+}
+
+bool BrowserClient::CanControlDownload(uint32_t id) {
+  const auto found = g_download_callbacks.find(id);
+  return found != g_download_callbacks.end() && found->second;
+}
+
+bool BrowserClient::PauseDownload(uint32_t id) {
+  const auto found = g_download_callbacks.find(id);
+  if (found == g_download_callbacks.end() || !found->second) return false;
+  found->second->Pause();
+  return true;
+}
+
+bool BrowserClient::ResumeDownload(uint32_t id) {
+  const auto found = g_download_callbacks.find(id);
+  if (found == g_download_callbacks.end() || !found->second) return false;
+  found->second->Resume();
+  return true;
+}
+
+bool BrowserClient::CancelDownload(uint32_t id) {
+  const auto found = g_download_callbacks.find(id);
+  if (found == g_download_callbacks.end() || !found->second) return false;
+  found->second->Cancel();
+  return true;
 }
 
 bool BrowserClient::GetAuthCredentials(

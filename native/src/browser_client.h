@@ -17,7 +17,6 @@ class BrowserClient;
 class BrowserClientDelegate {
  public:
   virtual void OnBrowserCreated(BrowserClient* client) = 0;
-  virtual void OnBrowserCloseReady(BrowserClient* client) = 0;
   virtual void OnBrowserClosed(BrowserClient* client) = 0;
   virtual void OnBrowserAddressChanged(BrowserClient* client,
                                        const std::wstring& url) = 0;
@@ -69,6 +68,11 @@ class BrowserClient final : public CefClient,
                            CefRefPtr<CefFrame> frame,
                            CefRefPtr<CefContextMenuParams> params,
                            CefRefPtr<CefMenuModel> model) override;
+  bool OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
+                            CefRefPtr<CefFrame> frame,
+                            CefRefPtr<CefContextMenuParams> params,
+                            int command_id,
+                            EventFlags event_flags) override;
   bool CanDownload(CefRefPtr<CefBrowser> browser,
                    const CefString& url,
                    const CefString& request_method) override;
@@ -176,6 +180,10 @@ class BrowserClient final : public CefClient,
   // Number of ad/tracker/unsafe requests blocked since launch, shown in the
   // MTK Shields UI.
   static unsigned long blocked_count();
+  static bool CanControlDownload(uint32_t id);
+  static bool PauseDownload(uint32_t id);
+  static bool ResumeDownload(uint32_t id);
+  static bool CancelDownload(uint32_t id);
 
  private:
   BrowserClientDelegate* delegate_ = nullptr;

@@ -9,6 +9,8 @@ set(MTK_BROWSER_SOURCES
   src/library_store.h
   src/download_manager.cpp
   src/download_manager.h
+  src/session_store.cpp
+  src/session_store.h
   src/mtk_app.cpp
   src/mtk_app.h
   src/browser_client.cpp

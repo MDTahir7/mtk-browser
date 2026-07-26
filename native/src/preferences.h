@@ -11,10 +11,16 @@ enum class DownloadMode {
   kStandard,
 };
 
+enum class StartupMode {
+  kHomePage,
+  kContinueSession,
+};
+
 struct Values {
   std::wstring home_page;
   std::string accept_language;
   DownloadMode download_mode = DownloadMode::kSafe;
+  StartupMode startup_mode = StartupMode::kHomePage;
 };
 
 // MTK-owned data is kept separate from CEF's User Data directory.

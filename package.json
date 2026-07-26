@@ -1,6 +1,6 @@
 {
   "name": "mtk-safe-browser",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "description": "Privacy-first family-safe browser",
   "main": "src/main.js",
   "author": "MTK Browser",
@@ -24,7 +24,7 @@
   },
   "build": {
     "appId": "com.mtk.safebrowser",
-    "productName": "MTK Safe Browser",
+    "productName": "MTK Browser",
     "asar": true,
 
     "files": ["src/**/*", "package.json"],

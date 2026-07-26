@@ -10,6 +10,7 @@
 #include "include/cef_sandbox_win.h"
 #endif
 #include "browser_window.h"
+#include "download_manager.h"
 #include "filter_engine.h"
 #include "library_store.h"
 #include "mtk_app.h"
@@ -88,11 +89,16 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.
   const std::wstring profile_path = RootCachePath();
-  mtk::preferences::Store::Get().Load();
-  mtk::library::Store::Get().Load();
   HANDLE singleton =
       CreateMutexW(nullptr, FALSE, SingletonName(profile_path).c_str());
-  if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
+  if (!singleton) {
+    MessageBoxW(nullptr,
+                L"MTK Browser could not lock its profile. No profile data was "
+                L"opened or changed.",
+                L"MTK Browser startup error", MB_OK | MB_ICONERROR);
+    return 1;
+  }
+  if (GetLastError() == ERROR_ALREADY_EXISTS) {
     if (!FocusRunningInstance()) {
       MessageBoxW(nullptr,
                   L"MTK Browser is already running.\n\n"
@@ -103,6 +109,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     CloseHandle(singleton);
     return 0;
   }
+
+  // Load mutable profile stores only after this process owns the profile.
+  // A second launch must never rewrite a running instance's active downloads.
+  mtk::preferences::Store::Get().Load();
+  mtk::library::Store::Get().Load();
+  mtk::downloads::Manager::Get().Load();
 
   // Load MTK Shields rules before any browser exists so every request is
   // filtered from the first navigation onward.

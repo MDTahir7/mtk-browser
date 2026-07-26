@@ -3,7 +3,7 @@
 
 IDI_MTK_BROWSER ICON "../resources/mtk_browser.ico"
 
-IDD_SETTINGS DIALOGEX 0, 0, 320, 244
+IDD_SETTINGS DIALOGEX 0, 0, 320, 278
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTK Browser Settings"
 FONT 9, "Segoe UI"
@@ -11,15 +11,17 @@ BEGIN
   LTEXT "General", -1, 16, 14, 140, 10
   LTEXT "Home page", -1, 16, 34, 270, 10
   EDITTEXT IDC_SETTINGS_HOME_PAGE, 16, 47, 286, 14, ES_AUTOHSCROLL
-  LTEXT "Website language preference", -1, 16, 76, 270, 10
-  COMBOBOX IDC_SETTINGS_LANGUAGE, 16, 89, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Downloads", -1, 16, 118, 270, 10
-  COMBOBOX IDC_SETTINGS_DOWNLOADS, 16, 131, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", -1, 16, 158, 286, 28
-  LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", -1, 16, 190, 286, 10
-  LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 204, 286, 10
-  DEFPUSHBUTTON "Save", IDOK, 162, 220, 66, 14
-  PUSHBUTTON "Cancel", IDCANCEL, 236, 220, 66, 14
+  LTEXT "On startup", -1, 16, 74, 270, 10
+  COMBOBOX IDC_SETTINGS_STARTUP, 16, 87, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Website language preference", -1, 16, 116, 270, 10
+  COMBOBOX IDC_SETTINGS_LANGUAGE, 16, 129, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Downloads", -1, 16, 158, 270, 10
+  COMBOBOX IDC_SETTINGS_DOWNLOADS, 16, 171, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", -1, 16, 198, 286, 28
+  LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", -1, 16, 230, 286, 10
+  LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 244, 286, 10
+  DEFPUSHBUTTON "Save", IDOK, 162, 258, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 236, 258, 66, 14
 END
 
 IDD_LIBRARY DIALOGEX 0, 0, 430, 250
@@ -35,24 +37,25 @@ BEGIN
   PUSHBUTTON "Close", IDCANCEL, 362, 218, 54, 14
 END
 
-IDD_DOWNLOADS DIALOGEX 0, 0, 520, 250
+IDD_DOWNLOADS DIALOGEX 0, 0, 560, 250
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Downloads — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "", IDC_DOWNLOADS_MODE_TEXT, 14, 12, 492, 10
-  LISTBOX IDC_DOWNLOADS_LIST, 14, 28, 492, 168, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
-  PUSHBUTTON "Open folder", IDC_DOWNLOADS_FOLDER, 14, 210, 76, 14
-  PUSHBUTTON "Open file", IDC_DOWNLOADS_OPEN, 96, 210, 66, 14
-  DEFPUSHBUTTON "Show in folder", IDC_DOWNLOADS_SHOW, 168, 210, 80, 14
-  PUSHBUTTON "Cancel download", IDC_DOWNLOADS_CANCEL, 254, 210, 86, 14
-  PUSHBUTTON "Clear finished", IDC_DOWNLOADS_CLEAR, 346, 210, 82, 14
-  PUSHBUTTON "Close", IDCANCEL, 434, 210, 72, 14
+  LTEXT "", IDC_DOWNLOADS_MODE_TEXT, 14, 12, 532, 10
+  LISTBOX IDC_DOWNLOADS_LIST, 14, 28, 532, 168, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+  PUSHBUTTON "Open folder", IDC_DOWNLOADS_FOLDER, 14, 210, 72, 14
+  PUSHBUTTON "Open file", IDC_DOWNLOADS_OPEN, 92, 210, 58, 14
+  DEFPUSHBUTTON "Show in folder", IDC_DOWNLOADS_SHOW, 156, 210, 76, 14
+  PUSHBUTTON "Pause", IDC_DOWNLOADS_PAUSE, 238, 210, 62, 14
+  PUSHBUTTON "Cancel", IDC_DOWNLOADS_CANCEL, 306, 210, 62, 14
+  PUSHBUTTON "Clear finished", IDC_DOWNLOADS_CLEAR, 374, 210, 82, 14
+  PUSHBUTTON "Close", IDCANCEL, 462, 210, 84, 14
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,2,0,0
- PRODUCTVERSION 0,2,0,0
+ FILEVERSION 0,3,0,0
+ PRODUCTVERSION 0,3,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -69,12 +72,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "MTK Browser\0"
       VALUE "FileDescription", "MTK Browser - Family-safe native browser\0"
-      VALUE "FileVersion", "0.2.0 Preview\0"
+      VALUE "FileVersion", "0.3.0 Preview\0"
       VALUE "InternalName", "MTKBrowser\0"
       VALUE "LegalCopyright", "Copyright (c) 2026 MTK Browser\0"
       VALUE "OriginalFilename", "MTKBrowser.exe\0"
       VALUE "ProductName", "MTK Browser\0"
-      VALUE "ProductVersion", "0.2.0 Preview\0"
+      VALUE "ProductVersion", "0.3.0 Preview\0"
     END
   END
   BLOCK "VarFileInfo"

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
 #include <cstdio>
 #include <cwchar>
@@ -284,27 +285,244 @@ std::wstring UniqueTargetPath(const std::wstring& file_name) {
   return FileExists(candidate) ? std::wstring{} : candidate;
 }
 
+namespace {
+
+constexpr char kDownloadsHeader[] = "MTK_DOWNLOADS_V1\n";
+constexpr size_t kMaxDownloadsFileBytes = 512 * 1024;
+
+std::wstring DownloadsHistoryPath() {
+  return mtk::preferences::ApplicationDataDirectory() + L"\\downloads.v1";
+}
+
+std::string WideToUtf8(const std::wstring& value) {
+  if (value.empty()) return {};
+  const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                       static_cast<int>(value.size()), nullptr,
+                                       0, nullptr, nullptr);
+  if (size <= 0) return {};
+  std::string result(static_cast<size_t>(size), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                      result.data(), size, nullptr, nullptr);
+  return result;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return {};
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.data(), static_cast<int>(value.size()),
+                                       nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring result(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                      static_cast<int>(value.size()), result.data(), size);
+  return result;
+}
+
+std::string EncodeField(std::string_view value) {
+  constexpr char digits[] = "0123456789ABCDEF";
+  std::string output;
+  output.reserve(value.size() * 2);
+  for (const unsigned char character : value) {
+    output.push_back(digits[character >> 4]);
+    output.push_back(digits[character & 15]);
+  }
+  return output;
+}
+
+int DecodeNibble(char character) {
+  if (character >= '0' && character <= '9') return character - '0';
+  if (character >= 'A' && character <= 'F') return character - 'A' + 10;
+  if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+  return -1;
+}
+
+bool DecodeField(std::string_view value, std::string* output) {
+  if (value.size() % 2 != 0 || value.size() > 32768) return false;
+  output->clear();
+  output->reserve(value.size() / 2);
+  for (size_t index = 0; index < value.size(); index += 2) {
+    const int high = DecodeNibble(value[index]);
+    const int low = DecodeNibble(value[index + 1]);
+    if (high < 0 || low < 0) return false;
+    output->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+std::vector<std::string_view> SplitTabs(std::string_view line) {
+  std::vector<std::string_view> fields;
+  size_t offset = 0;
+  while (offset <= line.size()) {
+    const size_t tab = line.find('\t', offset);
+    fields.push_back(line.substr(offset, tab == std::string_view::npos
+                                            ? line.size() - offset
+                                            : tab - offset));
+    if (tab == std::string_view::npos) break;
+    offset = tab + 1;
+  }
+  return fields;
+}
+
+template <typename Number>
+bool ParseNumber(std::string_view value, Number* output) {
+  const auto result =
+      std::from_chars(value.data(), value.data() + value.size(), *output);
+  return result.ec == std::errc{} && result.ptr == value.data() + value.size();
+}
+
+bool ReadDownloadsFile(std::string* content) {
+  HANDLE file = CreateFileW(DownloadsHistoryPath().c_str(), GENERIC_READ,
+                            FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER size{};
+  const bool valid = GetFileSizeEx(file, &size) && size.QuadPart >= 0 &&
+                     size.QuadPart <= static_cast<LONGLONG>(kMaxDownloadsFileBytes);
+  if (!valid) {
+    CloseHandle(file);
+    return false;
+  }
+  content->assign(static_cast<size_t>(size.QuadPart), '\0');
+  DWORD read = 0;
+  const bool ok = content->empty() ||
+      ReadFile(file, content->data(), static_cast<DWORD>(content->size()),
+               &read, nullptr);
+  CloseHandle(file);
+  return ok && read == content->size();
+}
+
+bool WriteDownloadsFile(const std::string& content) {
+  const std::wstring directory = mtk::preferences::ApplicationDataDirectory();
+  if ((!CreateDirectoryW(directory.c_str(), nullptr) &&
+       GetLastError() != ERROR_ALREADY_EXISTS) ||
+      content.size() > kMaxDownloadsFileBytes) {
+    return false;
+  }
+  const std::wstring path = DownloadsHistoryPath();
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool wrote = content.empty() ||
+      WriteFile(file, content.data(), static_cast<DWORD>(content.size()),
+                &written, nullptr);
+  const bool flushed = wrote && written == content.size() && FlushFileBuffers(file);
+  CloseHandle(file);
+  if (flushed && MoveFileExW(temporary.c_str(), path.c_str(),
+                             MOVEFILE_REPLACE_EXISTING |
+                                 MOVEFILE_WRITE_THROUGH)) {
+    return true;
+  }
+  DeleteFileW(temporary.c_str());
+  return false;
+}
+
+}  // namespace
+
 Manager& Manager::Get() {
   static Manager manager;
   return manager;
+}
+
+void Manager::Load() {
+  items_.clear();
+  dirty_ = false;
+
+  std::string content;
+  if (!ReadDownloadsFile(&content) || !content.starts_with(kDownloadsHeader)) return;
+  uint64_t history_id = uint64_t{1} << 32;
+  size_t offset = sizeof(kDownloadsHeader) - 1;
+  while (offset < content.size() && items_.size() < kMaxItems) {
+    const size_t end = content.find('\n', offset);
+    std::string_view line(content.data() + offset,
+                          (end == std::string::npos ? content.size() : end) - offset);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    const auto fields = SplitTabs(line);
+    if (fields.size() == 10 && fields[0] == "D") {
+      int state_value = 0;
+      Item item;
+      int risky = 0;
+      int warned = 0;
+      std::string file_name;
+      std::string full_path;
+      std::string url;
+      std::string detail;
+      if (ParseNumber(fields[1], &state_value) &&
+          ParseNumber(fields[2], &item.received_bytes) &&
+          ParseNumber(fields[3], &item.total_bytes) &&
+          ParseNumber(fields[4], &item.percent) &&
+          ParseNumber(fields[5], &risky) && ParseNumber(fields[6], &warned) &&
+          DecodeField(fields[7], &file_name) &&
+          DecodeField(fields[8], &full_path) && DecodeField(fields[9], &url)) {
+        item.id = history_id++;
+        item.file_name = Utf8ToWide(file_name);
+        item.full_path = Utf8ToWide(full_path);
+        item.url = std::move(url);
+        item.risky = risky != 0;
+        item.size_warned = warned != 0;
+        item.state = state_value >= static_cast<int>(State::kStarting) &&
+                             state_value <= static_cast<int>(State::kFailed)
+                         ? static_cast<State>(state_value)
+                         : State::kFailed;
+        if (item.state == State::kStarting ||
+            item.state == State::kInProgress || item.state == State::kPaused) {
+          item.state = State::kFailed;
+          item.detail = L"interrupted when MTK Browser closed";
+          dirty_ = true;
+        }
+        if (!item.file_name.empty() && item.file_name.size() <= 260 &&
+            item.full_path.size() <= 32767 && item.url.size() <= 4096) {
+          items_.push_back(std::move(item));
+        }
+      }
+    }
+    if (end == std::string::npos) break;
+    offset = end + 1;
+  }
+  if (dirty_) Flush();
+}
+
+bool Manager::Flush() {
+  if (!dirty_) return true;
+  std::string content = kDownloadsHeader;
+  for (const auto& item : items_) {
+    // Active callbacks are not resumable across a process restart; Load marks
+    // these records as interrupted while preserving the history row.
+    content += "D\t" + std::to_string(static_cast<int>(item.state)) + "\t" +
+               std::to_string(item.received_bytes) + "\t" +
+               std::to_string(item.total_bytes) + "\t" +
+               std::to_string(item.percent) + "\t" +
+               (item.risky ? "1" : "0") + "\t" +
+               (item.size_warned ? "1" : "0") + "\t" +
+               EncodeField(WideToUtf8(item.file_name)) + "\t" +
+               EncodeField(WideToUtf8(item.full_path)) + "\t" +
+               EncodeField(item.url) + "\n";
+  }
+  if (!WriteDownloadsFile(content)) return false;
+  dirty_ = false;
+  return true;
 }
 
 void Manager::Upsert(const Item& item) {
   for (auto& existing : items_) {
     if (existing.id == item.id) {
       existing = item;
+      dirty_ = true;
       return;
     }
   }
   if (items_.size() >= kMaxItems) items_.erase(items_.begin());
   items_.push_back(item);
+  dirty_ = true;
 }
 
-bool Manager::Remove(uint32_t id) {
+bool Manager::Remove(uint64_t id) {
   const auto match = std::find_if(items_.begin(), items_.end(),
                                   [id](const Item& item) { return item.id == id; });
   if (match == items_.end()) return false;
   items_.erase(match);
+  dirty_ = true;
   return true;
 }
 
@@ -313,31 +531,20 @@ size_t Manager::ClearFinished() {
   items_.erase(std::remove_if(items_.begin(), items_.end(),
                               [](const Item& item) {
                                 return item.state != State::kStarting &&
-                                       item.state != State::kInProgress;
+                                       item.state != State::kInProgress &&
+                                       item.state != State::kPaused;
                               }),
                items_.end());
-  return before - items_.size();
-}
-
-void Manager::RequestCancel(uint32_t id) {
-  if (std::find(cancel_requests_.begin(), cancel_requests_.end(), id) ==
-      cancel_requests_.end()) {
-    cancel_requests_.push_back(id);
-  }
-}
-
-bool Manager::TakeCancelRequest(uint32_t id) {
-  const auto match =
-      std::find(cancel_requests_.begin(), cancel_requests_.end(), id);
-  if (match == cancel_requests_.end()) return false;
-  cancel_requests_.erase(match);
-  return true;
+  const size_t removed = before - items_.size();
+  if (removed > 0) dirty_ = true;
+  return removed;
 }
 
 size_t Manager::ActiveCount() const {
   return static_cast<size_t>(
       std::count_if(items_.begin(), items_.end(), [](const Item& item) {
-        return item.state == State::kStarting || item.state == State::kInProgress;
+        return item.state == State::kStarting ||
+               item.state == State::kInProgress || item.state == State::kPaused;
       }));
 }
 
@@ -357,6 +564,9 @@ std::wstring DescribeItem(const Item& item) {
       if (item.percent >= 0) {
         text += L" (" + std::to_wstring(item.percent) + L"%)";
       }
+      break;
+    case State::kPaused:
+      text += L"  —  paused at " + FormatBytes(item.received_bytes);
       break;
     case State::kComplete:
       text += L"  —  saved, " + FormatBytes(item.received_bytes);
