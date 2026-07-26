@@ -41,14 +41,18 @@ constexpr char kCollapseScript[] = R"JS(
     'ins.adsbygoogle', '[id^="div-gpt-ad"]', '[id^="google_ads"]',
     '[id^="google_ads_iframe"]', '[data-ad-slot]', '[data-ad-client]',
     '[data-google-query-id]', '[class*="adsbygoogle"]',
+    'iframe[title*="advertisement" i]',
     'iframe[src*="doubleclick.net"]', 'iframe[src*="googlesyndication"]',
     'iframe[src*="adnxs.com"]', 'iframe[src*="amazon-adsystem"]',
     'iframe[src*="criteo"]', 'iframe[src*="taboola"]',
     'iframe[src*="outbrain"]'
   ].join(',');
 
-  // Wrapper labels that sites print above a reserved ad box.
+  // Wrapper labels that sites print above a reserved ad box. AD_CHROME also
+  // accepts the small share/opt-out controls some publishers attach to an ad;
+  // it is used only while walking upward from an already-identified ad seed.
   const LABEL = /^(advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928)$/i;
+  const AD_CHROME = /^(?:(?:advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928\s+\u0939\u091f\u093e\u090f\u0902|\u0938\u093f\u0930\u094d\u092b\s+\u0916\u092c\u0930\s+\u092a\u0922\u093c\u0947\u0902|\u0936\u0947\u092f\u0930\s+\u0915\u0930\u0947\u0902|share)(?:\s+|$))+$/i;
   const KEEP = /^(body|html|head|main|nav|header|footer|article|form|table|tbody|tr)$/;
   const CONTENT =
     'img,video,canvas,picture,svg,input,select,textarea,button,a[href]';
@@ -59,10 +63,12 @@ constexpr char kCollapseScript[] = R"JS(
   };
 
   // True when the element still shows something a reader would care about.
+  // While collapseFrom walks upward from a known ad seed, publisher ad chrome
+  // such as "ADVERTISEMENT · शेयर करें" is not meaningful reader content.
   // innerText is used deliberately: it ignores hidden subtrees.
   const meaningful = element => {
     const text = (element.innerText || '').replace(/\s+/g, ' ').trim();
-    if (text.length > 2 && !LABEL.test(text)) return true;
+    if (text.length > 2 && !AD_CHROME.test(text)) return true;
     for (const node of element.querySelectorAll(CONTENT)) {
       const box = node.getBoundingClientRect();
       if (box.width > 4 && box.height > 4) return true;
