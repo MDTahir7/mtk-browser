@@ -1,5 +1,8 @@
 #include "browser_client.h"
 
+#include <windows.h>
+
+#include <algorithm>
 #include <atomic>
 #include <string>
 
@@ -8,12 +11,18 @@
 #include "include/cef_frame.h"
 #include "include/cef_menu_model.h"
 #include "include/cef_request.h"
+#include "download_manager.h"
 #include "filter_engine.h"
 #include "policy.h"
 
 namespace {
 
 std::atomic<unsigned long> g_blocked_count{0};
+
+// Hostnames are already normalised to lowercase ASCII by the policy layer.
+std::wstring AsciiToWide(const std::string& value) {
+  return std::wstring(value.begin(), value.end());
+}
 
 std::string BlockPage(const std::wstring& reason) {
   const std::string text(reason.begin(), reason.end());
@@ -217,9 +226,161 @@ void BrowserClient::OnBeforeContextMenu(
   if (model) model->Clear();
 }
 
-bool BrowserClient::CanDownload(CefRefPtr<CefBrowser>, const CefString&,
-                                const CefString&) {
-  return false;
+bool BrowserClient::CanDownload(CefRefPtr<CefBrowser>, const CefString& url,
+                                const CefString& request_method) {
+  // First gate: only user-initiated GET downloads from an allowed web address
+  // reach the download manager. The file-type rules run in OnBeforeDownload,
+  // where the real suggested name and MIME type are known.
+  const std::string method = request_method.ToString();
+  if (method != "GET" && method != "get" && !method.empty()) return false;
+  const auto decision = mtk::policy::EvaluateNavigation(url.ToString());
+  return decision.allow && (decision.url.starts_with("http://") ||
+                            decision.url.starts_with("https://"));
+}
+
+bool BrowserClient::OnBeforeDownload(
+    CefRefPtr<CefBrowser>, CefRefPtr<CefDownloadItem> download_item,
+    const CefString& suggested_name,
+    CefRefPtr<CefBeforeDownloadCallback> callback) {
+  if (!download_item || !download_item->IsValid() || !callback) return false;
+
+  const std::string url = download_item->GetURL();
+  const mtk::downloads::Mode mode = mtk::downloads::CurrentMode();
+  const auto decision = mtk::downloads::Evaluate(
+      url, suggested_name.ToWString(), download_item->GetMimeType().ToString(),
+      mode);
+  if (!decision.allow) {
+    // Returning false cancels the download with the Alloy runtime style.
+    MessageBoxW(nullptr, decision.reason.c_str(),
+                L"MTK Browser blocked this download", MB_OK | MB_ICONWARNING);
+    return false;
+  }
+
+  const int64_t total_bytes = download_item->GetTotalBytes();
+  // Large files are never blocked. Safe mode only points the size out inside
+  // the confirmation it already shows.
+  const bool large_and_known =
+      total_bytes > mtk::downloads::kLargeDownloadBytes;
+
+  const std::wstring target = mtk::downloads::UniqueTargetPath(decision.file_name);
+  if (target.empty()) {
+    MessageBoxW(nullptr,
+                L"MTK Browser could not prepare a download location.",
+                L"MTK Browser", MB_OK | MB_ICONERROR);
+    return false;
+  }
+
+  const std::string host = mtk::policy::HostOf(url);
+  if (mode == mtk::downloads::Mode::kSafe) {
+    // Safe mode never starts a download silently: the user confirms the file
+    // name and destination first.
+    std::wstring question = L"Save this file?\n\nName: " + decision.file_name;
+    if (!host.empty()) question += L"\nFrom: " + AsciiToWide(host);
+    question += L"\nTo: " + target;
+    if (large_and_known) {
+      question +=
+          L"\n\nWarning: this file is larger than 2 GB and may take a long "
+          L"time and a lot of disk space.";
+    }
+    if (MessageBoxW(nullptr, question.c_str(), L"MTK Browser download",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES) {
+      return false;
+    }
+  } else if (decision.risky) {
+    // Standard mode saves without asking, except for files that can execute
+    // code, where a mainstream browser also warns.
+    std::wstring warning =
+        L"This file can run programs on your computer.\n\nName: " +
+        decision.file_name;
+    if (!host.empty()) warning += L"\nFrom: " + AsciiToWide(host);
+    warning += L"\n\nKeep this file?";
+    if (MessageBoxW(nullptr, warning.c_str(), L"MTK Browser download warning",
+                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+      return false;
+    }
+  }
+
+  mtk::downloads::Item item;
+  item.id = download_item->GetId();
+  item.file_name = decision.file_name;
+  item.full_path = target;
+  item.url = url;
+  item.state = mtk::downloads::State::kStarting;
+  item.total_bytes = total_bytes;
+  item.risky = decision.risky;
+  // A size the user already acknowledged is not warned about again.
+  item.size_warned = large_and_known && mode == mtk::downloads::Mode::kSafe;
+  if (large_and_known) item.detail = L"large file, over 2 GB";
+  mtk::downloads::Manager::Get().Upsert(item);
+  if (delegate_) delegate_->OnBrowserDownloadsChanged(this);
+
+  callback->Continue(target, /*show_dialog=*/false);
+  return true;
+}
+
+void BrowserClient::OnDownloadUpdated(
+    CefRefPtr<CefBrowser>, CefRefPtr<CefDownloadItem> download_item,
+    CefRefPtr<CefDownloadItemCallback> callback) {
+  if (!download_item || !download_item->IsValid()) return;
+
+  auto& manager = mtk::downloads::Manager::Get();
+  const uint32_t id = download_item->GetId();
+  const auto& items = manager.items();
+  const auto match = std::find_if(items.begin(), items.end(),
+                                  [id](const mtk::downloads::Item& item) {
+                                    return item.id == id;
+                                  });
+  // Downloads that were never accepted by OnBeforeDownload are not tracked.
+  if (match == items.end()) return;
+
+  mtk::downloads::Item item = *match;
+  item.received_bytes = download_item->GetReceivedBytes();
+  if (download_item->GetTotalBytes() > 0) {
+    item.total_bytes = download_item->GetTotalBytes();
+  }
+  item.percent = download_item->GetPercentComplete();
+  if (!download_item->GetFullPath().empty()) {
+    item.full_path = download_item->GetFullPath();
+  }
+
+  // Crossing 2 GB only warns, and only once, when the size was not known while
+  // the download was being confirmed. The transfer keeps running either way.
+  const bool now_large =
+      item.received_bytes > mtk::downloads::kLargeDownloadBytes ||
+      item.total_bytes > mtk::downloads::kLargeDownloadBytes;
+  const bool warn_now = now_large && !item.size_warned &&
+                        mtk::downloads::CurrentMode() ==
+                            mtk::downloads::Mode::kSafe;
+  if (now_large) item.detail = L"large file, over 2 GB";
+  if (now_large) item.size_warned = true;
+
+  if (manager.TakeCancelRequest(id) && callback) {
+    callback->Cancel();
+    item.state = mtk::downloads::State::kCanceled;
+    item.detail = L"canceled from Downloads";
+  } else if (download_item->IsComplete()) {
+    item.state = mtk::downloads::State::kComplete;
+    item.percent = 100;
+  } else if (download_item->IsCanceled()) {
+    item.state = mtk::downloads::State::kCanceled;
+  } else if (download_item->IsInterrupted()) {
+    item.state = mtk::downloads::State::kFailed;
+  } else if (download_item->IsInProgress()) {
+    item.state = mtk::downloads::State::kInProgress;
+  }
+
+  manager.Upsert(item);
+  if (delegate_) delegate_->OnBrowserDownloadsChanged(this);
+
+  if (warn_now && item.state == mtk::downloads::State::kInProgress) {
+    const std::wstring warning =
+        L"This download has passed 2 GB and is still running.\n\n" +
+        item.file_name +
+        L"\n\nIt is not blocked. Use Cancel download in the Downloads window "
+        L"(Ctrl+J) if you want to stop it.";
+    MessageBoxW(nullptr, warning.c_str(), L"MTK Browser large download",
+                MB_OK | MB_ICONWARNING);
+  }
 }
 
 void BrowserClient::OnFindResult(CefRefPtr<CefBrowser> browser, int identifier,

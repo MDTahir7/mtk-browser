@@ -124,6 +124,7 @@ void ReadValues(const std::string& content, Values* values) {
     if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
     constexpr std::string_view kHomePage = "home_page=";
     constexpr std::string_view kAcceptLanguage = "accept_language=";
+    constexpr std::string_view kDownloadMode = "download_mode=";
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
           std::string(line.substr(kHomePage.size())));
@@ -131,6 +132,11 @@ void ReadValues(const std::string& content, Values* values) {
     } else if (line.starts_with(kAcceptLanguage)) {
       const std::string language(line.substr(kAcceptLanguage.size()));
       if (IsAllowedLanguage(language)) values->accept_language = language;
+    } else if (line.starts_with(kDownloadMode)) {
+      // Anything other than the explicit opt-in keeps the safe default.
+      const std::string mode(line.substr(kDownloadMode.size()));
+      values->download_mode = mode == "standard" ? DownloadMode::kStandard
+                                                 : DownloadMode::kSafe;
     }
     if (end == std::string::npos) break;
     offset = end + 1;
@@ -151,7 +157,7 @@ Store& Store::Get() {
 }
 
 void Store::Load() {
-  values_ = {kDefaultHomePage, kDefaultAcceptLanguage};
+  values_ = {kDefaultHomePage, kDefaultAcceptLanguage, DownloadMode::kSafe};
   std::string content;
   if (ReadFile(PreferencesPath(), &content)) ReadValues(content, &values_);
 }
@@ -165,7 +171,10 @@ bool Store::Save(const Values& values) {
   }
   const std::string content =
       "[MTK Browser]\r\nhome_page=" + WideToUtf8(values.home_page) +
-      "\r\naccept_language=" + values.accept_language + "\r\n";
+      "\r\naccept_language=" + values.accept_language +
+      "\r\ndownload_mode=" +
+      (values.download_mode == DownloadMode::kStandard ? "standard" : "safe") +
+      "\r\n";
   if (!WriteFileAtomically(content)) return false;
   values_ = values;
   return true;

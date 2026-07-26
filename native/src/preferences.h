@@ -4,9 +4,17 @@
 
 namespace mtk::preferences {
 
+// How downloads are handled. Safe mode is the default and only saves
+// allowlisted file types; standard mode behaves like a mainstream browser.
+enum class DownloadMode {
+  kSafe,
+  kStandard,
+};
+
 struct Values {
   std::wstring home_page;
   std::string accept_language;
+  DownloadMode download_mode = DownloadMode::kSafe;
 };
 
 // MTK-owned data is kept separate from CEF's User Data directory.

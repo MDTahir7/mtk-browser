@@ -33,6 +33,7 @@ class BrowserClientDelegate {
                                    bool final_update) = 0;
   virtual void OnBrowserPopupRequested(BrowserClient* client,
                                        const std::string& url) = 0;
+  virtual void OnBrowserDownloadsChanged(BrowserClient* client) = 0;
   virtual bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
                                  bool control, bool alt, bool shift) = 0;
 
@@ -71,6 +72,13 @@ class BrowserClient final : public CefClient,
   bool CanDownload(CefRefPtr<CefBrowser> browser,
                    const CefString& url,
                    const CefString& request_method) override;
+  bool OnBeforeDownload(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefDownloadItem> download_item,
+                        const CefString& suggested_name,
+                        CefRefPtr<CefBeforeDownloadCallback> callback) override;
+  void OnDownloadUpdated(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefDownloadItem> download_item,
+                         CefRefPtr<CefDownloadItemCallback> callback) override;
   void OnFindResult(CefRefPtr<CefBrowser> browser, int identifier, int count,
                     const CefRect& selection_rect, int active_match_ordinal,
                     bool final_update) override;

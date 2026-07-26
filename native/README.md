@@ -30,7 +30,7 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
 - Back, forward, reload/stop, home and live navigation state
 - Browser-focus shortcuts: `Ctrl+L`, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab`,
   `Alt+Left/Right`, `F5`, `Ctrl+R`, `Ctrl+F`, `F3`, `Ctrl+G`,
-  `Ctrl++`, `Ctrl+-`, and `Ctrl+0`
+  `Ctrl++`, `Ctrl+-`, `Ctrl+0`, and `Ctrl+J`
 - Native find-in-page bar with next/previous result count and escape-to-close
 - Per-tab CEF zoom controls with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` reset
 - Search-or-address input resolution with safe Google fallback
@@ -41,11 +41,28 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
 - Conservative cosmetic filtering for common Google, GPT, Taboola, Outbrain,
   and standard ad-slot containers
 - DNT and GPC privacy preference headers
-- Deny-by-default permissions, downloads, invalid certificates, HTTP auth,
+- Deny-by-default permissions, invalid certificates, HTTP auth,
   client certificates, external protocols, and context menus
 - Isolated CEF data under `%LOCALAPPDATA%\MTK Browser\User Data` and MTK-owned preferences under `%LOCALAPPDATA%\MTK Browser\preferences.ini`
 - Native Settings dialog with a saved home page and website-language preference
 - Persistent History and Bookmarks library, with safe re-validation before saved links open
+- Download manager (`Ctrl+J`) with live progress, cancel, clear, reveal in
+  Explorer, and two modes selectable in Settings:
+  - **Safe downloads (default):** only allowlisted document, image, audio,
+    video and archive types are saved, every download is confirmed first, and a
+    saved file is never opened by the browser. Files over 2 GB are not blocked:
+    the confirmation notes the size when it is known up front, and a download
+    that passes 2 GB with an unknown size warns once and keeps running
+  - **Standard downloads:** mainstream browser behaviour, any file type saves
+    straight to the download folder with no prompts or size warnings, files can
+    be opened from the manager, and types that can execute code are confirmed
+    before they are saved and again before they are opened
+- Neither mode enforces a download size limit
+- Download protections that apply in both modes: downloads only from addresses
+  allowed by the safety policy, file names sanitised against path traversal and
+  reserved device names, no overwrite of an existing file, and a fixed
+  destination of `%USERPROFILE%\Downloads\MTK Browser`
+- Switching from safe to standard downloads requires an explicit acknowledgement
 - Automatic staging of the pinned CEF runtime and resources
 
 The reviewed CEF 150 SDK now compiles and links with MSVC, and the native

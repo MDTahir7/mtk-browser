@@ -32,6 +32,7 @@ class BrowserWindow final : public BrowserClientDelegate {
                            bool final_update) override;
   void OnBrowserPopupRequested(BrowserClient* client,
                                const std::string& url) override;
+  void OnBrowserDownloadsChanged(BrowserClient* client) override;
   bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
                          bool control, bool alt, bool shift) override;
 
@@ -68,6 +69,7 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ShowSettingsDialog();
   void ToggleBookmark();
   void ShowLibraryDialog(bool bookmarks);
+  void ShowDownloadsDialog();
   void OpenLibraryEntry(bool bookmarks, size_t index);
   void ScheduleLibrarySave();
   void SelectTab(size_t index);

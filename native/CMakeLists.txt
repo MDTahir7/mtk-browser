@@ -7,6 +7,8 @@ set(MTK_BROWSER_SOURCES
   src/preferences.h
   src/library_store.cpp
   src/library_store.h
+  src/download_manager.cpp
+  src/download_manager.h
   src/mtk_app.cpp
   src/mtk_app.h
   src/browser_client.cpp
@@ -36,6 +38,8 @@ target_link_libraries(mtk_browser PRIVATE
   ${CEF_STANDARD_LIBS}
   dwmapi.lib
   uxtheme.lib
+  shell32.lib
+  ole32.lib
 )
 
 set_target_properties(mtk_browser PROPERTIES

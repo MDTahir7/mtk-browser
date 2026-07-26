@@ -3,6 +3,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <uxtheme.h>
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
+#include "download_manager.h"
 #include "library_store.h"
 #include "policy.h"
 #include "preferences.h"
@@ -152,6 +154,18 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
       const int choice = values.accept_language == "hi,en-US,en" ? 1 : 0;
       SendMessageW(language, CB_SETCURSEL, choice, 0);
       SetWindowTheme(language, L"Explorer", nullptr);
+
+      HWND downloads = GetDlgItem(dialog, IDC_SETTINGS_DOWNLOADS);
+      SendMessageW(downloads, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"Safe downloads (recommended)"));
+      SendMessageW(downloads, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(
+                       L"Standard downloads (like other browsers)"));
+      SendMessageW(downloads, CB_SETCURSEL,
+                   values.download_mode ==
+                           mtk::preferences::DownloadMode::kStandard ? 1 : 0,
+                   0);
+      SetWindowTheme(downloads, L"Explorer", nullptr);
       return TRUE;
     }
     case WM_COMMAND:
@@ -177,6 +191,25 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
         const int selected = static_cast<int>(SendMessageW(
             GetDlgItem(dialog, IDC_SETTINGS_LANGUAGE), CB_GETCURSEL, 0, 0));
         values.accept_language = selected == 1 ? "hi,en-US,en" : "en-US,en,hi";
+
+        const bool standard_downloads =
+            SendMessageW(GetDlgItem(dialog, IDC_SETTINGS_DOWNLOADS),
+                         CB_GETCURSEL, 0, 0) == 1;
+        const bool was_standard =
+            values.download_mode == mtk::preferences::DownloadMode::kStandard;
+        // Leaving safe downloads is an explicit, acknowledged choice.
+        if (standard_downloads && !was_standard &&
+            MessageBoxW(dialog,
+                        L"Standard downloads save any file type, including "
+                        L"programs, scripts and installers.\n\nOnly files you "
+                        L"trust should be opened. Continue?",
+                        L"Turn on standard downloads?",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          return TRUE;
+        }
+        values.download_mode = standard_downloads
+                                   ? mtk::preferences::DownloadMode::kStandard
+                                   : mtk::preferences::DownloadMode::kSafe;
         if (!mtk::preferences::Store::Get().Save(values)) {
           MessageBoxW(dialog, L"MTK Browser could not save these settings.",
                       L"MTK Browser Settings", MB_OK | MB_ICONERROR);
@@ -308,6 +341,194 @@ INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
   return FALSE;
 }
 
+// Set while the modeless-feeling modal Downloads dialog is on screen so live
+// progress updates from the CEF download handler can refresh the list.
+HWND g_downloads_dialog = nullptr;
+
+// The header line and the "Open file" button follow the mode chosen in
+// Settings, so the dialog always states what the browser will actually do.
+void RefreshDownloadModeUi(HWND dialog) {
+  const bool standard =
+      mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard;
+  SetDlgItemTextW(
+      dialog, IDC_DOWNLOADS_MODE_TEXT,
+      standard
+          ? L"Standard downloads: any file type is saved. Opening a file is "
+            L"your choice, and risky types are confirmed first."
+          : L"Safe downloads: only known file types are saved, and MTK Browser "
+            L"never opens a downloaded file.");
+  EnableWindow(GetDlgItem(dialog, IDC_DOWNLOADS_OPEN), standard ? TRUE : FALSE);
+}
+
+void PopulateDownloadList(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_DOWNLOADS_LIST);
+  const LRESULT previous = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  const LRESULT top = SendMessageW(list, LB_GETTOPINDEX, 0, 0);
+  SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+  SendMessageW(list, LB_RESETCONTENT, 0, 0);
+
+  const auto& items = mtk::downloads::Manager::Get().items();
+  // Newest first: an active download should never be buried under old rows.
+  for (size_t offset = items.size(); offset > 0; --offset) {
+    const size_t index = offset - 1;
+    const LRESULT row = SendMessageW(
+        list, LB_ADDSTRING, 0,
+        reinterpret_cast<LPARAM>(
+            mtk::downloads::DescribeItem(items[index]).c_str()));
+    if (row != LB_ERR && row != LB_ERRSPACE) {
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(row),
+                   static_cast<LPARAM>(items[index].id));
+    }
+  }
+  if (items.empty()) {
+    SendMessageW(list, LB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(L"No downloads in this session."));
+    SendMessageW(list, LB_SETITEMDATA, 0, static_cast<LPARAM>(-1));
+  } else {
+    const LRESULT count = SendMessageW(list, LB_GETCOUNT, 0, 0);
+    SendMessageW(list, LB_SETTOPINDEX, static_cast<WPARAM>(std::max<LRESULT>(top, 0)), 0);
+    SendMessageW(list, LB_SETCURSEL,
+                 static_cast<WPARAM>(previous >= 0 && previous < count ? previous : 0),
+                 0);
+  }
+  SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(list, nullptr, TRUE);
+}
+
+const mtk::downloads::Item* SelectedDownload(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_DOWNLOADS_LIST);
+  const LRESULT row = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  if (row == LB_ERR) return nullptr;
+  const LRESULT data =
+      SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+  if (data == LB_ERR || data < 0) return nullptr;
+  for (const auto& item : mtk::downloads::Manager::Get().items()) {
+    if (item.id == static_cast<uint32_t>(data)) return &item;
+  }
+  return nullptr;
+}
+
+// Reveals the file in Explorer instead of launching it. MTK Browser never
+// starts downloaded content itself, so a saved file cannot execute by mistake.
+void RevealInExplorer(HWND owner, const std::wstring& path) {
+  if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    MessageBoxW(owner, L"This file is no longer on disk.", L"MTK Browser",
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  const std::wstring arguments = L"/select,\"" + path + L"\"";
+  ShellExecuteW(owner, L"open", L"explorer.exe", arguments.c_str(), nullptr,
+                SW_SHOWNORMAL);
+}
+
+// Standard mode only. Launching is left to the shell exactly like a mainstream
+// browser, but a file type that can execute code is confirmed first and MTK
+// Browser still never starts a download on its own.
+void OpenDownloadedFile(HWND owner, const mtk::downloads::Item& item) {
+  if (item.full_path.empty() ||
+      GetFileAttributesW(item.full_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    MessageBoxW(owner, L"This file is no longer on disk.", L"MTK Browser",
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  if (item.risky || mtk::downloads::IsRiskyFileName(item.file_name)) {
+    const std::wstring warning =
+        L"This file can run programs on your computer.\n\n" + item.file_name +
+        L"\n\nOpen it anyway?";
+    if (MessageBoxW(owner, warning.c_str(), L"MTK Browser",
+                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+      return;
+    }
+  }
+  ShellExecuteW(owner, L"open", item.full_path.c_str(), nullptr, nullptr,
+                SW_SHOWNORMAL);
+}
+
+INT_PTR CALLBACK DownloadsDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                     LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG:
+      g_downloads_dialog = dialog;
+      RefreshDownloadModeUi(dialog);
+      PopulateDownloadList(dialog);
+      return TRUE;
+    case WM_COMMAND: {
+      const WORD command = LOWORD(w_param);
+      if (command == IDC_DOWNLOADS_FOLDER) {
+        const std::wstring directory = mtk::downloads::DownloadDirectory();
+        if (directory.empty()) {
+          MessageBoxW(dialog, L"MTK Browser could not open the downloads folder.",
+                      L"MTK Browser", MB_OK | MB_ICONERROR);
+          return TRUE;
+        }
+        ShellExecuteW(dialog, L"open", directory.c_str(), nullptr, nullptr,
+                      SW_SHOWNORMAL);
+        return TRUE;
+      }
+      if (command == IDC_DOWNLOADS_OPEN) {
+        if (mtk::downloads::CurrentMode() != mtk::downloads::Mode::kStandard) {
+          MessageBoxW(dialog,
+                      L"Safe downloads never open a saved file. Switch "
+                      L"Downloads to standard mode in Settings to open files "
+                      L"from here.",
+                      L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+          return TRUE;
+        }
+        const auto* item = SelectedDownload(dialog);
+        if (!item) return TRUE;
+        if (item->state != mtk::downloads::State::kComplete) {
+          MessageBoxW(dialog, L"This download has not finished yet.",
+                      L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+          return TRUE;
+        }
+        OpenDownloadedFile(dialog, *item);
+        return TRUE;
+      }
+      if (command == IDC_DOWNLOADS_SHOW ||
+          (command == IDC_DOWNLOADS_LIST && HIWORD(w_param) == LBN_DBLCLK)) {
+        const auto* item = SelectedDownload(dialog);
+        if (!item) return TRUE;
+        if (item->state != mtk::downloads::State::kComplete) {
+          MessageBoxW(dialog, L"This download has not finished yet.",
+                      L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+          return TRUE;
+        }
+        RevealInExplorer(dialog, item->full_path);
+        return TRUE;
+      }
+      if (command == IDC_DOWNLOADS_CANCEL) {
+        const auto* item = SelectedDownload(dialog);
+        if (!item) return TRUE;
+        if (item->state != mtk::downloads::State::kStarting &&
+            item->state != mtk::downloads::State::kInProgress) {
+          mtk::downloads::Manager::Get().Remove(item->id);
+          PopulateDownloadList(dialog);
+          return TRUE;
+        }
+        mtk::downloads::Manager::Get().RequestCancel(item->id);
+        return TRUE;
+      }
+      if (command == IDC_DOWNLOADS_CLEAR) {
+        mtk::downloads::Manager::Get().ClearFinished();
+        PopulateDownloadList(dialog);
+        return TRUE;
+      }
+      if (command == IDCANCEL) {
+        EndDialog(dialog, 0);
+        return TRUE;
+      }
+      break;
+    }
+    case WM_DESTROY:
+      if (g_downloads_dialog == dialog) g_downloads_dialog = nullptr;
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, 0);
+      return TRUE;
+  }
+  return FALSE;
+}
+
 constexpr int kTabGap = 4;
 constexpr int kTabStripInset = 10;
 
@@ -349,6 +570,12 @@ void BrowserWindow::ShowBrowserMenu() {
               bookmarked ? L"Remove bookmark" : L"Add bookmark");
   AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks");
   AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History");
+  const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
+  const std::wstring downloads_label =
+      active_downloads == 0
+          ? std::wstring(L"Downloads\tCtrl+J")
+          : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tCtrl+J";
+  AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(popup, MF_STRING, IDM_SETTINGS, L"Settings");
   POINT point{};
@@ -402,6 +629,17 @@ void BrowserWindow::OpenLibraryEntry(bool bookmarks, size_t index) {
   if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
     tab->client->browser()->GetMainFrame()->LoadURL(decision.url);
   }
+}
+
+void BrowserWindow::ShowDownloadsDialog() {
+  DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_DOWNLOADS), window_,
+                  DownloadsDialogProc, 0);
+}
+
+void BrowserWindow::OnBrowserDownloadsChanged(BrowserClient*) {
+  // The download handler runs on this same UI thread, so the open dialog can be
+  // refreshed directly.
+  if (g_downloads_dialog) PopulateDownloadList(g_downloads_dialog);
 }
 
 void BrowserWindow::ScheduleLibrarySave() {
@@ -533,6 +771,10 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
   }
   if (control && !alt && virtual_key == 'T') {
     CreateTab(kHomeUrl);
+    return true;
+  }
+  if (control && !alt && virtual_key == 'J') {
+    ShowDownloadsDialog();
     return true;
   }
   if (control && !alt && virtual_key == 'W') {
@@ -1164,6 +1406,8 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           HideFindBar();
           break;
         case kShieldId: {
+          const bool standard_downloads =
+              mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard;
           const std::wstring summary =
               L"MTK Shields are active.\n\nBlocked on this session: " +
               std::to_wstring(BrowserClient::blocked_count()) +
@@ -1171,8 +1415,15 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
               L"\u2022 Ad, tracker and telemetry requests blocked\n"
               L"\u2022 Adult and piracy domains blocked\n"
               L"\u2022 Adult search terms blocked\n"
-              L"\u2022 SafeSearch and HTTPS upgrade enforced\n"
-              L"\u2022 Downloads, popups and risky permissions denied";
+              L"\u2022 SafeSearch and HTTPS upgrade enforced\n" +
+              (standard_downloads
+                   ? std::wstring(
+                         L"\u2022 Downloads: standard mode, any file type is "
+                         L"saved\n")
+                   : std::wstring(
+                         L"\u2022 Downloads: safe mode, programs and scripts "
+                         L"blocked\n")) +
+              L"\u2022 Popups and risky permissions denied";
           MessageBoxW(window_, summary.c_str(), L"MTK Shields",
                       MB_OK | MB_ICONINFORMATION);
           break;
@@ -1188,6 +1439,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_HISTORY:
           ShowLibraryDialog(false);
+          break;
+        case IDM_DOWNLOADS:
+          ShowDownloadsDialog();
           break;
         case IDM_SETTINGS:
           ShowSettingsDialog();
