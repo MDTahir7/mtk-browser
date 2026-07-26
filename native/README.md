@@ -42,21 +42,25 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
   and standard ad-slot containers
 - DNT and GPC privacy preference headers
 - Deny-by-default permissions, invalid certificates, HTTP auth,
-  client certificates, external protocols, and context menus
+  client certificates, and external protocols
+- Curated context menu with safe navigation/edit actions and image saves routed
+  through the download policy; DevTools, View Source and renderer-defined
+  commands stay unavailable
 - Isolated CEF data under `%LOCALAPPDATA%\MTK Browser\User Data` and MTK-owned preferences under `%LOCALAPPDATA%\MTK Browser\preferences.ini`
-- Native Settings dialog with a saved home page and website-language preference
+- Native Settings dialog with a saved home page, startup mode, download mode and website-language preference
+- Optional atomic URL-only session restore (maximum 20 policy-approved tabs)
 - Persistent History and Bookmarks library, with safe re-validation before saved links open
-- Download manager (`Ctrl+J`) with live progress, cancel, clear, reveal in
-  Explorer, and two modes selectable in Settings:
-  - **Safe downloads (default):** only allowlisted document, image, audio,
-    video and archive types are saved, every download is confirmed first, and a
-    saved file is never opened by the browser. Files over 2 GB are not blocked:
-    the confirmation notes the size when it is known up front, and a download
-    that passes 2 GB with an unknown size warns once and keeps running
-  - **Standard downloads:** mainstream browser behaviour, any file type saves
-    straight to the download folder with no prompts or size warnings, files can
-    be opened from the manager, and types that can execute code are confirmed
-    before they are saved and again before they are opened
+- Persistent download history plus current-process Pause/Resume, cancel, clear,
+  reveal in Explorer, and an active-download toolbar badge
+- **Safe downloads (default):** only allowlisted document, image, audio, video
+  and archive types are saved, every download is confirmed first, and a saved
+  file is never opened by the browser. Files over 2 GB are not blocked: the
+  confirmation notes the size when it is known up front, and a download that
+  passes 2 GB with an unknown size warns once and keeps running
+- **Standard downloads:** mainstream browser behaviour, any file type saves
+  straight to the download folder with no prompts or size warnings, files can
+  be opened from the manager, and types that can execute code are confirmed
+  before they are saved and again before they are opened
 - Neither mode enforces a download size limit
 - Download protections that apply in both modes: downloads only from addresses
   allowed by the safety policy, file names sanitised against path traversal and
@@ -65,19 +69,19 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
 - Switching from safe to standard downloads requires an explicit acknowledgement
 - Automatic staging of the pinned CEF runtime and resources
 
-The reviewed CEF 150 SDK now compiles and links with MSVC, and the native
-Release executable has passed a basic responsive-window startup smoke test.
-The active build output is
-`build/native-adblock/native/Release/MTKBrowser.exe`; the staged application is
-`dist/MTK Browser/MTKBrowser.exe`, and `npm run dist:win` creates the native
-preview installer.
+The reviewed CEF 150 SDK compiles and links with MSVC. The native Release
+executable has passed isolated responsive-window, session-restore,
+download-history restart, and real small-download smoke tests. The active build
+output is `build/native-adblock/native/Release/MTKBrowser.exe`; the staged
+application is `dist/MTK Browser/MTKBrowser.exe`, and `npm run dist:win` creates
+the native preview installer.
 
 This remains a development build with `no_sandbox=true`. CEF 150 uses
 `bootstrap.exe` plus an application DLL for the Windows sandbox rather than the
 legacy `cef_sandbox.lib` flow. Production distribution is blocked until that
-bootstrap packaging, signing, exact notices/SBOM, and installer validation are
-complete.
+bootstrap packaging, actual Authenticode signing, exact notices/SBOM, and a
+final clean-machine installer/manual desktop validation pass are complete.
 
-Next milestones are richer native settings/shields panels, history/profile
-storage policy, signed admin-policy updates, CEF bootstrap sandbox packaging,
-installer/signing, and release compliance artifacts.
+Next milestones are CEF bootstrap sandbox packaging, an operated signed category
+feed, administrator-locked policy, production code signing, and release
+compliance artifacts.

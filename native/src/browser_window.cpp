@@ -9,14 +9,17 @@
 #include <algorithm>
 #include <string>
 
+#include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
+#include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
 #include "library_store.h"
 #include "policy.h"
 #include "preferences.h"
 #include "resource.h"
+#include "session_store.h"
 
 namespace {
 
@@ -29,6 +32,8 @@ constexpr int kChromeHeight = kTabBarHeight + kToolbarHeight;
 constexpr int kProgressHeight = 3;
 constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
+constexpr UINT_PTR kDownloadSaveTimer = 3;
+constexpr UINT_PTR kSessionSaveTimer = 4;
 constexpr UINT kFinalizeCloseMessage = WM_APP + 1;
 constexpr INT_PTR kBackId = 1001;
 constexpr INT_PTR kForwardId = 1002;
@@ -42,6 +47,7 @@ constexpr INT_PTR kFindId = 1009;
 constexpr INT_PTR kFindPreviousId = 1010;
 constexpr INT_PTR kFindNextId = 1011;
 constexpr INT_PTR kFindCloseId = 1012;
+constexpr INT_PTR kDownloadsId = 1013;
 constexpr size_t kNoTab = static_cast<size_t>(-1);
 
 constexpr COLORREF kWindowColor = RGB(9, 12, 22);
@@ -155,6 +161,17 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
       SendMessageW(language, CB_SETCURSEL, choice, 0);
       SetWindowTheme(language, L"Explorer", nullptr);
 
+      HWND startup = GetDlgItem(dialog, IDC_SETTINGS_STARTUP);
+      SendMessageW(startup, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"Open the home page"));
+      SendMessageW(startup, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"Continue where you left off"));
+      SendMessageW(startup, CB_SETCURSEL,
+                   values.startup_mode ==
+                           mtk::preferences::StartupMode::kContinueSession ? 1 : 0,
+                   0);
+      SetWindowTheme(startup, L"Explorer", nullptr);
+
       HWND downloads = GetDlgItem(dialog, IDC_SETTINGS_DOWNLOADS);
       SendMessageW(downloads, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(L"Safe downloads (recommended)"));
@@ -210,6 +227,11 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
         values.download_mode = standard_downloads
                                    ? mtk::preferences::DownloadMode::kStandard
                                    : mtk::preferences::DownloadMode::kSafe;
+        values.startup_mode =
+            SendMessageW(GetDlgItem(dialog, IDC_SETTINGS_STARTUP),
+                         CB_GETCURSEL, 0, 0) == 1
+                ? mtk::preferences::StartupMode::kContinueSession
+                : mtk::preferences::StartupMode::kHomePage;
         if (!mtk::preferences::Store::Get().Save(values)) {
           MessageBoxW(dialog, L"MTK Browser could not save these settings.",
                       L"MTK Browser Settings", MB_OK | MB_ICONERROR);
@@ -345,6 +367,8 @@ INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
 // progress updates from the CEF download handler can refresh the list.
 HWND g_downloads_dialog = nullptr;
 
+void RefreshDownloadControls(HWND dialog);
+
 // The header line and the "Open file" button follow the mode chosen in
 // Settings, so the dialog always states what the browser will actually do.
 void RefreshDownloadModeUi(HWND dialog) {
@@ -382,7 +406,7 @@ void PopulateDownloadList(HWND dialog) {
   }
   if (items.empty()) {
     SendMessageW(list, LB_ADDSTRING, 0,
-                 reinterpret_cast<LPARAM>(L"No downloads in this session."));
+                 reinterpret_cast<LPARAM>(L"No download history yet."));
     SendMessageW(list, LB_SETITEMDATA, 0, static_cast<LPARAM>(-1));
   } else {
     const LRESULT count = SendMessageW(list, LB_GETCOUNT, 0, 0);
@@ -393,6 +417,7 @@ void PopulateDownloadList(HWND dialog) {
   }
   SendMessageW(list, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(list, nullptr, TRUE);
+  RefreshDownloadControls(dialog);
 }
 
 const mtk::downloads::Item* SelectedDownload(HWND dialog) {
@@ -403,9 +428,23 @@ const mtk::downloads::Item* SelectedDownload(HWND dialog) {
       SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
   if (data == LB_ERR || data < 0) return nullptr;
   for (const auto& item : mtk::downloads::Manager::Get().items()) {
-    if (item.id == static_cast<uint32_t>(data)) return &item;
+    if (item.id == static_cast<uint64_t>(data)) return &item;
   }
   return nullptr;
+}
+
+void RefreshDownloadControls(HWND dialog) {
+  const auto* item = SelectedDownload(dialog);
+  const bool live_callback = item && (item->id >> 32) == 0 &&
+      BrowserClient::CanControlDownload(static_cast<uint32_t>(item->id));
+  const bool paused = live_callback &&
+      item->state == mtk::downloads::State::kPaused;
+  const bool controllable = live_callback &&
+      (item->state == mtk::downloads::State::kStarting ||
+       item->state == mtk::downloads::State::kInProgress || paused);
+  SetDlgItemTextW(dialog, IDC_DOWNLOADS_PAUSE, paused ? L"Resume" : L"Pause");
+  EnableWindow(GetDlgItem(dialog, IDC_DOWNLOADS_PAUSE), controllable ? TRUE : FALSE);
+  EnableWindow(GetDlgItem(dialog, IDC_DOWNLOADS_CANCEL), controllable ? TRUE : FALSE);
 }
 
 // Reveals the file in Explorer instead of launching it. MTK Browser never
@@ -454,6 +493,10 @@ INT_PTR CALLBACK DownloadsDialogProc(HWND dialog, UINT message, WPARAM w_param,
       return TRUE;
     case WM_COMMAND: {
       const WORD command = LOWORD(w_param);
+      if (command == IDC_DOWNLOADS_LIST && HIWORD(w_param) == LBN_SELCHANGE) {
+        RefreshDownloadControls(dialog);
+        return TRUE;
+      }
       if (command == IDC_DOWNLOADS_FOLDER) {
         const std::wstring directory = mtk::downloads::DownloadDirectory();
         if (directory.empty()) {
@@ -496,20 +539,37 @@ INT_PTR CALLBACK DownloadsDialogProc(HWND dialog, UINT message, WPARAM w_param,
         RevealInExplorer(dialog, item->full_path);
         return TRUE;
       }
+      if (command == IDC_DOWNLOADS_PAUSE) {
+        const auto* item = SelectedDownload(dialog);
+        if (!item || (item->id >> 32) != 0) return TRUE;
+        const uint32_t live_id = static_cast<uint32_t>(item->id);
+        if (item->state == mtk::downloads::State::kPaused) {
+          BrowserClient::ResumeDownload(live_id);
+        } else if (item->state == mtk::downloads::State::kStarting ||
+                   item->state == mtk::downloads::State::kInProgress) {
+          BrowserClient::PauseDownload(live_id);
+        }
+        return TRUE;
+      }
       if (command == IDC_DOWNLOADS_CANCEL) {
         const auto* item = SelectedDownload(dialog);
         if (!item) return TRUE;
         if (item->state != mtk::downloads::State::kStarting &&
-            item->state != mtk::downloads::State::kInProgress) {
+            item->state != mtk::downloads::State::kInProgress &&
+            item->state != mtk::downloads::State::kPaused) {
           mtk::downloads::Manager::Get().Remove(item->id);
+          mtk::downloads::Manager::Get().Flush();
           PopulateDownloadList(dialog);
           return TRUE;
         }
-        mtk::downloads::Manager::Get().RequestCancel(item->id);
+        if ((item->id >> 32) == 0) {
+          BrowserClient::CancelDownload(static_cast<uint32_t>(item->id));
+        }
         return TRUE;
       }
       if (command == IDC_DOWNLOADS_CLEAR) {
         mtk::downloads::Manager::Get().ClearFinished();
+        mtk::downloads::Manager::Get().Flush();
         PopulateDownloadList(dialog);
         return TRUE;
       }
@@ -552,8 +612,12 @@ BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {
 }
 
 void BrowserWindow::ShowSettingsDialog() {
-  DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SETTINGS), window_,
-                  SettingsDialogProc, 0);
+  if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SETTINGS), window_,
+                      SettingsDialogProc, 0) == IDOK &&
+      mtk::preferences::Store::Get().values().startup_mode ==
+          mtk::preferences::StartupMode::kHomePage) {
+    mtk::session::Clear();
+  }
 }
 
 void BrowserWindow::ShowBrowserMenu() {
@@ -640,10 +704,49 @@ void BrowserWindow::OnBrowserDownloadsChanged(BrowserClient*) {
   // The download handler runs on this same UI thread, so the open dialog can be
   // refreshed directly.
   if (g_downloads_dialog) PopulateDownloadList(g_downloads_dialog);
+  if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
+  if (window_) SetTimer(window_, kDownloadSaveTimer, 1500, nullptr);
 }
 
 void BrowserWindow::ScheduleLibrarySave() {
   SetTimer(window_, kLibrarySaveTimer, 1500, nullptr);
+}
+
+void BrowserWindow::ScheduleSessionSave() {
+  if (closing_ || !window_) return;
+  if (mtk::preferences::Store::Get().values().startup_mode ==
+      mtk::preferences::StartupMode::kContinueSession) {
+    SetTimer(window_, kSessionSaveTimer, 1200, nullptr);
+  }
+}
+
+void BrowserWindow::SaveSessionSnapshot() {
+  if (mtk::preferences::Store::Get().values().startup_mode !=
+      mtk::preferences::StartupMode::kContinueSession) {
+    mtk::session::Clear();
+    return;
+  }
+  std::vector<std::string> urls;
+  urls.reserve(tabs_.size());
+  for (const auto& tab : tabs_) urls.push_back(WideToUtf8(tab.url));
+  mtk::session::Save(urls, active_tab_);
+}
+
+void BrowserWindow::CreateStartupTabs() {
+  if (mtk::preferences::Store::Get().values().startup_mode ==
+      mtk::preferences::StartupMode::kContinueSession) {
+    const auto snapshot = mtk::session::Load();
+    for (const auto& url : snapshot.urls) CreateTab(url);
+    if (!tabs_.empty()) {
+      active_tab_ = std::min(snapshot.active_index, tabs_.size() - 1);
+      return;
+    }
+  }
+  if (!CreateTab(kHomeUrl)) {
+    MessageBoxW(window_, L"MTK Browser could not create its first browser tab.",
+                L"MTK Browser startup error", MB_OK | MB_ICONERROR);
+    PostMessageW(window_, WM_CLOSE, 0, 0);
+  }
 }
 
 BrowserWindow::~BrowserWindow() {
@@ -831,6 +934,8 @@ void BrowserWindow::CreateControls() {
                         reinterpret_cast<HMENU>(kHomeId), instance_, nullptr);
   shield_ = CreateWindowW(L"BUTTON", L"◆", button_style, 0, 0, 0, 0, window_,
                           reinterpret_cast<HMENU>(kShieldId), instance_, nullptr);
+  downloads_ = CreateWindowW(L"BUTTON", L"↓", button_style, 0, 0, 0, 0, window_,
+                             reinterpret_cast<HMENU>(kDownloadsId), instance_, nullptr);
   menu_ = CreateWindowW(L"BUTTON", L"⋮", button_style, 0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kMenuId), instance_, nullptr);
   address_ = CreateWindowW(L"EDIT", L"Search or enter address",
@@ -853,7 +958,8 @@ void BrowserWindow::CreateControls() {
                               reinterpret_cast<HMENU>(kFindCloseId), instance_, nullptr);
   go_ = CreateWindowW(L"BUTTON", L"Go", button_style, 0, 0, 0, 0, window_,
                       reinterpret_cast<HMENU>(kGoId), instance_, nullptr);
-  for (HWND control : {back_, forward_, reload_, home_, shield_, menu_, address_,
+  for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
+                       menu_, address_,
                        find_, find_status_, find_previous_, find_next_, find_close_, go_}) {
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
   }
@@ -867,7 +973,7 @@ void BrowserWindow::CreateControls() {
                     reinterpret_cast<DWORD_PTR>(this));
 }
 
-void BrowserWindow::CreateTab(const std::string& initial_url) {
+bool BrowserWindow::CreateTab(const std::string& initial_url) {
   if (!tabs_.empty()) {
     if (auto* active = ActiveTab(); active && active->client->browser()) {
       ShowWindow(active->client->browser()->GetHost()->GetWindowHandle(), SW_HIDE);
@@ -875,6 +981,9 @@ void BrowserWindow::CreateTab(const std::string& initial_url) {
   }
   Tab tab;
   tab.client = new BrowserClient(this);
+  // Keep the URL snapshot-safe before CEF delivers its asynchronous address
+  // callback. Session restore can then survive an immediate window close.
+  tab.url = Utf8ToWide(initial_url);
   tabs_.push_back(tab);
   active_tab_ = tabs_.size() - 1;
 
@@ -887,9 +996,17 @@ void BrowserWindow::CreateTab(const std::string& initial_url) {
                        std::max(1, static_cast<int>(client.bottom) -
                                        kChromeHeight)));
   CefBrowserSettings settings;
-  CefBrowserHost::CreateBrowser(info, tabs_.back().client, initial_url, settings,
-                                nullptr, nullptr);
+  if (!CefBrowserHost::CreateBrowser(info, tabs_.back().client, initial_url,
+                                     settings, nullptr, nullptr)) {
+    tabs_.pop_back();
+    active_tab_ = tabs_.empty() ? 0 : tabs_.size() - 1;
+    if (auto* active = ActiveTab(); active && active->client->browser()) {
+      ShowWindow(active->client->browser()->GetHost()->GetWindowHandle(), SW_SHOW);
+    }
+    return false;
+  }
   InvalidateRect(window_, nullptr, FALSE);
+  return true;
 }
 
 void BrowserWindow::ShowFindBar() {
@@ -969,6 +1086,7 @@ void BrowserWindow::SelectTab(size_t index) {
   }
   UpdateControls();
   InvalidateRect(window_, nullptr, FALSE);
+  ScheduleSessionSave();
 }
 
 void BrowserWindow::CloseTab(size_t index) {
@@ -979,6 +1097,9 @@ void BrowserWindow::CloseTab(size_t index) {
     return;
   }
   auto closing = tabs_[index].client;
+  // Remove the tab from the strip now, but retain its client until
+  // OnBeforeClose so parent shutdown cannot outrun CEF's lifecycle.
+  closing_clients_.push_back(closing);
   tabs_.erase(tabs_.begin() + static_cast<ptrdiff_t>(index));
   if (active_tab_ >= tabs_.size()) active_tab_ = tabs_.size() - 1;
   else if (index < active_tab_) --active_tab_;
@@ -989,6 +1110,7 @@ void BrowserWindow::CloseTab(size_t index) {
   }
   UpdateControls();
   InvalidateRect(window_, nullptr, FALSE);
+  ScheduleSessionSave();
 }
 
 void BrowserWindow::NavigateFromOmnibox() {
@@ -1021,20 +1143,21 @@ void BrowserWindow::Layout() {
   MoveWindow(shield_, x + 6, y, button + 6, button, TRUE);
   x += button + 20;
 
+  MoveWindow(downloads_, width - 92, y, button, button, TRUE);
   MoveWindow(menu_, width - 50, y, button, button, TRUE);
   if (find_visible_) {
-    const int status_x = width - 248;
+    const int status_x = width - 290;
     MoveWindow(find_, x + 22, y + 8,
                std::max(120, status_x - x - 30), 21, TRUE);
     MoveWindow(find_status_, status_x, y + 8, 82, 21, TRUE);
-    MoveWindow(find_previous_, width - 158, y, 30, button, TRUE);
-    MoveWindow(find_next_, width - 124, y, 30, button, TRUE);
-    MoveWindow(find_close_, width - 90, y, 30, button, TRUE);
+    MoveWindow(find_previous_, width - 200, y, 30, button, TRUE);
+    MoveWindow(find_next_, width - 166, y, 30, button, TRUE);
+    MoveWindow(find_close_, width - 132, y, 30, button, TRUE);
   } else {
-    const int right_space = 132;
+    const int right_space = 174;
     const int omnibox_width = std::max(120, width - x - right_space);
     MoveWindow(address_, x + 22, y + 8, omnibox_width - 34, 21, TRUE);
-    MoveWindow(go_, width - 118, y, 56, button, TRUE);
+    MoveWindow(go_, width - 160, y, 56, button, TRUE);
   }
   for (auto& tab : tabs_) ResizeBrowser(tab);
 }
@@ -1223,19 +1346,24 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
   DrawTextW(item.hDC, text, -1, &bounds,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+  unsigned long badge_value = 0;
   if (item.CtlID == kShieldId) {
-    const unsigned long blocked = BrowserClient::blocked_count();
-    if (blocked > 0) {
-      const std::wstring label =
-          blocked > 999 ? L"999+" : std::to_wstring(blocked);
-      SelectObject(item.hDC, badge_font_);
-      RECT badge{bounds.right - 26, bounds.top + 2, bounds.right - 2,
-                 bounds.top + 16};
-      FillRounded(item.hDC, badge, 7, kAccentColor);
-      SetTextColor(item.hDC, RGB(255, 255, 255));
-      DrawTextW(item.hDC, label.c_str(), -1, &badge,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
+    badge_value = BrowserClient::blocked_count();
+  } else if (item.CtlID == kDownloadsId) {
+    badge_value = static_cast<unsigned long>(
+        mtk::downloads::Manager::Get().ActiveCount());
+  }
+  if (badge_value > 0) {
+    const std::wstring label =
+        badge_value > 999 ? L"999+" : std::to_wstring(badge_value);
+    SelectObject(item.hDC, badge_font_);
+    RECT badge{bounds.right - 26, bounds.top + 2, bounds.right - 2,
+               bounds.top + 16};
+    FillRounded(item.hDC, badge, 7,
+                item.CtlID == kDownloadsId ? kAccentSoftColor : kAccentColor);
+    SetTextColor(item.hDC, RGB(255, 255, 255));
+    DrawTextW(item.hDC, label.c_str(), -1, &badge,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
 }
 
@@ -1296,7 +1424,7 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
   switch (message) {
     case WM_CREATE:
       CreateControls();
-      CreateTab(kHomeUrl);
+      CreateStartupTabs();
       Layout();
       return 0;
     case WM_SIZE:
@@ -1341,6 +1469,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       } else if (w_param == kLibrarySaveTimer) {
         KillTimer(window_, kLibrarySaveTimer);
         mtk::library::Store::Get().Flush();
+      } else if (w_param == kDownloadSaveTimer) {
+        KillTimer(window_, kDownloadSaveTimer);
+        mtk::downloads::Manager::Get().Flush();
+      } else if (w_param == kSessionSaveTimer) {
+        KillTimer(window_, kSessionSaveTimer);
+        SaveSessionSnapshot();
       }
       return 0;
     case WM_DRAWITEM:
@@ -1428,6 +1562,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
                       MB_OK | MB_ICONINFORMATION);
           break;
         }
+        case kDownloadsId:
+          ShowDownloadsDialog();
+          break;
         case kMenuId:
           ShowBrowserMenu();
           break;
@@ -1451,12 +1588,22 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     }
     case WM_CLOSE: {
       if (closing_) return 0;
+      // Freeze session updates before taking the final snapshot. Otherwise a
+      // deferred timer can run while CEF tabs are closing and overwrite it.
       closing_ = true;
+      KillTimer(window_, kSessionSaveTimer);
+      SaveSessionSnapshot();
+      mtk::downloads::Manager::Get().Flush();
 
       std::vector<CefRefPtr<CefBrowser>> closing_browsers;
-      closing_browsers.reserve(tabs_.size());
+      closing_browsers.reserve(tabs_.size() + closing_clients_.size());
       for (const auto& tab : tabs_) {
         if (auto browser = tab.client->browser()) {
+          closing_browsers.push_back(browser);
+        }
+      }
+      for (const auto& client : closing_clients_) {
+        if (auto browser = client->browser()) {
           closing_browsers.push_back(browser);
         }
       }
@@ -1464,7 +1611,7 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       for (const auto& browser : closing_browsers) {
         browser->GetHost()->CloseBrowser(true);
       }
-      if (tabs_.empty() && window_) {
+      if (tabs_.empty() && closing_clients_.empty() && window_) {
         PostMessageW(window_, kFinalizeCloseMessage, 0, 0);
       }
       return 0;
@@ -1474,7 +1621,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       return 0;
     case WM_DESTROY:
       KillTimer(window_, kLibrarySaveTimer);
+      KillTimer(window_, kDownloadSaveTimer);
+      KillTimer(window_, kSessionSaveTimer);
       mtk::library::Store::Get().Flush();
+      mtk::downloads::Manager::Get().Flush();
       window_ = nullptr;
       CefQuitMessageLoop();
       return 0;
@@ -1484,9 +1634,23 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
 
 void BrowserWindow::OnBrowserCreated(BrowserClient* client) {
   const size_t index = FindTab(client);
-  if (index == kNoTab || !client->browser()) return;
-  if (closing_) {
-    client->browser()->GetHost()->CloseBrowser(true);
+  const bool detached_closing = std::any_of(
+      closing_clients_.begin(), closing_clients_.end(),
+      [client](const CefRefPtr<BrowserClient>& pending) {
+        return pending.get() == client;
+      });
+  if ((index == kNoTab && !detached_closing) || !client->browser()) return;
+  if (closing_ || detached_closing) {
+    // OnAfterCreated is still on CEF's creation stack. Defer CloseBrowser to
+    // avoid a re-entrant close inside libcef while restored tabs are pending.
+    CefRefPtr<CefBrowser> browser = client->browser();
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<CefBrowser> pending) {
+                              if (pending) {
+                                pending->GetHost()->CloseBrowser(true);
+                              }
+                            },
+                            browser));
     return;
   }
   if (client->browser()->GetHost()->GetRuntimeStyle() !=
@@ -1505,27 +1669,6 @@ void BrowserWindow::OnBrowserCreated(BrowserClient* client) {
   UpdateControls();
 }
 
-void BrowserWindow::OnBrowserCloseReady(BrowserClient* client) {
-  const size_t index = FindTab(client);
-  if (!closing_) {
-    // Individual tab close or window.close(): tear down only the CEF child.
-    if (client && client->browser()) {
-      HWND child = client->browser()->GetHost()->GetWindowHandle();
-      if (child) DestroyWindow(child);
-    }
-    return;
-  }
-
-  if (index != kNoTab) tabs_[index].close_ready = true;
-  const bool all_ready = std::all_of(
-      tabs_.begin(), tabs_.end(), [](const Tab& tab) {
-        return !tab.client->browser() || tab.close_ready;
-      });
-  if (all_ready && window_) {
-    PostMessageW(window_, kFinalizeCloseMessage, 0, 0);
-  }
-}
-
 void BrowserWindow::OnBrowserClosed(BrowserClient* client) {
   const size_t index = FindTab(client);
   if (index != kNoTab) {
@@ -1538,8 +1681,14 @@ void BrowserWindow::OnBrowserClosed(BrowserClient* client) {
       --active_tab_;
     }
   }
+  closing_clients_.erase(
+      std::remove_if(closing_clients_.begin(), closing_clients_.end(),
+                     [client](const CefRefPtr<BrowserClient>& pending) {
+                       return pending.get() == client;
+                     }),
+      closing_clients_.end());
 
-  if (tabs_.empty()) {
+  if (tabs_.empty() && closing_clients_.empty()) {
     if (!window_) return;
     if (closing_) {
       PostMessageW(window_, kFinalizeCloseMessage, 0, 0);
@@ -1548,7 +1697,7 @@ void BrowserWindow::OnBrowserClosed(BrowserClient* client) {
     }
     return;
   }
-  if (closing_) return;
+  if (closing_ || index == kNoTab) return;
 
   if (auto* active = ActiveTab(); active && active->client->browser()) {
     ResizeBrowser(*active);
@@ -1563,6 +1712,7 @@ void BrowserWindow::OnBrowserAddressChanged(BrowserClient* client,
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
   tabs_[index].url = url;
+  ScheduleSessionSave();
   if (index == active_tab_) UpdateControls();
 }
 

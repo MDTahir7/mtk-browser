@@ -1,5 +1,5 @@
 #define MyAppName "MTK Browser"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "MTK Browser"
 #define MyAppExeName "MTKBrowser.exe"
 

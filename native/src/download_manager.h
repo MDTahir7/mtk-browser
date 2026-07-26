@@ -10,13 +10,16 @@ namespace mtk::downloads {
 enum class State {
   kStarting,
   kInProgress,
+  kPaused,
   kComplete,
   kCanceled,
   kFailed,
 };
 
 struct Item {
-  uint32_t id = 0;
+  // Live CEF downloads use their uint32_t download ID. Persisted history rows
+  // are assigned IDs above UINT32_MAX so they can never collide after restart.
+  uint64_t id = 0;
   std::wstring file_name;
   std::wstring full_path;
   std::string url;
@@ -83,20 +86,19 @@ class Manager final {
  public:
   static Manager& Get();
 
+  void Load();
+  bool Flush();
   // Inserts a new record, or updates the existing record with the same id.
   void Upsert(const Item& item);
-  bool Remove(uint32_t id);
+  bool Remove(uint64_t id);
   size_t ClearFinished();
-  // Ids marked for cancellation are consumed by the CEF download callback.
-  void RequestCancel(uint32_t id);
-  bool TakeCancelRequest(uint32_t id);
   size_t ActiveCount() const;
 
   const std::vector<Item>& items() const;
 
  private:
   std::vector<Item> items_;
-  std::vector<uint32_t> cancel_requests_;
+  bool dirty_ = false;
 };
 
 // Human readable status line for the downloads UI.
