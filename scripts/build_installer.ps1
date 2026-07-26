@@ -24,7 +24,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Release staging failed.' }
 
 $isccCandidates = @(
     (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
-    "$env:LOCALAPPDATA\Programs\Antigravity IDE\resources\app\node_modules\innosetup\bin\ISCC.exe",
+    # Portable Inno Setup kept beside the build output, used when the tool is
+    # not installed system-wide.
+    (Join-Path $repoRoot 'build\tools\innosetup\ISCC.exe'),
     'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
     'C:\Program Files\Inno Setup 6\ISCC.exe'
 ) | Where-Object { $_ -and (Test-Path $_) }
