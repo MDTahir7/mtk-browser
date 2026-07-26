@@ -244,3 +244,11 @@ youtube.com###panels-full-bleed-container ytd-ad-slot-renderer
 youtube.com##.ytd-video-masthead-ad-v3-renderer
 youtube.com##.ytp-ad-overlay-slot
 youtube.com##.ytp-ad-progress-list
+
+! ---------------------------------------------------- Jagran ad-space collapse
+! Jagran reserves fixed-height wrappers even when the ad request is blocked.
+! Hide the known wrappers themselves (not their parent editorial columns) so
+! no empty banner/rail remains and real news content keeps its layout.
+jagran.com##.webAds.advertiseTxt
+jagran.com##.taboolaads
+jagran.com###taboola-below-home-thumbnails
