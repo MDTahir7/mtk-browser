@@ -1,0 +1,38 @@
+#include <windows.h>
+
+#define IDI_MTK_BROWSER 101
+
+IDI_MTK_BROWSER ICON "../resources/mtk_browser.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,2,0,0
+ PRODUCTVERSION 0,2,0,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "MTK Browser\0"
+      VALUE "FileDescription", "MTK Browser - Family-safe native browser\0"
+      VALUE "FileVersion", "0.2.0 Preview\0"
+      VALUE "InternalName", "MTKBrowser\0"
+      VALUE "LegalCopyright", "Copyright (c) 2026 MTK Browser\0"
+      VALUE "OriginalFilename", "MTKBrowser.exe\0"
+      VALUE "ProductName", "MTK Browser\0"
+      VALUE "ProductVersion", "0.2.0 Preview\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

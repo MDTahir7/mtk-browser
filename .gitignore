@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.vs/
+*.suo
+*.user
+*.VC.db
+out/
+vendor/cef-sdk/
+vendor/*.tar.bz2
+.playwright-mcp/

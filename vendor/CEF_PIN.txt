@@ -1,0 +1,8 @@
+CEF_VERSION=150.0.14+g7c1aa68+chromium-150.0.7871.129
+CHROMIUM_VERSION=150.0.7871.129
+PLATFORM=windows64
+PACKAGE=cef_binary_150.0.14+g7c1aa68+chromium-150.0.7871.129_windows64_minimal.tar.bz2
+PUBLISHED_SHA1=63272475eee07ec21cbc8774e2e7e18957115a55
+SOURCE=https://cef-builds.spotifycdn.com/
+SELECTED_AT=2026-07-25
+CHANNEL=stable

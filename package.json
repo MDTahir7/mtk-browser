@@ -1,0 +1,39 @@
+{
+  "name": "mtk-safe-browser",
+  "version": "0.1.1",
+  "description": "Privacy-first family-safe browser",
+  "main": "src/main.js",
+  "author": "MTK Browser",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mtk/safe-browser.git"
+  },
+  "scripts": {
+    "start": "cmd /c \"Launch MTK Browser.cmd\"",
+    "start:legacy": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/security.js && node --check src/ui/app.js",
+    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_installer.ps1",
+    "dist:legacy": "electron-builder --win nsis --publish never"
+  },
+
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.mtk.safebrowser",
+    "productName": "MTK Safe Browser",
+    "asar": true,
+
+    "files": ["src/**/*", "package.json"],
+    "win": { "target": "nsis" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

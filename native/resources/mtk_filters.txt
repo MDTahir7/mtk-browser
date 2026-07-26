@@ -1,0 +1,246 @@
+! MTK Shields filter list
+! Authored for MTK Browser. Adblock Plus compatible subset:
+!   ||host^            block requests to a host and its subdomains
+!   $third-party       only when the request is cross-site
+!   $script,image,...  restrict to resource types
+!   @@                 exception rule
+!   ##selector         hide elements (optionally scoped to domains)
+! Playback, search and login endpoints must never be listed here.
+
+! ---------------------------------------------------------------- ad networks
+||doubleclick.net^
+||googlesyndication.com^
+||googleadservices.com^
+||googletagservices.com^
+||googletagmanager.com^
+||google-analytics.com^
+||adservice.google.com^
+||pagead2.googlesyndication.com^
+||imasdk.googleapis.com^
+||2mdn.net^
+||amazon-adsystem.com^
+||adnxs.com^
+||adnxs.net^
+||adsrvr.org^
+||adform.net^
+||adzerk.net^
+||adroll.com^
+||adsterra.com^
+||adskeeper.com^
+||adsafeprotected.com^
+||adtelligent.com^
+||adthrive.com^
+||applovin.com^
+||appnexus.com^
+||bidswitch.net^
+||bidtellect.com^
+||buysellads.com^
+||casalemedia.com^
+||clickadu.com^
+||contextweb.com^
+||criteo.com^
+||criteo.net^
+||districtm.io^
+||doubleverify.com^
+||exoclick.com^
+||exosrv.com^
+||gumgum.com^
+||hilltopads.net^
+||indexww.com^
+||infolinks.com^
+||inmobi.com^
+||juicyads.com^
+||kargo.com^
+||lijit.com^
+||mathtag.com^
+||media.net^
+||mgid.com^
+||moatads.com^
+||mopub.com^
+||openx.net^
+||outbrain.com^
+||plugrush.com^
+||popads.net^
+||popcash.net^
+||propellerads.com^
+||propellerclick.com^
+||pubmatic.com^
+||pubmine.com^
+||quantserve.com^
+||revcontent.com^
+||rtbhouse.com^
+||rubiconproject.com^
+||serving-sys.com^
+||sharethrough.com^
+||smaato.net^
+||smartadserver.com^
+||smartclip.net^
+||sonobi.com^
+||sovrn.com^
+||spotxchange.com^
+||taboola.com^
+||teads.tv^
+||trafficfactory.biz^
+||trafficjunky.com^
+||tremorhub.com^
+||triplelift.com^
+||undertone.com^
+||vidoomy.com^
+||voluum.com^
+||yieldlab.net^
+||yieldmanager.com^
+||yieldmo.com^
+||zedo.com^
+||zemanta.com^
+||zeropark.com^
+||33across.com^
+||adcolony.com^
+||adotmob.com^
+||aniview.com^
+||cpmstar.com^
+||dianomi.com^
+||engageya.com^
+||lockerdome.com^
+||loopme.me^
+||mediavine.com^
+||nativery.com^
+||onaudience.com^
+||snigelweb.com^
+||sekindo.com^
+||servedbyadbutler.com^
+
+! ------------------------------------------------------------------ analytics
+||scorecardresearch.com^
+||quantcast.com^
+||hotjar.com^
+||hotjar.io^
+||mouseflow.com^
+||fullstory.com^
+||logrocket.com^
+||luckyorange.com^
+||clarity.ms^
+||mixpanel.com^
+||amplitude.com^
+||segment.io^
+||segment.com^$third-party
+||heap.io^
+||statcounter.com^
+||chartbeat.com^
+||newrelic.com^$third-party
+||nr-data.net^
+||branch.io^
+||appsflyer.com^
+||adjust.com^
+||kochava.com^
+||braze.com^
+||clevertap.com^
+||onesignal.com^
+||pushnami.com^
+||optimizely.com^
+||yieldify.com^
+||crazyegg.com^
+||inspectlet.com^
+||matomo.cloud^
+
+! -------------------------------------------------------------- generic paths
+/pagead/
+/adsbygoogle
+/ad_frame^
+/adframe.
+/adserver/
+/adservice/
+/advert/
+/advertising/
+/advertisement.
+/banner_ad
+/banner-ad
+/googleads.
+/popunder
+/prebid.
+/prebid-
+/pubads
+/sponsored/
+/vast.xml
+/vast?
+/vpaid
+/ad-slot
+/adslot-
+/ads.js|$script
+/ad.js|$script
+/ads.min.js|$script
+/analytics.js|$script,third-party
+/beacon?$ping
+/collect?$ping,third-party
+/pixel.gif$image,third-party
+/pixel?$image,third-party
+/telemetry^$third-party
+/tracking-pixel
+
+! ------------------------------------------------------------------- YouTube
+! Only ad and ad-measurement endpoints. Player, search, thumbnail, comment and
+! playback routes are intentionally absent so video never breaks.
+||youtube.com/pagead/
+||youtube.com/ptracking
+||youtube.com/api/stats/ads
+||youtube.com/api/stats/qoe
+||youtube.com/get_midroll_info
+||youtube.com/get_video_ads
+||youtube.com/youtubei/v1/player/ad_break
+||youtube.com/pcs/activeview
+||youtube.com/annotations_invideo
+||googlevideo.com/videogoodput
+||googlevideo.com/ptracking
+||youtube.com/generate_204$ping
+||googleads.g.doubleclick.net^
+||static.doubleclick.net^
+||s0.2mdn.net^
+
+! ------------------------------------------------- generic element hiding
+##ins.adsbygoogle
+##.adsbygoogle
+##iframe[id^="google_ads_iframe_"]
+##iframe[src*="doubleclick.net"]
+##iframe[src*="googlesyndication.com"]
+##iframe[src*="adnxs.com"]
+##iframe[src*="criteo"]
+##iframe[src*="taboola"]
+##iframe[src*="outbrain"]
+##iframe[title="Advertisement" i]
+##[id^="div-gpt-ad-"]
+##[data-ad-client]
+##[data-ad-slot]
+##[aria-label="Ad" i]
+##[aria-label="Advertisement" i]
+##.ad-banner
+##.ad-wrapper
+##.ads-wrapper
+##.advertisement
+##.advertising-container
+##.sponsored-post
+##.taboola
+##.OUTBRAIN
+##.trc_related_container
+###taboola-below-article
+###outbrain_widget_0
+
+! ------------------------------------------------- YouTube element hiding
+! Ad surfaces only. The player, the video element and the skip button are never
+! hidden here.
+youtube.com##ytd-ad-slot-renderer
+youtube.com##ytd-display-ad-renderer
+youtube.com##ytd-promoted-video-renderer
+youtube.com##ytd-promoted-sparkles-web-renderer
+youtube.com##ytd-promoted-sparkles-text-search-renderer
+youtube.com##ytd-in-feed-ad-layout-renderer
+youtube.com##ytd-banner-promo-renderer
+youtube.com##ytd-statement-banner-renderer
+youtube.com##ytd-companion-slot-renderer
+youtube.com##ytd-action-companion-ad-renderer
+youtube.com##ytd-watch-next-secondary-results-renderer ytd-ad-slot-renderer
+youtube.com##ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"]
+youtube.com###masthead-ad
+youtube.com###player-ads
+youtube.com###panels-full-bleed-container ytd-ad-slot-renderer
+youtube.com##.ytd-video-masthead-ad-v3-renderer
+youtube.com##.ytp-ad-overlay-slot
+youtube.com##.ytp-ad-progress-list

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'none'">
+  <title>सुरक्षा के लिए ब्लॉक</title>
+  <style>
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at top,#202a38,#0c1017 65%);color:#f4f7fb;font:16px "Segoe UI",sans-serif}.card{width:min(580px,90vw);padding:45px;border:1px solid #303b4d;border-radius:24px;background:#151b24;box-shadow:0 24px 70px #0009;text-align:center}.icon{width:72px;height:72px;display:grid;place-items:center;margin:auto;border-radius:22px;background:#35d07f1c;color:#35d07f;font-size:40px}h1{font-size:28px;margin:22px 0 10px}p{color:#aab4c4;line-height:1.6}.reason{margin:22px 0;padding:13px;border-radius:10px;background:#0d1118;color:#ffb8c3;word-break:break-word}button{border:0;border-radius:10px;padding:12px 22px;background:#7c5cff;color:white;font-weight:700;cursor:pointer}small{display:block;margin-top:24px;color:#717d8f}
+  </style>
+</head>
+<body><main class="card"><div class="icon">◆</div><h1>यह पेज नहीं खोला गया</h1><p>MTK Safe Browser ने आपकी सुरक्षा और family-friendly browsing के लिए इस request को रोक दिया।</p><div class="reason" id="reason">सुरक्षा नीति</div><button onclick="history.back()">सुरक्षित पेज पर वापस जाएँ</button><small>Adult content, unsafe domains, trackers, popups और downloads default रूप से बंद हैं।</small></main>
+<script>const q=new URLSearchParams(location.search);document.querySelector('#reason').textContent=q.get('reason')||'सुरक्षा नीति द्वारा ब्लॉक';</script></body>
+</html>

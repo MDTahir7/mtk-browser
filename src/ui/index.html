@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+  <title>MTK Safe Browser</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Chrome Top Header Container -->
+  <div class="chrome-header">
+
+    <!-- Top Tab Strip -->
+    <div class="tab-strip-container">
+      <div id="tab-strip" class="tab-strip">
+        <!-- Dynamic Tabs Rendered by app.js -->
+      </div>
+      <button id="add-tab" class="btn-icon add-tab-btn" title="New tab (Ctrl+T)">+</button>
+    </div>
+
+    <!-- Navigation & Omnibox Toolbar -->
+    <div class="toolbar">
+      <div class="nav-controls">
+        <button id="back" class="btn-icon nav-btn" title="Back" disabled>←</button>
+        <button id="forward" class="btn-icon nav-btn" title="Forward" disabled>→</button>
+        <button id="reload" class="btn-icon nav-btn" title="Reload (Ctrl+R)">↻</button>
+        <button id="home" class="btn-icon nav-btn" title="Home">⌂</button>
+      </div>
+
+      <!-- Chrome Unified Omnibox -->
+      <form id="address-form" class="omnibox-form" autocomplete="off">
+        <div class="security-badge" id="security-badge" title="Connection is secure & SafeSearch active">
+          <span class="lock-icon">🔒</span>
+        </div>
+        <input id="address" class="omnibox-input" placeholder="Search Google or enter web address" spellcheck="false">
+        <button type="button" id="star-btn" class="btn-icon star-btn" title="Bookmark page">★</button>
+      </form>
+
+      <!-- Right Action Controls -->
+      <div class="action-controls">
+        <button id="shield-toggle" class="shield-badge-btn" title="Safety & AdBlock Inspector">
+          <span class="shield-icon">🛡️</span>
+          <span id="blocked-count" class="blocked-counter">0</span>
+        </button>
+        <button id="menu-toggle" class="btn-icon menu-btn" title="Customize and control MTK Browser">⋮</button>
+      </div>
+    </div>
+
+    <!-- Chrome Bookmarks Bar -->
+    <div class="bookmarks-bar">
+      <button class="bookmark-item" data-url="https://www.google.com/?safe=active">
+        <span class="bm-icon">🔍</span> Google Safe
+      </button>
+      <button class="bookmark-item" data-url="https://www.youtube.com">
+        <span class="bm-icon">▶️</span> YouTube Safe
+      </button>
+      <button class="bookmark-item" data-url="https://en.wikipedia.org">
+        <span class="bm-icon">📖</span> Wikipedia
+      </button>
+      <button class="bookmark-item" data-url="https://www.khanacademy.org">
+        <span class="bm-icon">🎓</span> Khan Academy
+      </button>
+      <button class="bookmark-item" data-url="https://news.google.com">
+        <span class="bm-icon">📰</span> Google News
+      </button>
+    </div>
+  </div>
+
+  <!-- Safety Inspector Modal -->
+  <div id="shield-modal" class="modal-dropdown shield-modal hidden">
+    <div class="modal-header">
+      <div class="modal-title">
+        <span>🛡️</span> MTK Shield Protection
+      </div>
+      <div class="status-pill active">ACTIVE</div>
+    </div>
+    <div class="modal-body">
+      <div class="stat-box">
+        <div class="stat-number" id="modal-blocked-count">0</div>
+        <div class="stat-label">Ads & Trackers Blocked</div>
+      </div>
+      <div class="feature-list">
+        <div class="feature-item">
+          <span class="feat-icon">🔒</span>
+          <div class="feat-text">
+            <strong>HTTPS Enforcement</strong>
+            <small>Automatic SSL/TLS Upgrades</small>
+          </div>
+        </div>
+        <div class="feature-item">
+          <span class="feat-icon">🚫</span>
+          <div class="feat-text">
+            <strong>Adult Content Filter</strong>
+            <small>Zero Adult & Illegal Sites</small>
+          </div>
+        </div>
+        <div class="feature-item">
+          <span class="feat-icon">🔍</span>
+          <div class="feat-text">
+            <strong>SafeSearch Mode</strong>
+            <small>Google, Bing, Yahoo & YouTube</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chrome 3-Dots Menu Dropdown -->
+  <div id="chrome-menu" class="modal-dropdown menu-modal hidden">
+    <div class="menu-item" id="menu-new-tab">
+      <span>➕</span> New Tab <kbd>Ctrl+T</kbd>
+    </div>
+    <div class="menu-item" id="menu-close-tab">
+      <span>❌</span> Close Tab <kbd>Ctrl+W</kbd>
+    </div>
+    <div class="menu-divider"></div>
+    <div class="menu-item" id="menu-reload">
+      <span>↻</span> Reload Page <kbd>Ctrl+R</kbd>
+    </div>
+    <div class="menu-item" id="menu-home">
+      <span>⌂</span> Go to Home
+    </div>
+    <div class="menu-divider"></div>
+    <div class="menu-item" id="menu-clear">
+      <span>🧹</span> Clear Session Memory
+    </div>
+    <div class="menu-item" id="menu-about">
+      <span>ℹ️</span> About MTK Safe Browser
+    </div>
+  </div>
+
+  <!-- Notification Toast -->
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

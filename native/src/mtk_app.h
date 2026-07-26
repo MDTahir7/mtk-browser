@@ -1,0 +1,36 @@
+#pragma once
+
+#include <windows.h>
+
+#include <memory>
+
+#include "include/cef_app.h"
+#include "include/cef_browser_process_handler.h"
+#include "include/cef_render_process_handler.h"
+
+class BrowserWindow;
+
+class MtkApp final : public CefApp,
+                     public CefBrowserProcessHandler,
+                     public CefRenderProcessHandler {
+ public:
+  MtkApp(HINSTANCE instance, int show_command);
+  ~MtkApp() override;
+
+  CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override;
+  CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override;
+  void OnContextInitialized() override;
+
+  // Runs MTK Shields as soon as CEF creates the page V8 context. This avoids
+  // the renderer-stalling V8-extension registration path.
+  void OnContextCreated(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefFrame> frame,
+                        CefRefPtr<CefV8Context> context) override;
+
+ private:
+  HINSTANCE instance_ = nullptr;
+  int show_command_ = SW_SHOWDEFAULT;
+  std::unique_ptr<BrowserWindow> browser_window_;
+
+  IMPLEMENT_REFCOUNTING(MtkApp);
+};
