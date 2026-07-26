@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "include/cef_browser.h"
 #include "browser_client.h"
 
 class BrowserWindow final : public BrowserClientDelegate {
@@ -24,6 +25,11 @@ class BrowserWindow final : public BrowserClientDelegate {
   void OnBrowserLoadingChanged(BrowserClient* client, bool loading,
                                bool can_go_back,
                                bool can_go_forward) override;
+  void OnBrowserNavigationCompleted(BrowserClient* client,
+                                    const std::string& url) override;
+  void OnBrowserFindResult(BrowserClient* client, int identifier, int count,
+                           int active_match_ordinal,
+                           bool final_update) override;
   void OnBrowserPopupRequested(BrowserClient* client,
                                const std::string& url) override;
   bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
@@ -46,10 +52,24 @@ class BrowserWindow final : public BrowserClientDelegate {
                                       WPARAM w_param, LPARAM l_param,
                                       UINT_PTR subclass_id,
                                       DWORD_PTR reference_data);
+  static LRESULT CALLBACK FindProc(HWND window, UINT message,
+                                   WPARAM w_param, LPARAM l_param,
+                                   UINT_PTR subclass_id,
+                                   DWORD_PTR reference_data);
   LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
   bool HandleShortcut(int virtual_key, bool control, bool alt, bool shift);
   void CreateControls();
   void CreateTab(const std::string& initial_url);
+  void ShowFindBar();
+  void HideFindBar();
+  void RunFind(bool forward, bool find_next);
+  void ZoomActiveTab(cef_zoom_command_t command);
+  void ShowBrowserMenu();
+  void ShowSettingsDialog();
+  void ToggleBookmark();
+  void ShowLibraryDialog(bool bookmarks);
+  void OpenLibraryEntry(bool bookmarks, size_t index);
+  void ScheduleLibrarySave();
   void SelectTab(size_t index);
   void CloseTab(size_t index);
   void NavigateFromOmnibox();
@@ -69,6 +89,11 @@ class BrowserWindow final : public BrowserClientDelegate {
   HINSTANCE instance_ = nullptr;
   HWND window_ = nullptr;
   HWND address_ = nullptr;
+  HWND find_ = nullptr;
+  HWND find_status_ = nullptr;
+  HWND find_previous_ = nullptr;
+  HWND find_next_ = nullptr;
+  HWND find_close_ = nullptr;
   HWND go_ = nullptr;
   HWND back_ = nullptr;
   HWND forward_ = nullptr;
@@ -87,6 +112,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool hovered_tab_close_ = false;
   bool hovered_new_tab_ = false;
   bool mouse_tracking_ = false;
+  bool find_visible_ = false;
+  bool find_active_ = false;
+  int active_find_identifier_ = -1;
   bool progress_active_ = false;
   int progress_phase_ = 0;
   bool closing_ = false;

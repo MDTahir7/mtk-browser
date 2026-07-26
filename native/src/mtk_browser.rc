@@ -1,8 +1,36 @@
 #include <windows.h>
-
-#define IDI_MTK_BROWSER 101
+#include "resource.h"
 
 IDI_MTK_BROWSER ICON "../resources/mtk_browser.ico"
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 190
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "MTK Browser Settings"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "General", -1, 16, 14, 140, 10
+  LTEXT "Home page", -1, 16, 34, 270, 10
+  EDITTEXT IDC_SETTINGS_HOME_PAGE, 16, 47, 286, 14, ES_AUTOHSCROLL
+  LTEXT "Website language preference", -1, 16, 76, 270, 10
+  COMBOBOX IDC_SETTINGS_LANGUAGE, 16, 89, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Safety, shields, SafeSearch and download protections stay enabled.", -1, 16, 121, 286, 20
+  LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 142, 286, 16
+  DEFPUSHBUTTON "Save", IDOK, 162, 164, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 236, 164, 66, 14
+END
+
+IDD_LIBRARY DIALOGEX 0, 0, 430, 250
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "MTK Browser Library"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "Select an item to open it in the current tab.", -1, 14, 12, 300, 10
+  LISTBOX IDC_LIBRARY_LIST, 14, 28, 402, 176, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+  DEFPUSHBUTTON "Open", IDC_LIBRARY_OPEN, 152, 218, 62, 14
+  PUSHBUTTON "Remove", IDC_LIBRARY_REMOVE, 222, 218, 62, 14
+  PUSHBUTTON "Clear all", IDC_LIBRARY_CLEAR, 292, 218, 62, 14
+  PUSHBUTTON "Close", IDCANCEL, 362, 218, 54, 14
+END
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 0,2,0,0

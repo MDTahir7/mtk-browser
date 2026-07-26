@@ -1,7 +1,12 @@
 set(MTK_BROWSER_SOURCES
   src/main.cpp
   src/mtk_browser.rc
+  src/resource.h
   resources/mtk_browser.ico
+  src/preferences.cpp
+  src/preferences.h
+  src/library_store.cpp
+  src/library_store.h
   src/mtk_app.cpp
   src/mtk_app.h
   src/browser_client.cpp

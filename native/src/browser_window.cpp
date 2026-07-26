@@ -11,17 +11,22 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
+#include "library_store.h"
 #include "policy.h"
+#include "preferences.h"
+#include "resource.h"
 
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"MTKBrowserWindow";
-constexpr char kHomeUrl[] = "https://www.google.com/?safe=active";
+constexpr char kDefaultHomeUrl[] = "https://www.google.com/?safe=active";
+std::string kHomeUrl = kDefaultHomeUrl;
 constexpr int kTabBarHeight = 46;
 constexpr int kToolbarHeight = 62;
 constexpr int kChromeHeight = kTabBarHeight + kToolbarHeight;
 constexpr int kProgressHeight = 3;
 constexpr UINT_PTR kProgressTimer = 1;
+constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT kFinalizeCloseMessage = WM_APP + 1;
 constexpr INT_PTR kBackId = 1001;
 constexpr INT_PTR kForwardId = 1002;
@@ -31,6 +36,10 @@ constexpr INT_PTR kAddressId = 1005;
 constexpr INT_PTR kGoId = 1006;
 constexpr INT_PTR kShieldId = 1007;
 constexpr INT_PTR kMenuId = 1008;
+constexpr INT_PTR kFindId = 1009;
+constexpr INT_PTR kFindPreviousId = 1010;
+constexpr INT_PTR kFindNextId = 1011;
+constexpr INT_PTR kFindCloseId = 1012;
 constexpr size_t kNoTab = static_cast<size_t>(-1);
 
 constexpr COLORREF kWindowColor = RGB(9, 12, 22);
@@ -111,6 +120,194 @@ std::string WideToUtf8(const std::wstring& value) {
   return result;
 }
 
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return {};
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.data(),
+                                       static_cast<int>(value.size()), nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring result(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                      static_cast<int>(value.size()), result.data(), size);
+  return result;
+}
+
+void RefreshHomeUrl() {
+  const auto decision = mtk::policy::ResolveInput(
+      WideToUtf8(mtk::preferences::Store::Get().values().home_page));
+  kHomeUrl = decision.allow ? decision.url : kDefaultHomeUrl;
+}
+
+INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                    LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      const auto& values = mtk::preferences::Store::Get().values();
+      SetDlgItemTextW(dialog, IDC_SETTINGS_HOME_PAGE, values.home_page.c_str());
+      HWND language = GetDlgItem(dialog, IDC_SETTINGS_LANGUAGE);
+      SendMessageW(language, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"English (United States) and Hindi"));
+      SendMessageW(language, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(L"Hindi and English (United States)"));
+      const int choice = values.accept_language == "hi,en-US,en" ? 1 : 0;
+      SendMessageW(language, CB_SETCURSEL, choice, 0);
+      SetWindowTheme(language, L"Explorer", nullptr);
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        wchar_t home_page[2049]{};
+        const int length = GetDlgItemTextW(
+            dialog, IDC_SETTINGS_HOME_PAGE, home_page,
+            static_cast<int>(sizeof(home_page) / sizeof(home_page[0])));
+        if (length == 0 ||
+            length >= static_cast<int>(sizeof(home_page) / sizeof(home_page[0]))) {
+          MessageBoxW(dialog, L"Enter a home page or search address.",
+                      L"MTK Browser Settings", MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        const auto decision = mtk::policy::ResolveInput(WideToUtf8(home_page));
+        if (!decision.allow) {
+          MessageBoxW(dialog, decision.reason.c_str(), L"Home page blocked",
+                      MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        mtk::preferences::Values values = mtk::preferences::Store::Get().values();
+        values.home_page = Utf8ToWide(decision.url);
+        const int selected = static_cast<int>(SendMessageW(
+            GetDlgItem(dialog, IDC_SETTINGS_LANGUAGE), CB_GETCURSEL, 0, 0));
+        values.accept_language = selected == 1 ? "hi,en-US,en" : "en-US,en,hi";
+        if (!mtk::preferences::Store::Get().Save(values)) {
+          MessageBoxW(dialog, L"MTK Browser could not save these settings.",
+                      L"MTK Browser Settings", MB_OK | MB_ICONERROR);
+          return TRUE;
+        }
+        RefreshHomeUrl();
+        HWND owner = GetParent(dialog);
+        EndDialog(dialog, IDOK);
+        MessageBoxW(owner,
+                    L"Saved. Home and new tabs use the new page. Website language "
+                    L"preference applies after you restart MTK Browser.",
+                    L"MTK Browser Settings", MB_OK | MB_ICONINFORMATION);
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+const std::vector<mtk::library::Entry>& LibraryEntries(bool bookmarks) {
+  return bookmarks ? mtk::library::Store::Get().bookmarks()
+                   : mtk::library::Store::Get().history();
+}
+
+std::wstring LibraryDisplayText(const mtk::library::Entry& entry) {
+  std::wstring text = entry.title.empty() ? Utf8ToWide(entry.url) : entry.title;
+  std::replace_if(text.begin(), text.end(), [](wchar_t character) {
+    return character == L'\r' || character == L'\n' || character == L'\t';
+  }, L' ');
+  if (text.size() > 180) text.resize(180);
+  const std::wstring url = Utf8ToWide(entry.url);
+  if (url != text) text += L"  —  " + url;
+  return text;
+}
+
+void PopulateLibraryList(HWND dialog, bool bookmarks) {
+  HWND list = GetDlgItem(dialog, IDC_LIBRARY_LIST);
+  SendMessageW(list, LB_RESETCONTENT, 0, 0);
+  const auto& entries = LibraryEntries(bookmarks);
+  for (size_t index = 0; index < entries.size(); ++index) {
+    const LRESULT row = SendMessageW(
+        list, LB_ADDSTRING, 0,
+        reinterpret_cast<LPARAM>(LibraryDisplayText(entries[index]).c_str()));
+    if (row != LB_ERR && row != LB_ERRSPACE) {
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(row), index);
+    }
+  }
+  if (!entries.empty()) SendMessageW(list, LB_SETCURSEL, 0, 0);
+}
+
+INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                   LPARAM l_param) {
+  const bool bookmarks = GetWindowLongPtrW(dialog, GWLP_USERDATA) != 0;
+  switch (message) {
+    case WM_INITDIALOG: {
+      const bool initial_bookmarks = l_param != 0;
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, l_param);
+      SetWindowTextW(dialog, initial_bookmarks ? L"Bookmarks — MTK Browser"
+                                                : L"History — MTK Browser");
+      if (initial_bookmarks) {
+        SetWindowTextW(GetDlgItem(dialog, IDC_LIBRARY_CLEAR),
+                       L"Remove all");
+      }
+      PopulateLibraryList(dialog, initial_bookmarks);
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      const WORD command = LOWORD(w_param);
+      const WORD notification = HIWORD(w_param);
+      if (command == IDC_LIBRARY_LIST && notification == LBN_DBLCLK) {
+        SendMessageW(dialog, WM_COMMAND, IDC_LIBRARY_OPEN, 0);
+        return TRUE;
+      }
+      const LRESULT row = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
+                                       LB_GETCURSEL, 0, 0);
+      if (command == IDC_LIBRARY_OPEN) {
+        if (row == LB_ERR) return TRUE;
+        const LRESULT index = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
+            LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+        if (index != LB_ERR) EndDialog(dialog, index + 1);
+        return TRUE;
+      }
+      if (command == IDC_LIBRARY_REMOVE) {
+        if (row == LB_ERR) return TRUE;
+        const LRESULT index = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
+            LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+        const bool removed = index != LB_ERR &&
+            (bookmarks ? mtk::library::Store::Get().RemoveBookmarkAt(index)
+                       : mtk::library::Store::Get().RemoveHistoryAt(index));
+        if (removed && !mtk::library::Store::Get().Flush()) {
+          MessageBoxW(dialog, L"MTK Browser could not save the library change.",
+                      L"MTK Browser", MB_OK | MB_ICONERROR);
+        }
+        PopulateLibraryList(dialog, bookmarks);
+        return TRUE;
+      }
+      if (command == IDC_LIBRARY_CLEAR) {
+        const wchar_t* prompt = bookmarks ? L"Remove all saved bookmarks?"
+                                          : L"Clear all browsing history?";
+        if (MessageBoxW(dialog, prompt, L"MTK Browser", MB_YESNO | MB_ICONWARNING) != IDYES) {
+          return TRUE;
+        }
+        const bool cleared = bookmarks ? mtk::library::Store::Get().ClearBookmarks()
+                                       : mtk::library::Store::Get().ClearHistory();
+        if (cleared && !mtk::library::Store::Get().Flush()) {
+          MessageBoxW(dialog, L"MTK Browser could not save the library change.",
+                      L"MTK Browser", MB_OK | MB_ICONERROR);
+        }
+        PopulateLibraryList(dialog, bookmarks);
+        return TRUE;
+      }
+      if (command == IDCANCEL) {
+        EndDialog(dialog, 0);
+        return TRUE;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      EndDialog(dialog, 0);
+      return TRUE;
+  }
+  return FALSE;
+}
+
 constexpr int kTabGap = 4;
 constexpr int kTabStripInset = 10;
 
@@ -129,7 +326,87 @@ RECT TabCloseRect(const RECT& tab) {
 
 }  // namespace
 
-BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {}
+BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {
+  RefreshHomeUrl();
+}
+
+void BrowserWindow::ShowSettingsDialog() {
+  DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SETTINGS), window_,
+                  SettingsDialogProc, 0);
+}
+
+void BrowserWindow::ShowBrowserMenu() {
+  HMENU popup = CreatePopupMenu();
+  if (!popup) return;
+  auto* tab = ActiveTab();
+  const auto decision = tab ? mtk::policy::EvaluateNavigation(WideToUtf8(tab->url))
+                             : mtk::policy::NavigationDecision{false, {}, L""};
+  const bool can_bookmark = decision.allow && !tab->url.starts_with(L"data:");
+  const bool bookmarked = can_bookmark &&
+      mtk::library::Store::Get().IsBookmarked(decision.url);
+  AppendMenuW(popup, MF_STRING | (can_bookmark ? MF_ENABLED : MF_GRAYED),
+              IDM_ADD_BOOKMARK,
+              bookmarked ? L"Remove bookmark" : L"Add bookmark");
+  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks");
+  AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History");
+  AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(popup, MF_STRING, IDM_SETTINGS, L"Settings");
+  POINT point{};
+  GetCursorPos(&point);
+  const UINT command = TrackPopupMenu(
+      popup, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
+      point.x, point.y, 0, window_, nullptr);
+  DestroyMenu(popup);
+  if (command) PostMessageW(window_, WM_COMMAND, command, 0);
+}
+
+void BrowserWindow::ToggleBookmark() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const auto decision = mtk::policy::EvaluateNavigation(WideToUtf8(tab->url));
+  if (!decision.allow || tab->url.starts_with(L"data:")) {
+    MessageBoxW(window_, L"This page cannot be saved as a bookmark.",
+                L"MTK Browser", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  auto& store = mtk::library::Store::Get();
+  const bool bookmarked = store.IsBookmarked(decision.url);
+  const bool changed = bookmarked ? store.RemoveBookmark(decision.url)
+      : store.AddBookmark(decision.url, tab->title);
+  if (!changed || !store.Flush()) {
+    MessageBoxW(window_, L"MTK Browser could not save the bookmark change.",
+                L"MTK Browser", MB_OK | MB_ICONERROR);
+    return;
+  }
+  MessageBoxW(window_, bookmarked ? L"Bookmark removed." : L"Bookmark saved.",
+              L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::ShowLibraryDialog(bool bookmarks) {
+  const INT_PTR selection = DialogBoxParamW(
+      instance_, MAKEINTRESOURCEW(IDD_LIBRARY), window_, LibraryDialogProc,
+      bookmarks ? 1 : 0);
+  if (selection > 0) OpenLibraryEntry(bookmarks, static_cast<size_t>(selection - 1));
+}
+
+void BrowserWindow::OpenLibraryEntry(bool bookmarks, size_t index) {
+  const auto& entries = bookmarks ? mtk::library::Store::Get().bookmarks()
+                                  : mtk::library::Store::Get().history();
+  if (index >= entries.size()) return;
+  const auto decision = mtk::policy::EvaluateNavigation(entries[index].url);
+  if (!decision.allow) {
+    MessageBoxW(window_, decision.reason.c_str(), L"MTK Browser blocked this link",
+                MB_OK | MB_ICONWARNING);
+    return;
+  }
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(decision.url);
+  }
+}
+
+void BrowserWindow::ScheduleLibrarySave() {
+  SetTimer(window_, kLibrarySaveTimer, 1500, nullptr);
+}
 
 BrowserWindow::~BrowserWindow() {
   for (HFONT font : {ui_font_, tab_font_, glyph_font_, badge_font_}) {
@@ -194,9 +471,61 @@ LRESULT CALLBACK BrowserWindow::AddressProc(HWND window, UINT message,
   return DefSubclassProc(window, message, w_param, l_param);
 }
 
+LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
+                                         WPARAM w_param, LPARAM l_param,
+                                         UINT_PTR, DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && self) {
+    const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (w_param == VK_RETURN) {
+      self->RunFind(!shift, true);
+      return 0;
+    }
+    if (w_param == VK_ESCAPE) {
+      self->HideFindBar();
+      return 0;
+    }
+    if (self->HandleShortcut(static_cast<int>(w_param), control, alt, shift)) {
+      return 0;
+    }
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, FindProc, 2);
+  return DefSubclassProc(window, message, w_param, l_param);
+}
+
 bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
                                    bool shift) {
   auto* tab = ActiveTab();
+  if (!control && !alt && virtual_key == VK_ESCAPE && find_visible_) {
+    HideFindBar();
+    return true;
+  }
+  if (control && !alt && virtual_key == 'F') {
+    ShowFindBar();
+    return true;
+  }
+  if ((!control && !alt && virtual_key == VK_F3) ||
+      (control && !alt && virtual_key == 'G')) {
+    if (find_visible_) RunFind(!shift, true);
+    else ShowFindBar();
+    return true;
+  }
+  if (control && !alt &&
+      (virtual_key == VK_OEM_PLUS || virtual_key == VK_ADD)) {
+    ZoomActiveTab(CEF_ZOOM_COMMAND_IN);
+    return true;
+  }
+  if (control && !alt &&
+      (virtual_key == VK_OEM_MINUS || virtual_key == VK_SUBTRACT)) {
+    ZoomActiveTab(CEF_ZOOM_COMMAND_OUT);
+    return true;
+  }
+  if (control && !alt && virtual_key == '0') {
+    ZoomActiveTab(CEF_ZOOM_COMMAND_RESET);
+    return true;
+  }
   if (control && !alt && virtual_key == 'L') {
     SetFocus(address_);
     SendMessageW(address_, EM_SETSEL, 0, -1);
@@ -266,15 +595,33 @@ void BrowserWindow::CreateControls() {
                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                            0, 0, 0, 0, window_,
                            reinterpret_cast<HMENU>(kAddressId), instance_, nullptr);
+  find_ = CreateWindowW(L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
+                        0, 0, 0, 0, window_,
+                        reinterpret_cast<HMENU>(kFindId), instance_, nullptr);
+  find_status_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_RIGHT,
+                               0, 0, 0, 0, window_, nullptr, instance_, nullptr);
+  find_previous_ = CreateWindowW(L"BUTTON", L"‹", button_style & ~WS_VISIBLE,
+                                 0, 0, 0, 0, window_,
+                                 reinterpret_cast<HMENU>(kFindPreviousId), instance_, nullptr);
+  find_next_ = CreateWindowW(L"BUTTON", L"›", button_style & ~WS_VISIBLE,
+                             0, 0, 0, 0, window_,
+                             reinterpret_cast<HMENU>(kFindNextId), instance_, nullptr);
+  find_close_ = CreateWindowW(L"BUTTON", L"×", button_style & ~WS_VISIBLE,
+                              0, 0, 0, 0, window_,
+                              reinterpret_cast<HMENU>(kFindCloseId), instance_, nullptr);
   go_ = CreateWindowW(L"BUTTON", L"Go", button_style, 0, 0, 0, 0, window_,
                       reinterpret_cast<HMENU>(kGoId), instance_, nullptr);
-  for (HWND control : {back_, forward_, reload_, home_, shield_, menu_, address_, go_}) {
+  for (HWND control : {back_, forward_, reload_, home_, shield_, menu_, address_,
+                       find_, find_status_, find_previous_, find_next_, find_close_, go_}) {
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
   }
   SendMessageW(address_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                MAKELPARAM(12, 12));
   SetWindowTheme(address_, L"DarkMode_CFD", nullptr);
+  SetWindowTheme(find_, L"DarkMode_CFD", nullptr);
   SetWindowSubclass(address_, AddressProc, 1,
+                    reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(find_, FindProc, 2,
                     reinterpret_cast<DWORD_PTR>(this));
 }
 
@@ -303,8 +650,72 @@ void BrowserWindow::CreateTab(const std::string& initial_url) {
   InvalidateRect(window_, nullptr, FALSE);
 }
 
+void BrowserWindow::ShowFindBar() {
+  if (!find_visible_) {
+    find_visible_ = true;
+    find_active_ = false;
+    active_find_identifier_ = -1;
+    SetWindowTextW(find_status_, L"Type to find");
+    ShowWindow(address_, SW_HIDE);
+    ShowWindow(go_, SW_HIDE);
+    for (HWND control : {find_, find_status_, find_previous_, find_next_, find_close_}) {
+      ShowWindow(control, SW_SHOW);
+    }
+    Layout();
+  }
+  SetFocus(find_);
+  SendMessageW(find_, EM_SETSEL, 0, -1);
+}
+
+void BrowserWindow::HideFindBar() {
+  if (!find_visible_) return;
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    tab->client->browser()->GetHost()->StopFinding(true);
+  }
+  find_visible_ = false;
+  find_active_ = false;
+  active_find_identifier_ = -1;
+  SetWindowTextW(find_, L"");
+  for (HWND control : {find_, find_status_, find_previous_, find_next_, find_close_}) {
+    ShowWindow(control, SW_HIDE);
+  }
+  ShowWindow(address_, SW_SHOW);
+  ShowWindow(go_, SW_SHOW);
+  Layout();
+}
+
+void BrowserWindow::RunFind(bool forward, bool find_next) {
+  if (!find_visible_) return;
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client->browser()) return;
+  const int length = GetWindowTextLengthW(find_);
+  std::wstring query(static_cast<size_t>(length) + 1, L'\0');
+  GetWindowTextW(find_, query.data(), length + 1);
+  query.resize(static_cast<size_t>(length));
+  if (query.empty()) {
+    tab->client->browser()->GetHost()->StopFinding(true);
+    find_active_ = false;
+    active_find_identifier_ = -1;
+    SetWindowTextW(find_status_, L"Type to find");
+    return;
+  }
+  const bool repeat = find_next && find_active_;
+  if (!repeat) active_find_identifier_ = -1;
+  find_active_ = true;
+  SetWindowTextW(find_status_, L"Searching…");
+  tab->client->browser()->GetHost()->Find(query, forward, false, repeat);
+}
+
+void BrowserWindow::ZoomActiveTab(cef_zoom_command_t command) {
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    auto host = tab->client->browser()->GetHost();
+    if (host->CanZoom(command)) host->Zoom(command);
+  }
+}
+
 void BrowserWindow::SelectTab(size_t index) {
   if (index >= tabs_.size() || index == active_tab_) return;
+  if (find_visible_) HideFindBar();
   if (auto* old = ActiveTab(); old && old->client->browser()) {
     ShowWindow(old->client->browser()->GetHost()->GetWindowHandle(), SW_HIDE);
   }
@@ -320,6 +731,7 @@ void BrowserWindow::SelectTab(size_t index) {
 
 void BrowserWindow::CloseTab(size_t index) {
   if (index >= tabs_.size()) return;
+  if (index == active_tab_ && find_visible_) HideFindBar();
   if (tabs_.size() == 1) {
     PostMessageW(window_, WM_CLOSE, 0, 0);
     return;
@@ -367,11 +779,21 @@ void BrowserWindow::Layout() {
   MoveWindow(shield_, x + 6, y, button + 6, button, TRUE);
   x += button + 20;
 
-  const int right_space = 132;
-  const int omnibox_width = std::max(120, width - x - right_space);
-  MoveWindow(address_, x + 22, y + 8, omnibox_width - 34, 21, TRUE);
-  MoveWindow(go_, width - 118, y, 56, button, TRUE);
   MoveWindow(menu_, width - 50, y, button, button, TRUE);
+  if (find_visible_) {
+    const int status_x = width - 248;
+    MoveWindow(find_, x + 22, y + 8,
+               std::max(120, status_x - x - 30), 21, TRUE);
+    MoveWindow(find_status_, status_x, y + 8, 82, 21, TRUE);
+    MoveWindow(find_previous_, width - 158, y, 30, button, TRUE);
+    MoveWindow(find_next_, width - 124, y, 30, button, TRUE);
+    MoveWindow(find_close_, width - 90, y, 30, button, TRUE);
+  } else {
+    const int right_space = 132;
+    const int omnibox_width = std::max(120, width - x - right_space);
+    MoveWindow(address_, x + 22, y + 8, omnibox_width - 34, 21, TRUE);
+    MoveWindow(go_, width - 118, y, 56, button, TRUE);
+  }
   for (auto& tab : tabs_) ResizeBrowser(tab);
 }
 
@@ -674,6 +1096,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         RECT track{0, kChromeHeight - kProgressHeight, client.right,
                    kChromeHeight};
         InvalidateRect(window_, &track, FALSE);
+      } else if (w_param == kLibrarySaveTimer) {
+        KillTimer(window_, kLibrarySaveTimer);
+        mtk::library::Store::Get().Flush();
       }
       return 0;
     case WM_DRAWITEM:
@@ -685,6 +1110,14 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       SetBkColor(dc, kControlColor);
       return reinterpret_cast<LRESULT>(edit_brush_);
     }
+    case WM_CTLCOLORSTATIC:
+      if (reinterpret_cast<HWND>(l_param) == find_status_) {
+        HDC dc = reinterpret_cast<HDC>(w_param);
+        SetTextColor(dc, kMutedColor);
+        SetBkColor(dc, kControlColor);
+        return reinterpret_cast<LRESULT>(edit_brush_);
+      }
+      break;
     case WM_LBUTTONDOWN: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
       if (point.y < kTabBarHeight) {
@@ -718,6 +1151,18 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case kHomeId: if (tab && tab->client->browser()) tab->client->browser()->GetMainFrame()->LoadURL(kHomeUrl); break;
         case kGoId: NavigateFromOmnibox(); break;
+        case kFindId:
+          if (HIWORD(w_param) == EN_CHANGE) RunFind(true, false);
+          break;
+        case kFindPreviousId:
+          RunFind(false, true);
+          break;
+        case kFindNextId:
+          RunFind(true, true);
+          break;
+        case kFindCloseId:
+          HideFindBar();
+          break;
         case kShieldId: {
           const std::wstring summary =
               L"MTK Shields are active.\n\nBlocked on this session: " +
@@ -732,7 +1177,21 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
                       MB_OK | MB_ICONINFORMATION);
           break;
         }
-        case kMenuId: MessageBoxW(window_, L"Settings, history and subscription controls are coming in the next milestone.", L"MTK Browser", MB_OK); break;
+        case kMenuId:
+          ShowBrowserMenu();
+          break;
+        case IDM_ADD_BOOKMARK:
+          ToggleBookmark();
+          break;
+        case IDM_BOOKMARKS:
+          ShowLibraryDialog(true);
+          break;
+        case IDM_HISTORY:
+          ShowLibraryDialog(false);
+          break;
+        case IDM_SETTINGS:
+          ShowSettingsDialog();
+          break;
       }
       return 0;
     }
@@ -760,6 +1219,8 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       if (closing_ && window_) DestroyWindow(window_);
       return 0;
     case WM_DESTROY:
+      KillTimer(window_, kLibrarySaveTimer);
+      mtk::library::Store::Get().Flush();
       window_ = nullptr;
       CefQuitMessageLoop();
       return 0;
@@ -856,6 +1317,11 @@ void BrowserWindow::OnBrowserTitleChanged(BrowserClient* client,
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
   tabs_[index].title = title.empty() ? L"New Tab" : title;
+  const auto decision = mtk::policy::EvaluateNavigation(WideToUtf8(tabs_[index].url));
+  if (decision.allow && mtk::library::Store::Get().UpdateHistoryTitle(
+                            decision.url, tabs_[index].title)) {
+    ScheduleLibrarySave();
+  }
   if (index == active_tab_) UpdateControls();
   else InvalidateRect(window_, nullptr, FALSE);
 }
@@ -865,10 +1331,38 @@ void BrowserWindow::OnBrowserLoadingChanged(BrowserClient* client, bool loading,
                                              bool can_go_forward) {
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
+  if (loading && index == active_tab_ && find_visible_) HideFindBar();
   tabs_[index].loading = loading;
   tabs_[index].can_go_back = can_go_back;
   tabs_[index].can_go_forward = can_go_forward;
   if (index == active_tab_) UpdateControls();
+}
+
+void BrowserWindow::OnBrowserNavigationCompleted(BrowserClient* client,
+                                                  const std::string& url) {
+  const size_t index = FindTab(client);
+  if (index == kNoTab || url.starts_with("data:") || url == "about:blank") return;
+  const auto decision = mtk::policy::EvaluateNavigation(url);
+  if (!decision.allow) return;
+  if (mtk::library::Store::Get().RecordVisit(decision.url, tabs_[index].title)) {
+    ScheduleLibrarySave();
+  }
+}
+
+void BrowserWindow::OnBrowserFindResult(BrowserClient* client, int identifier,
+                                        int count, int active_match_ordinal,
+                                        bool final_update) {
+  if (FindTab(client) != active_tab_ || !find_visible_ || !find_active_) return;
+  if (active_find_identifier_ < 0) active_find_identifier_ = identifier;
+  if (identifier != active_find_identifier_) return;
+  if (count <= 0) {
+    SetWindowTextW(find_status_, final_update ? L"No matches" : L"Searching…");
+    return;
+  }
+  const int position = active_match_ordinal > 0 ? active_match_ordinal : 1;
+  const std::wstring status = std::to_wstring(position) + L" of " +
+                              std::to_wstring(count);
+  SetWindowTextW(find_status_, status.c_str());
 }
 
 void BrowserWindow::OnBrowserPopupRequested(BrowserClient*,

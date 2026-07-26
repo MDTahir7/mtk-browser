@@ -202,6 +202,7 @@ CefRefPtr<CefContextMenuHandler> BrowserClient::GetContextMenuHandler() {
 }
 CefRefPtr<CefDisplayHandler> BrowserClient::GetDisplayHandler() { return this; }
 CefRefPtr<CefDownloadHandler> BrowserClient::GetDownloadHandler() { return this; }
+CefRefPtr<CefFindHandler> BrowserClient::GetFindHandler() { return this; }
 CefRefPtr<CefKeyboardHandler> BrowserClient::GetKeyboardHandler() { return this; }
 CefRefPtr<CefLifeSpanHandler> BrowserClient::GetLifeSpanHandler() { return this; }
 CefRefPtr<CefLoadHandler> BrowserClient::GetLoadHandler() { return this; }
@@ -219,6 +220,15 @@ void BrowserClient::OnBeforeContextMenu(
 bool BrowserClient::CanDownload(CefRefPtr<CefBrowser>, const CefString&,
                                 const CefString&) {
   return false;
+}
+
+void BrowserClient::OnFindResult(CefRefPtr<CefBrowser> browser, int identifier,
+                                 int count, const CefRect&, int active_match_ordinal,
+                                 bool final_update) {
+  if (delegate_ && browser_ && browser && browser_->IsSame(browser)) {
+    delegate_->OnBrowserFindResult(this, identifier, count,
+                                   active_match_ordinal, final_update);
+  }
 }
 
 void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
@@ -251,12 +261,15 @@ bool BrowserClient::OnBeforePopup(
   return true;
 }
 
-void BrowserClient::OnLoadingStateChange(CefRefPtr<CefBrowser>, bool is_loading,
-                                         bool can_go_back,
+void BrowserClient::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
+                                         bool is_loading, bool can_go_back,
                                          bool can_go_forward) {
-  if (delegate_) {
-    delegate_->OnBrowserLoadingChanged(this, is_loading, can_go_back,
-                                       can_go_forward);
+  if (!delegate_) return;
+  delegate_->OnBrowserLoadingChanged(this, is_loading, can_go_back,
+                                     can_go_forward);
+  if (!is_loading && browser && browser->GetMainFrame()) {
+    delegate_->OnBrowserNavigationCompleted(
+        this, browser->GetMainFrame()->GetURL().ToString());
   }
 }
 

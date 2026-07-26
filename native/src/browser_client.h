@@ -4,6 +4,7 @@
 #include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_download_handler.h"
+#include "include/cef_find_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
@@ -25,6 +26,11 @@ class BrowserClientDelegate {
   virtual void OnBrowserLoadingChanged(BrowserClient* client, bool loading,
                                        bool can_go_back,
                                        bool can_go_forward) = 0;
+  virtual void OnBrowserNavigationCompleted(BrowserClient* client,
+                                            const std::string& url) = 0;
+  virtual void OnBrowserFindResult(BrowserClient* client, int identifier,
+                                   int count, int active_match_ordinal,
+                                   bool final_update) = 0;
   virtual void OnBrowserPopupRequested(BrowserClient* client,
                                        const std::string& url) = 0;
   virtual bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
@@ -38,6 +44,7 @@ class BrowserClient final : public CefClient,
                             public CefContextMenuHandler,
                             public CefDisplayHandler,
                             public CefDownloadHandler,
+                            public CefFindHandler,
                             public CefKeyboardHandler,
                             public CefLifeSpanHandler,
                             public CefLoadHandler,
@@ -50,6 +57,7 @@ class BrowserClient final : public CefClient,
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override;
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override;
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override;
+  CefRefPtr<CefFindHandler> GetFindHandler() override;
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override;
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override;
   CefRefPtr<CefLoadHandler> GetLoadHandler() override;
@@ -63,6 +71,9 @@ class BrowserClient final : public CefClient,
   bool CanDownload(CefRefPtr<CefBrowser> browser,
                    const CefString& url,
                    const CefString& request_method) override;
+  void OnFindResult(CefRefPtr<CefBrowser> browser, int identifier, int count,
+                    const CefRect& selection_rect, int active_match_ordinal,
+                    bool final_update) override;
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
   bool DoClose(CefRefPtr<CefBrowser> browser) override;

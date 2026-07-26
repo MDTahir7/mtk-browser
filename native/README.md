@@ -29,7 +29,10 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
 - New-tab, tab switching, closing and popup-to-tab routing
 - Back, forward, reload/stop, home and live navigation state
 - Browser-focus shortcuts: `Ctrl+L`, `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab`,
-  `Alt+Left/Right`, `F5`, and `Ctrl+R`
+  `Alt+Left/Right`, `F5`, `Ctrl+R`, `Ctrl+F`, `F3`, `Ctrl+G`,
+  `Ctrl++`, `Ctrl+-`, and `Ctrl+0`
+- Native find-in-page bar with next/previous result count and escape-to-close
+- Per-tab CEF zoom controls with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` reset
 - Search-or-address input resolution with safe Google fallback
 - HTTPS upgrade and SafeSearch URL enforcement
 - Unsafe/private-navigation blocking with an MTK block page
@@ -40,7 +43,9 @@ The build stages the pinned CEF `Release` and `Resources` payload beside `MTKBro
 - DNT and GPC privacy preference headers
 - Deny-by-default permissions, downloads, invalid certificates, HTTP auth,
   client certificates, external protocols, and context menus
-- Isolated installation data under `%LOCALAPPDATA%\MTK Browser\User Data`
+- Isolated CEF data under `%LOCALAPPDATA%\MTK Browser\User Data` and MTK-owned preferences under `%LOCALAPPDATA%\MTK Browser\preferences.ini`
+- Native Settings dialog with a saved home page and website-language preference
+- Persistent History and Bookmarks library, with safe re-validation before saved links open
 - Automatic staging of the pinned CEF runtime and resources
 
 The reviewed CEF 150 SDK now compiles and links with MSVC, and the native

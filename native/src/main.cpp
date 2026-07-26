@@ -11,7 +11,9 @@
 #endif
 #include "browser_window.h"
 #include "filter_engine.h"
+#include "library_store.h"
 #include "mtk_app.h"
+#include "preferences.h"
 
 namespace {
 
@@ -35,17 +37,7 @@ std::string ApplicationDirectory() {
 }
 
 std::wstring RootCachePath() {
-  std::wstring path(32767, L'\0');
-  DWORD length = GetEnvironmentVariableW(
-      L"LOCALAPPDATA", path.data(), static_cast<DWORD>(path.size()));
-  if (length == 0 || length >= path.size()) {
-    length = GetTempPathW(static_cast<DWORD>(path.size()), path.data());
-  }
-  if (length == 0 || length >= path.size()) return L"C:\\MTKBrowserData";
-  path.resize(length);
-  if (!path.empty() && path.back() != L'\\') path.push_back(L'\\');
-  path += L"MTK Browser\\User Data";
-  return path;
+  return mtk::preferences::UserDataDirectory();
 }
 
 // The single-instance guard exists because two browser processes cannot share
@@ -96,6 +88,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.
   const std::wstring profile_path = RootCachePath();
+  mtk::preferences::Store::Get().Load();
+  mtk::library::Store::Get().Load();
   HANDLE singleton =
       CreateMutexW(nullptr, FALSE, SingletonName(profile_path).c_str());
   if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -120,7 +114,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 #endif
   settings.persist_session_cookies = false;
   CefString(&settings.root_cache_path) = profile_path;
-  CefString(&settings.accept_language_list) = "en-US,en,hi";
+  CefString(&settings.accept_language_list) =
+      mtk::preferences::Store::Get().values().accept_language;
 
   if (!CefInitialize(
       main_args, settings, app,
