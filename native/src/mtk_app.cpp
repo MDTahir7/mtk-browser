@@ -135,6 +135,98 @@ constexpr char kShieldsPageScript[] = R"JS(
 })();
 )JS";
 
+// Instagram has no network-enforceable safe mode, and its single-page
+// navigation changes the URL without issuing a main-frame request, so the
+// request policy alone cannot stop an in-app jump to Explore or Reels. This
+// guard closes those two unfiltered discovery surfaces from inside the page.
+// It is deliberately small: no DOM scanning and no mutation observer.
+constexpr char kInstagramGuardScript[] = R"JS(
+(() => {
+  if (!/(^|\.)instagram\.com$/.test(location.hostname)) return;
+  if (window.__mtkInstagramGuard) return;
+  Object.defineProperty(window, '__mtkInstagramGuard', {
+    value: true, configurable: false, enumerable: false
+  });
+
+  // On Instagram web, Search and Explore are the same nav entry (/explore/).
+  // Hiding it would remove search, so the browse grid is swapped for the
+  // keyword search page instead: the user keeps search, and the endless
+  // unfiltered grid never renders. Hashtag and search routes are untouched;
+  // the request policy still refuses adult terms on them.
+  const SEARCH_PATH = '/explore/search/keyword/?q=';
+  const GRID = /^\/explore\/?$|^\/explore\/(?:people|locations)/i;
+  const REELS = /^\/reels\/?$/i;
+  const currentPath = () => {
+    try { return decodeURIComponent(location.pathname); }
+    catch (_) { return location.pathname; }
+  };
+  const enforce = () => {
+    const path = currentPath();
+    if (GRID.test(path)) {
+      location.replace(location.origin + SEARCH_PATH);
+      return;
+    }
+    if (REELS.test(path) && path !== '/') location.replace(location.origin + '/');
+  };
+
+  // Instagram delivers sponsored posts inside the same GraphQL feed payload as
+  // organic posts, so no network rule can separate them. Measured on a real
+  // feed, these units carry no "Sponsored" text in the DOM at all; what they
+  // do carry is Meta's ad click-through link, which organic posts never use.
+  // That link is the primary signal, and the visible label is kept as a
+  // secondary one for the variants that still render it.
+  const AD_LINK = 'a[href*="/ads/ig_redirect"],a[href*="ig_redirect"]';
+  const AD_LABEL = /(?:^|\n)[ \t]*(?:sponsored|paid partnership[^\n]*|\u092a\u094d\u0930\u093e\u092f\u094b\u091c\u093f\u0924)[ \t]*(?:\n|$)/i;
+  const hideSponsored = () => {
+    let scanned = 0;
+    for (const post of document.querySelectorAll('article')) {
+      if (++scanned > 80) break;
+      if (post.hasAttribute('data-mtk-sponsored')) continue;
+      const sponsored = !!post.querySelector(AD_LINK) ||
+                        AD_LABEL.test((post.innerText || '').slice(0, 240));
+      if (!sponsored) continue;
+      post.setAttribute('data-mtk-sponsored', '');
+      post.style.setProperty('display', 'none', 'important');
+    }
+  };
+
+  for (const name of ['pushState', 'replaceState']) {
+    const original = history[name];
+    if (typeof original !== 'function') continue;
+    history[name] = function(...args) {
+      const result = original.apply(this, args);
+      enforce();
+      hideSponsored();
+      return result;
+    };
+  }
+  addEventListener('popstate', enforce, true);
+  addEventListener('hashchange', enforce, true);
+  // Cheap string check for route changes the app makes without history hooks.
+  let previous = location.pathname;
+  setInterval(() => {
+    if (location.pathname !== previous) {
+      previous = location.pathname;
+      enforce();
+    }
+    hideSponsored();
+  }, 1500);
+
+  // The feed loads more posts on scroll, so sponsored checks run there too,
+  // throttled so fast scrolling cannot flood the renderer.
+  let lastRun = 0;
+  addEventListener('scroll', () => {
+    const now = Date.now();
+    if (now - lastRun < 400) return;
+    lastRun = now;
+    hideSponsored();
+  }, { passive: true });
+
+  enforce();
+  hideSponsored();
+})();
+)JS";
+
 }  // namespace
 
 MtkApp::MtkApp(HINSTANCE instance, int show_command)
@@ -162,7 +254,9 @@ void MtkApp::OnContextCreated(CefRefPtr<CefBrowser>,
                               CefRefPtr<CefFrame> frame,
                               CefRefPtr<CefV8Context>) {
   if (!frame || !frame->IsMain()) return;
-  // Run in the freshly-created page context. The script is intentionally
-  // bounded: no mutation observer and no periodic page-data traversal.
+  // Run in the freshly-created page context. Both scripts are intentionally
+  // bounded and check the hostname themselves: no mutation observer and no
+  // periodic page-data traversal.
   frame->ExecuteJavaScript(kShieldsPageScript, frame->GetURL(), 0);
+  frame->ExecuteJavaScript(kInstagramGuardScript, frame->GetURL(), 0);
 }

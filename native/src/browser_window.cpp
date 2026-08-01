@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <string>
+#include <thread>
 
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
+#include "include/cef_cookie.h"
 #include "include/cef_frame.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
@@ -20,27 +22,51 @@
 #include "preferences.h"
 #include "resource.h"
 #include "session_store.h"
+#include "shields_panel.h"
+#include "updater.h"
 
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"MTKBrowserWindow";
 constexpr char kDefaultHomeUrl[] = "https://www.google.com/?safe=active";
 std::string kHomeUrl = kDefaultHomeUrl;
-constexpr int kTabBarHeight = 46;
-constexpr int kToolbarHeight = 62;
-constexpr int kChromeHeight = kTabBarHeight + kToolbarHeight;
-constexpr int kProgressHeight = 3;
+// Design metrics are authored at 96 DPI and scaled through Scaled() so the
+// chrome stays crisp and correctly sized on 125%, 150% and 200% displays.
+constexpr int kBaseTabBarHeight = 44;
+constexpr int kBaseToolbarHeight = 60;
+constexpr int kBaseProgressHeight = 3;
+int g_dpi = 96;
+
+int Scaled(int value) { return MulDiv(value, g_dpi, 96); }
+int TabBarHeight() { return Scaled(kBaseTabBarHeight); }
+int ToolbarHeight() { return Scaled(kBaseToolbarHeight); }
+int ProgressHeight() { return Scaled(kBaseProgressHeight); }
+int ChromeHeight() { return TabBarHeight() + ToolbarHeight(); }
 constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT_PTR kDownloadSaveTimer = 3;
 constexpr UINT_PTR kSessionSaveTimer = 4;
+// First automatic update check runs shortly after startup so it never competes
+// with loading the first page, then repeats twice a day.
+constexpr UINT_PTR kUpdateStartupTimer = 5;
+constexpr UINT_PTR kUpdatePeriodicTimer = 6;
+constexpr UINT kUpdateStartupDelayMs = 45 * 1000;
+constexpr UINT kUpdatePeriodMs = 12 * 60 * 60 * 1000;
 constexpr UINT kFinalizeCloseMessage = WM_APP + 1;
+constexpr UINT kUpdateResultMessage = WM_APP + 2;
+
+// Result of the worker thread's check, owned by the UI thread once posted.
+mtk::update::Result g_update_result;
 constexpr INT_PTR kBackId = 1001;
 constexpr INT_PTR kForwardId = 1002;
 constexpr INT_PTR kReloadId = 1003;
 constexpr INT_PTR kHomeId = 1004;
 constexpr INT_PTR kAddressId = 1005;
-constexpr INT_PTR kGoId = 1006;
+constexpr INT_PTR kSuggestionsId = 1006;
+// Omnibox autocomplete stays short so it never covers the page.
+constexpr size_t kMaxSuggestions = 8;
+// Bounded closed-tab history for Ctrl+Shift+T.
+constexpr size_t kMaxClosedTabs = 10;
 constexpr INT_PTR kShieldId = 1007;
 constexpr INT_PTR kMenuId = 1008;
 constexpr INT_PTR kFindId = 1009;
@@ -146,6 +172,267 @@ void RefreshHomeUrl() {
   kHomeUrl = decision.allow ? decision.url : kDefaultHomeUrl;
 }
 
+// Reads a password field without leaving the PIN in a long-lived buffer.
+std::wstring TakePinField(HWND dialog, int control) {
+  wchar_t buffer[65]{};
+  const int length = GetDlgItemTextW(dialog, control, buffer,
+                                     static_cast<int>(std::size(buffer)));
+  std::wstring pin(buffer, static_cast<size_t>(std::max(0, length)));
+  SecureZeroMemory(buffer, sizeof(buffer));
+  SetDlgItemTextW(dialog, control, L"");
+  return pin;
+}
+
+void ScrubPin(std::wstring* pin) {
+  if (pin && !pin->empty()) {
+    SecureZeroMemory(pin->data(), pin->size() * sizeof(wchar_t));
+    pin->clear();
+  }
+}
+
+struct PinPromptContext {
+  const wchar_t* message = nullptr;
+  // Wrong attempts are counted per prompt and slowed down, so the short PIN
+  // cannot be brute-forced by rapid retries.
+  int attempts = 0;
+};
+
+INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                     LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      auto* context = reinterpret_cast<PinPromptContext*>(l_param);
+      SetWindowLongPtrW(dialog, GWLP_USERDATA,
+                        static_cast<LONG_PTR>(l_param));
+      SetDlgItemTextW(dialog, IDC_PIN_PROMPT_TEXT,
+                      context && context->message
+                          ? context->message
+                          : L"Enter the parent PIN to continue.");
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        auto* context = reinterpret_cast<PinPromptContext*>(
+            GetWindowLongPtrW(dialog, GWLP_USERDATA));
+        std::wstring pin = TakePinField(dialog, IDC_PIN_PROMPT_VALUE);
+        const bool correct = mtk::preferences::VerifyPin(pin);
+        ScrubPin(&pin);
+        if (correct) {
+          EndDialog(dialog, IDOK);
+          return TRUE;
+        }
+        if (context) ++context->attempts;
+        const int attempts = context ? context->attempts : 1;
+        if (attempts >= 3) Sleep(1500);
+        MessageBoxW(dialog, L"That PIN is not correct.", L"Parent PIN",
+                    MB_OK | MB_ICONWARNING);
+        SetFocus(GetDlgItem(dialog, IDC_PIN_PROMPT_VALUE));
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+// Asks for the parent PIN when one is set. Returns true when access is granted,
+// which is also the case when no PIN has been configured yet.
+bool AuthorizeParentAction(HINSTANCE instance, HWND owner,
+                           const wchar_t* message) {
+  if (!mtk::preferences::PinIsSet()) return true;
+  PinPromptContext context{message, 0};
+  return DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_PIN_PROMPT), owner,
+                         PinPromptDialogProc,
+                         reinterpret_cast<LPARAM>(&context)) == IDOK;
+}
+
+INT_PTR CALLBACK PinSetupDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                    LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      const bool existing = mtk::preferences::PinIsSet();
+      EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_CURRENT), existing);
+      EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_CURRENT_LABEL), existing);
+      EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_REMOVE), existing);
+      if (!existing) {
+        SetDlgItemTextW(dialog, IDC_PIN_SETUP_CURRENT_LABEL,
+                        L"Current PIN (none set yet)");
+      }
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      const bool existing = mtk::preferences::PinIsSet();
+      // Changing or removing a PIN always requires the current one.
+      const auto current_ok = [&](HWND owner) {
+        if (!existing) return true;
+        std::wstring current = TakePinField(dialog, IDC_PIN_SETUP_CURRENT);
+        const bool ok = mtk::preferences::VerifyPin(current);
+        ScrubPin(&current);
+        if (!ok) {
+          MessageBoxW(owner, L"The current PIN is not correct.", L"Parent PIN",
+                      MB_OK | MB_ICONWARNING);
+        }
+        return ok;
+      };
+
+      if (LOWORD(w_param) == IDC_PIN_SETUP_REMOVE) {
+        if (!existing || !current_ok(dialog)) return TRUE;
+        if (MessageBoxW(dialog,
+                        L"Remove the parent PIN?\n\nSafety settings will be "
+                        L"changeable by anyone using this computer.",
+                        L"Remove parent PIN?",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          return TRUE;
+        }
+        mtk::preferences::Values values =
+            mtk::preferences::Store::Get().values();
+        values.pin_salt.clear();
+        values.pin_hash.clear();
+        if (!mtk::preferences::Store::Get().Save(values)) {
+          MessageBoxW(dialog, L"MTK Browser could not remove the PIN.",
+                      L"Parent PIN", MB_OK | MB_ICONERROR);
+          return TRUE;
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+
+      if (LOWORD(w_param) == IDOK) {
+        if (!current_ok(dialog)) return TRUE;
+        std::wstring fresh = TakePinField(dialog, IDC_PIN_SETUP_NEW);
+        std::wstring confirm = TakePinField(dialog, IDC_PIN_SETUP_CONFIRM);
+        const bool too_short = fresh.size() < mtk::preferences::kMinPinLength;
+        const bool mismatch = fresh != confirm;
+        ScrubPin(&confirm);
+        if (too_short) {
+          ScrubPin(&fresh);
+          MessageBoxW(dialog, L"Use a PIN of at least 4 characters.",
+                      L"Parent PIN", MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        if (mismatch) {
+          ScrubPin(&fresh);
+          MessageBoxW(dialog, L"The two new PINs do not match.", L"Parent PIN",
+                      MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        mtk::preferences::Values values =
+            mtk::preferences::Store::Get().values();
+        const bool derived = mtk::preferences::DerivePin(
+            fresh, &values.pin_salt, &values.pin_hash);
+        ScrubPin(&fresh);
+        if (!derived || !mtk::preferences::Store::Get().Save(values)) {
+          MessageBoxW(dialog, L"MTK Browser could not save the PIN.",
+                      L"Parent PIN", MB_OK | MB_ICONERROR);
+          return TRUE;
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+struct ClearDataChoice {
+  bool history = true;
+  bool downloads = true;
+  bool cookies = false;
+  bool cache = true;
+  bool session = false;
+  bool bookmarks = false;
+};
+
+INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                     LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
+      const auto* choice = reinterpret_cast<const ClearDataChoice*>(l_param);
+      if (!choice) return TRUE;
+      // Bookmarks stay unchecked by default: they are saved deliberately and
+      // are not browsing traces.
+      CheckDlgButton(dialog, IDC_CLEAR_HISTORY,
+                     choice->history ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_DOWNLOADS,
+                     choice->downloads ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_COOKIES,
+                     choice->cookies ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_CACHE,
+                     choice->cache ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_SESSION,
+                     choice->session ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_BOOKMARKS,
+                     choice->bookmarks ? BST_CHECKED : BST_UNCHECKED);
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        auto* choice = reinterpret_cast<ClearDataChoice*>(
+            GetWindowLongPtrW(dialog, GWLP_USERDATA));
+        if (choice) {
+          const auto checked = [dialog](int control) {
+            return IsDlgButtonChecked(dialog, control) == BST_CHECKED;
+          };
+          choice->history = checked(IDC_CLEAR_HISTORY);
+          choice->downloads = checked(IDC_CLEAR_DOWNLOADS);
+          choice->cookies = checked(IDC_CLEAR_COOKIES);
+          choice->cache = checked(IDC_CLEAR_CACHE);
+          choice->session = checked(IDC_CLEAR_SESSION);
+          choice->bookmarks = checked(IDC_CLEAR_BOOKMARKS);
+          const bool anything = choice->history || choice->downloads ||
+                                choice->cookies || choice->cache ||
+                                choice->session || choice->bookmarks;
+          if (!anything) {
+            MessageBoxW(dialog, L"Select at least one item to clear.",
+                        L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
+            return TRUE;
+          }
+          if (choice->bookmarks &&
+              MessageBoxW(dialog,
+                          L"Delete all bookmarks as well?\n\nThis cannot be "
+                          L"undone.",
+                          L"Clear browsing data",
+                          MB_YESNO | MB_ICONWARNING) != IDYES) {
+            return TRUE;
+          }
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+void RefreshPinState(HWND dialog) {
+  SetDlgItemTextW(dialog, IDC_SETTINGS_PIN_STATE,
+                  mtk::preferences::PinIsSet()
+                      ? L"A parent PIN is required to open Settings."
+                      : L"No parent PIN. Anyone can change these settings.");
+}
+
 INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                     LPARAM) {
   switch (message) {
@@ -183,9 +470,20 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                            mtk::preferences::DownloadMode::kStandard ? 1 : 0,
                    0);
       SetWindowTheme(downloads, L"Explorer", nullptr);
+      CheckDlgButton(dialog, IDC_SETTINGS_AUTO_UPDATE,
+                     values.auto_update ? BST_CHECKED : BST_UNCHECKED);
+      RefreshPinState(dialog);
       return TRUE;
     }
     case WM_COMMAND:
+      if (LOWORD(w_param) == IDC_SETTINGS_PIN) {
+        DialogBoxParamW(reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(
+                            dialog, GWLP_HINSTANCE)),
+                        MAKEINTRESOURCEW(IDD_PIN_SETUP), dialog,
+                        PinSetupDialogProc, 0);
+        RefreshPinState(dialog);
+        return TRUE;
+      }
       if (LOWORD(w_param) == IDOK) {
         wchar_t home_page[2049]{};
         const int length = GetDlgItemTextW(
@@ -232,6 +530,21 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                          CB_GETCURSEL, 0, 0) == 1
                 ? mtk::preferences::StartupMode::kContinueSession
                 : mtk::preferences::StartupMode::kHomePage;
+        const bool auto_update =
+            IsDlgButtonChecked(dialog, IDC_SETTINGS_AUTO_UPDATE) == BST_CHECKED;
+        // Turning update checks off means security fixes stop arriving, so it
+        // has to be acknowledged rather than toggled silently.
+        if (!auto_update && values.auto_update &&
+            MessageBoxW(dialog,
+                        L"With update checks off, MTK Browser will not receive "
+                        L"security or safety fixes automatically.\n\nTurn them "
+                        L"off anyway?",
+                        L"Turn off update checks?",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          CheckDlgButton(dialog, IDC_SETTINGS_AUTO_UPDATE, BST_CHECKED);
+          return TRUE;
+        }
+        values.auto_update = auto_update;
         if (!mtk::preferences::Store::Get().Save(values)) {
           MessageBoxW(dialog, L"MTK Browser could not save these settings.",
                       L"MTK Browser Settings", MB_OK | MB_ICONERROR);
@@ -589,20 +902,40 @@ INT_PTR CALLBACK DownloadsDialogProc(HWND dialog, UINT message, WPARAM w_param,
   return FALSE;
 }
 
-constexpr int kTabGap = 4;
-constexpr int kTabStripInset = 10;
+constexpr int kBaseTabGap = 6;
+constexpr int kBaseTabStripInset = 10;
+constexpr int kBaseNewTabWidth = 38;
 
-RECT TabRect(size_t index, int width, size_t count) {
-  const int available = std::max(200, width - 96 - kTabStripInset);
-  const int slot = std::clamp(available / static_cast<int>(std::max<size_t>(count, 1)),
-                              132, 248);
-  const int left = kTabStripInset + static_cast<int>(index) * slot;
-  return {left, 7, left + slot - kTabGap, kTabBarHeight};
+// Width reserved at the right of the strip for the new-tab button.
+int TabStripReserve() { return Scaled(96); }
+
+// Per-tab slot width. Tabs stop shrinking at a readable minimum, after which
+// the strip scrolls instead.
+int TabSlotWidth(int width, size_t count) {
+  const int available =
+      std::max(Scaled(200), width - TabStripReserve() - Scaled(kBaseTabStripInset));
+  return std::clamp(available / static_cast<int>(std::max<size_t>(count, 1)),
+                    Scaled(150), Scaled(256));
+}
+
+RECT TabRect(size_t index, int width, size_t count, int scroll = 0) {
+  const int inset = Scaled(kBaseTabStripInset);
+  const int slot = TabSlotWidth(width, count);
+  const int left = inset + static_cast<int>(index) * slot - scroll;
+  return {left, Scaled(6), left + slot - Scaled(kBaseTabGap), TabBarHeight()};
+}
+
+RECT NewTabRect(int width, size_t count, int scroll = 0) {
+  const RECT last = TabRect(count, width, count, scroll);
+  return {last.left + Scaled(2), Scaled(8),
+          last.left + Scaled(kBaseNewTabWidth), TabBarHeight() - Scaled(4)};
 }
 
 RECT TabCloseRect(const RECT& tab) {
   const int center_y = (tab.top + tab.bottom) / 2;
-  return {tab.right - 30, center_y - 11, tab.right - 8, center_y + 11};
+  const int half = Scaled(12);
+  return {tab.right - Scaled(34), center_y - half, tab.right - Scaled(10),
+          center_y + half};
 }
 
 }  // namespace
@@ -611,7 +944,145 @@ BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {
   RefreshHomeUrl();
 }
 
+void BrowserWindow::StartUpdateCheck(bool user_initiated) {
+  if (update_check_running_) return;
+  if (!user_initiated &&
+      !mtk::preferences::Store::Get().values().auto_update) {
+    return;
+  }
+  update_check_running_ = true;
+  update_check_user_initiated_ = user_initiated;
+  HWND window = window_;
+  // The check does network I/O, so it must not run on the UI thread. The worker
+  // only fills a result and posts a message; it never touches browser state.
+  std::thread([window]() {
+    g_update_result = mtk::update::Check();
+    PostMessageW(window, kUpdateResultMessage, 0, 0);
+  }).detach();
+}
+
+void BrowserWindow::HandleUpdateResult() {
+  update_check_running_ = false;
+  const mtk::update::Result result = g_update_result;
+  const bool user_initiated = update_check_user_initiated_;
+  update_check_user_initiated_ = false;
+
+  switch (result.status) {
+    case mtk::update::Status::kUpdateReady: {
+      // The installer has already been signature- and checksum-verified, but it
+      // is still the user who decides when to install.
+      const std::wstring message =
+          result.detail +
+          L"\n\nInstalling closes MTK Browser and runs the verified installer."
+          L"\n\nInstall now?";
+      if (MessageBoxW(window_, message.c_str(), L"MTK Browser update",
+                      MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+        if (mtk::update::LaunchInstaller(result.installer_path)) {
+          PostMessageW(window_, WM_CLOSE, 0, 0);
+        } else {
+          MessageBoxW(window_, L"The update could not be started.",
+                      L"MTK Browser update", MB_OK | MB_ICONERROR);
+        }
+      }
+      break;
+    }
+    case mtk::update::Status::kRejected:
+      // A failed signature is a security event, so it is always surfaced.
+      MessageBoxW(window_, result.detail.c_str(), L"MTK Browser update refused",
+                  MB_OK | MB_ICONWARNING);
+      break;
+    case mtk::update::Status::kUpToDate:
+    case mtk::update::Status::kDisabled:
+    case mtk::update::Status::kCheckFailed:
+      // Background noise stays silent; an explicit check always answers.
+      if (user_initiated) {
+        MessageBoxW(window_, result.detail.c_str(), L"MTK Browser update",
+                    MB_OK | MB_ICONINFORMATION);
+      }
+      break;
+  }
+}
+
+void BrowserWindow::ShowClearDataDialog() {
+  // Erasing history is also how a supervised user would hide activity, so this
+  // sits behind the parent PIN when one has been set.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Clearing browsing data is protected. Enter the parent PIN.")) {
+    return;
+  }
+  ClearDataChoice choice;
+  if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_CLEAR_DATA), window_,
+                      ClearDataDialogProc,
+                      reinterpret_cast<LPARAM>(&choice)) != IDOK) {
+    return;
+  }
+
+  std::wstring report;
+  auto& library = mtk::library::Store::Get();
+  bool library_changed = false;
+  if (choice.history && library.ClearHistory()) {
+    library_changed = true;
+    report += L"\n• Browsing history removed";
+  }
+  if (choice.bookmarks && library.ClearBookmarks()) {
+    library_changed = true;
+    report += L"\n• Bookmarks removed";
+  }
+  if (library_changed && !library.Flush()) {
+    MessageBoxW(window_,
+                L"MTK Browser could not save the cleared history to disk.",
+                L"Clear browsing data", MB_OK | MB_ICONERROR);
+  }
+
+  if (choice.downloads) {
+    // Only finished rows are removed; a running transfer keeps its entry so it
+    // can still be paused or canceled.
+    const size_t removed = mtk::downloads::Manager::Get().ClearFinished();
+    mtk::downloads::Manager::Get().Flush();
+    report += L"\n• Download history cleared (" + std::to_wstring(removed) +
+              L" finished entries; files on disk kept)";
+    UpdateControls();
+  }
+
+  if (choice.cookies) {
+    if (auto manager = CefCookieManager::GetGlobalManager(nullptr);
+        manager && manager->DeleteCookies(CefString(), CefString(), nullptr)) {
+      report += L"\n• Cookies and site data cleared";
+    } else {
+      report += L"\n• Cookies could not be cleared";
+    }
+  }
+
+  if (choice.cache) {
+    // CEF exposes no direct cache-clearing API, so the DevTools command is used
+    // through the active browser. It applies to the whole request context.
+    if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+      tab->client->browser()->GetHost()->ExecuteDevToolsMethod(
+          0, "Network.clearBrowserCache", nullptr);
+      report += L"\n• Cached files and images cleared";
+    } else {
+      report += L"\n• Cache could not be cleared: no page is open";
+    }
+  }
+
+  if (choice.session) {
+    report += mtk::session::Clear() ? L"\n• Saved tabs from the last session removed"
+                                    : L"\n• No saved session to remove";
+  }
+
+  MessageBoxW(window_, (L"Clear browsing data finished." + report).c_str(),
+              L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
+}
+
 void BrowserWindow::ShowSettingsDialog() {
+  // Settings hold the safety-relevant choices (home page, download mode), so
+  // they sit behind the parent PIN once one has been set.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Settings are protected. Enter the parent PIN to open them.")) {
+    return;
+  }
   if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SETTINGS), window_,
                       SettingsDialogProc, 0) == IDOK &&
       mtk::preferences::Store::Get().values().startup_mode ==
@@ -641,6 +1112,18 @@ void BrowserWindow::ShowBrowserMenu() {
           : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tCtrl+J";
   AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(popup,
+              MF_STRING | (closed_tab_urls_.empty() ? MF_GRAYED : MF_ENABLED),
+              IDM_REOPEN_TAB, L"Reopen closed tab\tCtrl+Shift+T");
+  AppendMenuW(popup, MF_STRING, IDM_FULL_SCREEN,
+              full_screen_ ? L"Exit full screen\tF11" : L"Full screen\tF11");
+  AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(popup, MF_STRING, IDM_CLEAR_DATA, L"Clear browsing data...");
+  AppendMenuW(popup,
+              MF_STRING | (update_check_running_ ? MF_GRAYED : MF_ENABLED),
+              IDM_CHECK_UPDATES,
+              update_check_running_ ? L"Checking for updates..."
+                                    : L"Check for updates...");
   AppendMenuW(popup, MF_STRING, IDM_SETTINGS, L"Settings");
   POINT point{};
   GetCursorPos(&point);
@@ -774,6 +1257,11 @@ bool BrowserWindow::Create(int show_command) {
   DwmSetWindowAttribute(window_, 20, &dark, sizeof(dark));
   ShowWindow(window_, show_command);
   UpdateWindow(window_);
+  // Any installer left over from a previous update is removed before a new
+  // check can download another one.
+  mtk::update::CleanupDownloads();
+  SetTimer(window_, kUpdateStartupTimer, kUpdateStartupDelayMs, nullptr);
+  SetTimer(window_, kUpdatePeriodicTimer, kUpdatePeriodMs, nullptr);
   return true;
 }
 
@@ -796,9 +1284,24 @@ LRESULT CALLBACK BrowserWindow::AddressProc(HWND window, UINT message,
                                              WPARAM w_param, LPARAM l_param,
                                              UINT_PTR, DWORD_PTR reference_data) {
   auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  // Focus moving into the suggestion list is part of picking a row, so the list
+  // must survive that; any other focus loss closes it.
+  if (message == WM_KILLFOCUS && self &&
+      reinterpret_cast<HWND>(w_param) != self->suggestions_) {
+    self->HideSuggestions();
+  }
   if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && self) {
     if (w_param == VK_RETURN) {
-      self->NavigateFromOmnibox();
+      // A highlighted suggestion wins over the typed text.
+      if (!self->AcceptSuggestion()) self->NavigateFromOmnibox();
+      return 0;
+    }
+    if (w_param == VK_DOWN || w_param == VK_UP) {
+      self->MoveSuggestion(w_param == VK_DOWN ? 1 : -1);
+      return 0;
+    }
+    if (w_param == VK_ESCAPE) {
+      self->HideSuggestions();
       return 0;
     }
     const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -836,9 +1339,123 @@ LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
   return DefSubclassProc(window, message, w_param, l_param);
 }
 
+int BrowserWindow::PageTop() const { return full_screen_ ? 0 : ChromeHeight(); }
+
+int BrowserWindow::MaxTabScroll(int width) const {
+  if (tabs_.empty()) return 0;
+  const int slot = TabSlotWidth(width, tabs_.size());
+  const int content = Scaled(kBaseTabStripInset) +
+                      static_cast<int>(tabs_.size()) * slot +
+                      Scaled(kBaseNewTabWidth);
+  return std::max(0, content - (width - TabStripReserve()));
+}
+
+void BrowserWindow::ScrollTabs(int delta) {
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int limit = MaxTabScroll(static_cast<int>(client.right));
+  const int updated = std::clamp(tab_scroll_ + delta, 0, limit);
+  if (updated == tab_scroll_) return;
+  tab_scroll_ = updated;
+  RECT strip{0, 0, client.right, TabBarHeight()};
+  InvalidateRect(window_, &strip, FALSE);
+}
+
+void BrowserWindow::EnsureActiveTabVisible() {
+  if (tabs_.empty()) return;
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int width = static_cast<int>(client.right);
+  const int limit = MaxTabScroll(width);
+  if (limit == 0) {
+    if (tab_scroll_ != 0) ScrollTabs(-tab_scroll_);
+    return;
+  }
+  const int slot = TabSlotWidth(width, tabs_.size());
+  const int left = Scaled(kBaseTabStripInset) +
+                   static_cast<int>(active_tab_) * slot;
+  const int visible_right = width - TabStripReserve();
+  if (left - tab_scroll_ < Scaled(kBaseTabStripInset)) {
+    ScrollTabs(left - tab_scroll_ - Scaled(kBaseTabStripInset));
+  } else if (left + slot - tab_scroll_ > visible_right) {
+    ScrollTabs(left + slot - tab_scroll_ - visible_right);
+  }
+}
+
+void BrowserWindow::ToggleFullScreen() {
+  if (!window_) return;
+  if (!full_screen_) {
+    saved_placement_ = {};
+    saved_placement_.length = sizeof(saved_placement_);
+    if (!GetWindowPlacement(window_, &saved_placement_)) return;
+    HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return;
+    saved_style_ = GetWindowLongPtrW(window_, GWL_STYLE);
+    full_screen_ = true;
+    // The chrome is only hidden, so every tab, download and find state stays
+    // exactly as it was when full screen is left again.
+    for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
+                         menu_, address_, find_, find_status_, find_previous_,
+                         find_next_, find_close_, suggestions_}) {
+      if (control) ShowWindow(control, SW_HIDE);
+    }
+    SetWindowLongPtrW(window_, GWL_STYLE,
+                      (saved_style_ & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW)) |
+                          static_cast<LONG_PTR>(WS_POPUP));
+    SetWindowPos(window_, HWND_TOP, info.rcMonitor.left, info.rcMonitor.top,
+                 info.rcMonitor.right - info.rcMonitor.left,
+                 info.rcMonitor.bottom - info.rcMonitor.top,
+                 SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+  } else {
+    full_screen_ = false;
+    SetWindowLongPtrW(window_, GWL_STYLE, saved_style_);
+    SetWindowPos(window_, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_NOOWNERZORDER);
+    SetWindowPlacement(window_, &saved_placement_);
+    for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
+                         menu_, address_}) {
+      if (control) ShowWindow(control, SW_SHOW);
+    }
+    if (find_visible_) {
+      ShowWindow(address_, SW_HIDE);
+      for (HWND control : {find_, find_status_, find_previous_, find_next_,
+                           find_close_}) {
+        if (control) ShowWindow(control, SW_SHOW);
+      }
+    }
+  }
+  Layout();
+  InvalidateRect(window_, nullptr, TRUE);
+}
+
+bool BrowserWindow::ReopenClosedTab() {
+  while (!closed_tab_urls_.empty()) {
+    const std::string url = closed_tab_urls_.back();
+    closed_tab_urls_.pop_back();
+    // Re-check the address: the safety policy may have changed since it closed.
+    const auto decision = mtk::policy::EvaluateNavigation(url);
+    if (decision.allow && CreateTab(decision.url)) {
+      UpdateControls();
+      return true;
+    }
+  }
+  return false;
+}
+
 bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
                                    bool shift) {
   auto* tab = ActiveTab();
+  if (!control && !alt && virtual_key == VK_F11) {
+    ToggleFullScreen();
+    return true;
+  }
+  if (!control && !alt && virtual_key == VK_ESCAPE && full_screen_) {
+    ToggleFullScreen();
+    return true;
+  }
   if (!control && !alt && virtual_key == VK_ESCAPE && find_visible_) {
     HideFindBar();
     return true;
@@ -873,7 +1490,8 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     return true;
   }
   if (control && !alt && virtual_key == 'T') {
-    CreateTab(kHomeUrl);
+    if (shift) ReopenClosedTab();
+    else CreateTab(kHomeUrl);
     return true;
   }
   if (control && !alt && virtual_key == 'J') {
@@ -912,16 +1530,47 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
   return false;
 }
 
-void BrowserWindow::CreateControls() {
+void BrowserWindow::CreateFonts() {
   const auto make_font = [](int height, int weight, const wchar_t* face) {
-    return CreateFontW(height, 0, 0, 0, weight, FALSE, FALSE, FALSE,
+    return CreateFontW(Scaled(height), 0, 0, 0, weight, FALSE, FALSE, FALSE,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                        CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
   };
+  for (HFONT* font : {&ui_font_, &tab_font_, &glyph_font_, &badge_font_}) {
+    if (*font) {
+      DeleteObject(*font);
+      *font = nullptr;
+    }
+  }
   ui_font_ = make_font(-16, FW_MEDIUM, L"Segoe UI Variable");
-  tab_font_ = make_font(-14, FW_SEMIBOLD, L"Segoe UI Variable");
-  glyph_font_ = make_font(-17, FW_NORMAL, L"Segoe UI Symbol");
+  tab_font_ = make_font(-15, FW_SEMIBOLD, L"Segoe UI Variable");
+  glyph_font_ = make_font(-18, FW_NORMAL, L"Segoe UI Symbol");
   badge_font_ = make_font(-11, FW_BOLD, L"Segoe UI");
+}
+
+void BrowserWindow::ApplyDpi(UINT dpi) {
+  g_dpi = static_cast<int>(dpi == 0 ? 96 : dpi);
+  CreateFonts();
+  for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
+                       menu_, address_, suggestions_,
+                       find_, find_status_, find_previous_, find_next_,
+                       find_close_}) {
+    if (control) {
+      SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
+    }
+  }
+  if (address_) {
+    SendMessageW(address_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(Scaled(6), Scaled(10)));
+  }
+  Layout();
+  InvalidateRect(window_, nullptr, TRUE);
+}
+
+void BrowserWindow::CreateControls() {
+  g_dpi = static_cast<int>(GetDpiForWindow(window_));
+  if (g_dpi <= 0) g_dpi = 96;
+  CreateFonts();
   edit_brush_ = CreateSolidBrush(kControlColor);
   const DWORD button_style = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
   back_ = CreateWindowW(L"BUTTON", L"←", button_style, 0, 0, 0, 0, window_,
@@ -942,6 +1591,13 @@ void BrowserWindow::CreateControls() {
                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                            0, 0, 0, 0, window_,
                            reinterpret_cast<HMENU>(kAddressId), instance_, nullptr);
+  // Autocomplete list. It is a child of the toolbar window and is only shown
+  // while the omnibox has matches, so it never sits over the page otherwise.
+  suggestions_ = CreateWindowW(
+      L"LISTBOX", L"",
+      WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+      0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kSuggestionsId), instance_,
+      nullptr);
   find_ = CreateWindowW(L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
                         0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kFindId), instance_, nullptr);
@@ -956,15 +1612,14 @@ void BrowserWindow::CreateControls() {
   find_close_ = CreateWindowW(L"BUTTON", L"×", button_style & ~WS_VISIBLE,
                               0, 0, 0, 0, window_,
                               reinterpret_cast<HMENU>(kFindCloseId), instance_, nullptr);
-  go_ = CreateWindowW(L"BUTTON", L"Go", button_style, 0, 0, 0, 0, window_,
-                      reinterpret_cast<HMENU>(kGoId), instance_, nullptr);
   for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
-                       menu_, address_,
-                       find_, find_status_, find_previous_, find_next_, find_close_, go_}) {
+                       menu_, address_, suggestions_,
+                       find_, find_status_, find_previous_, find_next_, find_close_}) {
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
   }
+  SetWindowTheme(suggestions_, L"Explorer", nullptr);
   SendMessageW(address_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-               MAKELPARAM(12, 12));
+               MAKELPARAM(Scaled(6), Scaled(10)));
   SetWindowTheme(address_, L"DarkMode_CFD", nullptr);
   SetWindowTheme(find_, L"DarkMode_CFD", nullptr);
   SetWindowSubclass(address_, AddressProc, 1,
@@ -992,9 +1647,9 @@ bool BrowserWindow::CreateTab(const std::string& initial_url) {
   CefWindowInfo info;
   info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   info.SetAsChild(
-      window_, CefRect(0, kChromeHeight, static_cast<int>(client.right),
+      window_, CefRect(0, PageTop(), static_cast<int>(client.right),
                        std::max(1, static_cast<int>(client.bottom) -
-                                       kChromeHeight)));
+                                       PageTop())));
   CefBrowserSettings settings;
   if (!CefBrowserHost::CreateBrowser(info, tabs_.back().client, initial_url,
                                      settings, nullptr, nullptr)) {
@@ -1005,6 +1660,8 @@ bool BrowserWindow::CreateTab(const std::string& initial_url) {
     }
     return false;
   }
+  // A tab created while the strip is already full must be scrolled into view.
+  EnsureActiveTabVisible();
   InvalidateRect(window_, nullptr, FALSE);
   return true;
 }
@@ -1016,7 +1673,6 @@ void BrowserWindow::ShowFindBar() {
     active_find_identifier_ = -1;
     SetWindowTextW(find_status_, L"Type to find");
     ShowWindow(address_, SW_HIDE);
-    ShowWindow(go_, SW_HIDE);
     for (HWND control : {find_, find_status_, find_previous_, find_next_, find_close_}) {
       ShowWindow(control, SW_SHOW);
     }
@@ -1039,7 +1695,6 @@ void BrowserWindow::HideFindBar() {
     ShowWindow(control, SW_HIDE);
   }
   ShowWindow(address_, SW_SHOW);
-  ShowWindow(go_, SW_SHOW);
   Layout();
 }
 
@@ -1084,9 +1739,25 @@ void BrowserWindow::SelectTab(size_t index) {
     ShowWindow(active->client->browser()->GetHost()->GetWindowHandle(), SW_SHOW);
     SetFocus(active->client->browser()->GetHost()->GetWindowHandle());
   }
+  EnsureActiveTabVisible();
   UpdateControls();
   InvalidateRect(window_, nullptr, FALSE);
   ScheduleSessionSave();
+}
+
+void BrowserWindow::RememberClosedTab(const Tab& tab) {
+  // Only real, still-permitted web addresses are worth reopening. Blocked and
+  // internal pages are dropped so Ctrl+Shift+T can never restore them.
+  const std::string url = WideToUtf8(tab.url);
+  const auto decision = mtk::policy::EvaluateNavigation(url);
+  if (!decision.allow || (!decision.url.starts_with("https://") &&
+                          !decision.url.starts_with("http://"))) {
+    return;
+  }
+  closed_tab_urls_.push_back(decision.url);
+  if (closed_tab_urls_.size() > kMaxClosedTabs) {
+    closed_tab_urls_.erase(closed_tab_urls_.begin());
+  }
 }
 
 void BrowserWindow::CloseTab(size_t index) {
@@ -1096,6 +1767,7 @@ void BrowserWindow::CloseTab(size_t index) {
     PostMessageW(window_, WM_CLOSE, 0, 0);
     return;
   }
+  RememberClosedTab(tabs_[index]);
   auto closing = tabs_[index].client;
   // Remove the tab from the strip now, but retain its client until
   // OnBeforeClose so parent shutdown cannot outrun CEF's lifecycle.
@@ -1108,12 +1780,132 @@ void BrowserWindow::CloseTab(size_t index) {
     ResizeBrowser(*active);
     ShowWindow(active->client->browser()->GetHost()->GetWindowHandle(), SW_SHOW);
   }
+  EnsureActiveTabVisible();
   UpdateControls();
   InvalidateRect(window_, nullptr, FALSE);
   ScheduleSessionSave();
 }
 
+void BrowserWindow::LayoutSuggestions() {
+  if (!suggestions_ || !IsWindowVisible(suggestions_)) return;
+  const int count = static_cast<int>(suggestion_urls_.size());
+  if (count == 0) return;
+  RECT box{};
+  GetWindowRect(address_, &box);
+  MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&box), 2);
+  const int row = static_cast<int>(
+      SendMessageW(suggestions_, LB_GETITEMHEIGHT, 0, 0));
+  const int height = std::max(row, row * count) + Scaled(4);
+  const int left = static_cast<int>(box.left) - Scaled(30);
+  const int width =
+      std::max(Scaled(220), static_cast<int>(box.right) - left + Scaled(24));
+  MoveWindow(suggestions_, left, ChromeHeight(), width, height, TRUE);
+}
+
+void BrowserWindow::HideSuggestions() {
+  if (!suggestions_) return;
+  suggestion_urls_.clear();
+  SendMessageW(suggestions_, LB_RESETCONTENT, 0, 0);
+  ShowWindow(suggestions_, SW_HIDE);
+}
+
+void BrowserWindow::RefreshSuggestions() {
+  if (!suggestions_ || suppress_suggestions_) return;
+  const int length = GetWindowTextLengthW(address_);
+  std::wstring input(static_cast<size_t>(length) + 1, L'\0');
+  GetWindowTextW(address_, input.data(), length + 1);
+  input.resize(static_cast<size_t>(length));
+
+  std::wstring needle = input;
+  std::transform(needle.begin(), needle.end(), needle.begin(), towlower);
+  if (needle.size() < 2) {
+    HideSuggestions();
+    return;
+  }
+
+  suggestion_urls_.clear();
+  SendMessageW(suggestions_, LB_RESETCONTENT, 0, 0);
+  // Bookmarks are offered before history because they were saved on purpose.
+  const auto consider = [&](const std::vector<mtk::library::Entry>& entries,
+                            const wchar_t* tag) {
+    for (const auto& entry : entries) {
+      if (suggestion_urls_.size() >= kMaxSuggestions) return;
+      std::wstring url = Utf8ToWide(entry.url);
+      std::wstring haystack = url + L" " + entry.title;
+      std::transform(haystack.begin(), haystack.end(), haystack.begin(), towlower);
+      if (haystack.find(needle) == std::wstring::npos) continue;
+      if (std::find(suggestion_urls_.begin(), suggestion_urls_.end(),
+                    entry.url) != suggestion_urls_.end()) {
+        continue;
+      }
+      // Never suggest something the safety policy would refuse anyway.
+      const auto decision = mtk::policy::EvaluateNavigation(entry.url);
+      if (!decision.allow) continue;
+      std::wstring label = tag;
+      label += entry.title.empty() ? url : entry.title + L"  —  " + url;
+      std::replace_if(label.begin(), label.end(), [](wchar_t character) {
+        return character == L'\r' || character == L'\n' || character == L'\t';
+      }, L' ');
+      suggestion_urls_.push_back(decision.url);
+      SendMessageW(suggestions_, LB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(label.c_str()));
+    }
+  };
+  consider(mtk::library::Store::Get().bookmarks(), L"★  ");
+  consider(mtk::library::Store::Get().history(), L"🕘  ");
+
+  if (suggestion_urls_.empty()) {
+    HideSuggestions();
+    return;
+  }
+  SendMessageW(suggestions_, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+  ShowWindow(suggestions_, SW_SHOWNOACTIVATE);
+  SetWindowPos(suggestions_, HWND_TOP, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  LayoutSuggestions();
+}
+
+void BrowserWindow::MoveSuggestion(int delta) {
+  if (!suggestions_ || !IsWindowVisible(suggestions_) ||
+      suggestion_urls_.empty()) {
+    return;
+  }
+  const int count = static_cast<int>(suggestion_urls_.size());
+  const int current =
+      static_cast<int>(SendMessageW(suggestions_, LB_GETCURSEL, 0, 0));
+  int next = current < 0 ? (delta > 0 ? 0 : count - 1) : current + delta;
+  next = std::clamp(next, 0, count - 1);
+  SendMessageW(suggestions_, LB_SETCURSEL, static_cast<WPARAM>(next), 0);
+}
+
+bool BrowserWindow::AcceptSuggestion() {
+  if (!suggestions_ || !IsWindowVisible(suggestions_)) return false;
+  const int selected =
+      static_cast<int>(SendMessageW(suggestions_, LB_GETCURSEL, 0, 0));
+  if (selected < 0 || selected >= static_cast<int>(suggestion_urls_.size())) {
+    return false;
+  }
+  const std::string url = suggestion_urls_[static_cast<size_t>(selected)];
+  HideSuggestions();
+  // The stored address is re-checked here: the list may have been built before
+  // the policy or filter list changed.
+  const auto decision = mtk::policy::EvaluateNavigation(url);
+  if (!decision.allow) {
+    MessageBoxW(window_, decision.reason.c_str(),
+                L"MTK Browser blocked this link", MB_OK | MB_ICONWARNING);
+    return true;
+  }
+  suppress_suggestions_ = true;
+  SetWindowTextW(address_, Utf8ToWide(decision.url).c_str());
+  suppress_suggestions_ = false;
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(decision.url);
+  }
+  return true;
+}
+
 void BrowserWindow::NavigateFromOmnibox() {
+  HideSuggestions();
   const int length = GetWindowTextLengthW(address_);
   std::wstring input(static_cast<size_t>(length) + 1, L'\0');
   GetWindowTextW(address_, input.data(), length + 1);
@@ -1132,33 +1924,57 @@ void BrowserWindow::NavigateFromOmnibox() {
 void BrowserWindow::Layout() {
   RECT client{};
   GetClientRect(window_, &client);
+  // In full screen the chrome is hidden, so only the page is laid out.
+  if (full_screen_) {
+    for (auto& tab : tabs_) ResizeBrowser(tab);
+    return;
+  }
   const int width = client.right;
-  const int button = 36;
-  const int y = kTabBarHeight + (kToolbarHeight - kProgressHeight - button) / 2;
-  int x = 12;
+  const int button = Scaled(38);
+  const int gap = Scaled(2);
+  const int edge = Scaled(10);
+  const int y = TabBarHeight() +
+                (ToolbarHeight() - ProgressHeight() - button) / 2;
+  int x = edge;
   for (HWND control : {back_, forward_, reload_, home_}) {
     MoveWindow(control, x, y, button, button, TRUE);
-    x += button + 4;
+    x += button + gap;
   }
-  MoveWindow(shield_, x + 6, y, button + 6, button, TRUE);
-  x += button + 20;
+  MoveWindow(shield_, x + Scaled(4), y, button + Scaled(8), button, TRUE);
+  x += button + Scaled(20);
 
-  MoveWindow(downloads_, width - 92, y, button, button, TRUE);
-  MoveWindow(menu_, width - 50, y, button, button, TRUE);
+  // Trailing toolbar actions, laid out from the right edge.
+  const int menu_x = width - edge - button;
+  const int downloads_x = menu_x - button - gap;
+  MoveWindow(downloads_, downloads_x, y, button, button, TRUE);
+  MoveWindow(menu_, menu_x, y, button, button, TRUE);
+
+  // The editable field sits inside the painted omnibox pill.
+  const int field_height = Scaled(22);
+  const int field_y = y + (button - field_height) / 2;
+  const int field_inset = Scaled(30);
   if (find_visible_) {
-    const int status_x = width - 290;
-    MoveWindow(find_, x + 22, y + 8,
-               std::max(120, status_x - x - 30), 21, TRUE);
-    MoveWindow(find_status_, status_x, y + 8, 82, 21, TRUE);
-    MoveWindow(find_previous_, width - 200, y, 30, button, TRUE);
-    MoveWindow(find_next_, width - 166, y, 30, button, TRUE);
-    MoveWindow(find_close_, width - 132, y, 30, button, TRUE);
+    const int find_close_x = downloads_x - button - Scaled(8);
+    const int find_next_x = find_close_x - button - gap;
+    const int find_previous_x = find_next_x - button - gap;
+    const int status_width = Scaled(84);
+    const int status_x = find_previous_x - status_width - Scaled(10);
+    MoveWindow(find_, x + field_inset, field_y,
+               std::max(Scaled(120), status_x - x - field_inset - Scaled(10)),
+               field_height, TRUE);
+    MoveWindow(find_status_, status_x, field_y, status_width, field_height, TRUE);
+    MoveWindow(find_previous_, find_previous_x, y, button, button, TRUE);
+    MoveWindow(find_next_, find_next_x, y, button, button, TRUE);
+    MoveWindow(find_close_, find_close_x, y, button, button, TRUE);
   } else {
-    const int right_space = 174;
-    const int omnibox_width = std::max(120, width - x - right_space);
-    MoveWindow(address_, x + 22, y + 8, omnibox_width - 34, 21, TRUE);
-    MoveWindow(go_, width - 160, y, 56, button, TRUE);
+    // No Go button: pressing Enter navigates, like every mainstream browser.
+    const int omnibox_right = downloads_x - Scaled(12);
+    const int omnibox_width =
+        std::max(Scaled(140), omnibox_right - x - field_inset);
+    MoveWindow(address_, x + field_inset, field_y, omnibox_width, field_height,
+               TRUE);
   }
+  LayoutSuggestions();
   for (auto& tab : tabs_) ResizeBrowser(tab);
 }
 
@@ -1167,8 +1983,8 @@ void BrowserWindow::ResizeBrowser(Tab& tab) {
   RECT client{};
   GetClientRect(window_, &client);
   HWND browser = tab.client->browser()->GetHost()->GetWindowHandle();
-  MoveWindow(browser, 0, kChromeHeight, static_cast<int>(client.right),
-             std::max(1, static_cast<int>(client.bottom) - kChromeHeight),
+  MoveWindow(browser, 0, PageTop(), static_cast<int>(client.right),
+             std::max(1, static_cast<int>(client.bottom) - PageTop()),
              TRUE);
   tab.client->browser()->GetHost()->WasResized();
 }
@@ -1192,7 +2008,10 @@ void BrowserWindow::UpdateControls() {
   }
 
   if (tab && GetFocus() != address_ && !tab->url.starts_with(L"data:")) {
+    // Writing the committed address must not look like the user typing.
+    suppress_suggestions_ = true;
     SetWindowTextW(address_, tab->url.c_str());
+    suppress_suggestions_ = false;
   }
   const std::wstring title = tab && !tab->title.empty() ? tab->title : L"MTK Browser";
   SetWindowTextW(window_, (title + L" — MTK Browser").c_str());
@@ -1202,42 +2021,46 @@ void BrowserWindow::UpdateControls() {
 void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
   SetBkMode(dc, TRANSPARENT);
   for (size_t index = 0; index < tabs_.size(); ++index) {
-    const RECT rect = TabRect(index, client.right, tabs_.size());
+    const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
     const bool active = index == active_tab_;
     const bool hovered = index == hovered_tab_;
 
+    const int radius = Scaled(14);
     if (active) {
       RECT body = rect;
-      FillRounded(dc, body, 12, kActiveTabBottom);
-      RECT sheen{rect.left, rect.top, rect.right, rect.top + (rect.bottom - rect.top) / 2};
-      FillRounded(dc, sheen, 12, kActiveTabTop);
-      RECT foot{rect.left, rect.bottom - 12, rect.right, rect.bottom};
+      FillRounded(dc, body, radius, kActiveTabBottom);
+      RECT sheen{rect.left, rect.top, rect.right,
+                 rect.top + (rect.bottom - rect.top) / 2};
+      FillRounded(dc, sheen, radius, kActiveTabTop);
+      RECT foot{rect.left, rect.bottom - radius, rect.right, rect.bottom};
       HBRUSH brush = CreateSolidBrush(kActiveTabBottom);
       FillRect(dc, &foot, brush);
       DeleteObject(brush);
-      RECT accent{rect.left + 12, rect.top, rect.right - 12, rect.top + 2};
-      FillRounded(dc, accent, 2, kAccentColor);
+      RECT accent{rect.left + radius, rect.top, rect.right - radius,
+                  rect.top + Scaled(2)};
+      FillRounded(dc, accent, Scaled(2), kAccentColor);
     } else if (hovered) {
-      FillRounded(dc, rect, 12, kHoverTabColor);
+      FillRounded(dc, rect, radius, kHoverTabColor);
     }
 
-    const int dot_x = rect.left + 18;
+    const int dot_x = rect.left + Scaled(18);
     const int dot_y = (rect.top + rect.bottom) / 2;
-    FillCircle(dc, dot_x, dot_y, 4,
+    FillCircle(dc, dot_x, dot_y, Scaled(4),
                tabs_[index].loading ? kAccentSoftColor
                                     : (active ? kAccentColor : kDisabledColor));
 
     SelectObject(dc, tab_font_);
     SetTextColor(dc, active ? kTextColor : kMutedColor);
     RECT text = rect;
-    text.left = dot_x + 12;
-    text.right = rect.right - 34;
+    text.left = dot_x + Scaled(12);
+    text.right = rect.right - Scaled(38);
     DrawTextW(dc, tabs_[index].title.c_str(), -1, &text,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     const RECT close = TabCloseRect(rect);
     if (hovered && hovered_tab_close_) {
-      FillRounded(dc, close, 11, kControlHoverColor);
+      FillRounded(dc, close, (close.bottom - close.top) / 2,
+                  kControlHoverColor);
     }
     SelectObject(dc, glyph_font_);
     SetTextColor(dc, hovered || active ? kTextColor : kDisabledColor);
@@ -1245,46 +2068,51 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
               DT_SINGLELINE | DT_CENTER | DT_VCENTER);
   }
 
-  const RECT last = TabRect(tabs_.size(), client.right, tabs_.size());
-  RECT plus{last.left + 2, 11, last.left + 36, kTabBarHeight - 4};
-  if (hovered_new_tab_) FillRounded(dc, plus, 10, kControlHoverColor);
+  RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
+  if (hovered_new_tab_) FillRounded(dc, plus, Scaled(10), kControlHoverColor);
   SelectObject(dc, glyph_font_);
   SetTextColor(dc, hovered_new_tab_ ? kTextColor : kMutedColor);
   DrawTextW(dc, L"+", -1, &plus, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 }
 
 void BrowserWindow::PaintOmniboxFrame(HDC dc) {
+  HWND field = find_visible_ ? find_ : address_;
   RECT box{};
-  GetWindowRect(address_, &box);
+  GetWindowRect(field, &box);
   MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&box), 2);
-  InflateRect(&box, 12, 9);
+  InflateRect(&box, Scaled(30), Scaled(9));
 
-  const bool focused = GetFocus() == address_;
-  FillRounded(dc, box, 19, kControlColor);
-  StrokeRounded(dc, box, 19, focused ? kAccentColor : kBorderColor, focused ? 2 : 1);
+  const bool focused = GetFocus() == field;
+  const int radius = (box.bottom - box.top) / 2;
+  FillRounded(dc, box, radius, kControlColor);
+  StrokeRounded(dc, box, radius, focused ? kAccentColor : kBorderColor,
+                focused ? Scaled(2) : 1);
 
   auto* tab = ActiveTab();
   const bool secure = tab && tab->url.starts_with(L"https://");
   SelectObject(dc, glyph_font_);
   SetBkMode(dc, TRANSPARENT);
-  SetTextColor(dc, secure ? kShieldColor : kMutedColor);
-  RECT lock{box.left + 12, box.top, box.left + 34, box.bottom};
-  DrawTextW(dc, secure ? L"\U0001F512" : L"\u26A0", -1, &lock,
-            DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+  SetTextColor(dc, find_visible_ ? kMutedColor
+                                 : (secure ? kShieldColor : kMutedColor));
+  RECT leading{box.left + Scaled(6), box.top, box.left + Scaled(30), box.bottom};
+  DrawTextW(dc,
+            find_visible_ ? L"\U0001F50D"
+                          : (secure ? L"\U0001F512" : L"\u26A0"),
+            -1, &leading, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 }
 
 void BrowserWindow::PaintProgress(HDC dc, const RECT& client) {
   if (!progress_active_) return;
-  const int track_y = kChromeHeight - kProgressHeight;
-  RECT track{0, track_y, client.right, kChromeHeight};
+  const int track_y = ChromeHeight() - ProgressHeight();
+  RECT track{0, track_y, client.right, ChromeHeight()};
   HBRUSH brush = CreateSolidBrush(kControlColor);
   FillRect(dc, &track, brush);
   DeleteObject(brush);
 
   const int span = std::max(120, static_cast<int>(client.right) / 4);
   const int travel = static_cast<int>(client.right) + span;
-  const int offset = (progress_phase_ * 24) % std::max(1, travel);
-  RECT bar{offset - span, track_y, offset, kChromeHeight};
+  const int offset = (progress_phase_ * Scaled(24)) % std::max(1, travel);
+  RECT bar{offset - span, track_y, offset, ChromeHeight()};
   bar.left = std::max<LONG>(0, bar.left);
   bar.right = std::min<LONG>(client.right, bar.right);
   if (bar.right > bar.left) {
@@ -1297,8 +2125,8 @@ void BrowserWindow::PaintProgress(HDC dc, const RECT& client) {
 void BrowserWindow::Paint(HDC dc) {
   RECT client{};
   GetClientRect(window_, &client);
-  RECT tab_bar{0, 0, client.right, kTabBarHeight};
-  RECT toolbar{0, kTabBarHeight, client.right, kChromeHeight};
+  RECT tab_bar{0, 0, client.right, TabBarHeight()};
+  RECT toolbar{0, TabBarHeight(), client.right, ChromeHeight()};
   FillGradient(dc, tab_bar, kTabBarTop, kTabBarBottom);
   FillGradient(dc, toolbar, kToolbarTop, kToolbarBottom);
 
@@ -1316,23 +2144,11 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
   FillGradient(item.hDC, bounds, kToolbarTop, kToolbarBottom);
   SetBkMode(item.hDC, TRANSPARENT);
 
-  if (item.CtlID == kGoId) {
-    RECT pill = bounds;
-    InflateRect(&pill, -2, -6);
-    FillRounded(item.hDC, pill, (pill.bottom - pill.top) / 2,
-                pressed ? kAccentSoftColor : kAccentColor);
-    SelectObject(item.hDC, ui_font_);
-    SetTextColor(item.hDC, RGB(255, 255, 255));
-    DrawTextW(item.hDC, L"Go", -1, &pill,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    return;
-  }
-
   if (!disabled && (hot || pressed)) {
     const int center_x = (bounds.left + bounds.right) / 2;
     const int center_y = (bounds.top + bounds.bottom) / 2;
     const int radius = std::min(bounds.right - bounds.left,
-                                bounds.bottom - bounds.top) / 2 - 2;
+                                bounds.bottom - bounds.top) / 2 - Scaled(2);
     FillCircle(item.hDC, center_x, center_y, radius,
                pressed ? kBorderColor : kControlHoverColor);
   }
@@ -1357,9 +2173,9 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
     const std::wstring label =
         badge_value > 999 ? L"999+" : std::to_wstring(badge_value);
     SelectObject(item.hDC, badge_font_);
-    RECT badge{bounds.right - 26, bounds.top + 2, bounds.right - 2,
-               bounds.top + 16};
-    FillRounded(item.hDC, badge, 7,
+    RECT badge{bounds.right - Scaled(26), bounds.top + Scaled(1),
+               bounds.right - Scaled(2), bounds.top + Scaled(15)};
+    FillRounded(item.hDC, badge, Scaled(7),
                 item.CtlID == kDownloadsId ? kAccentSoftColor : kAccentColor);
     SetTextColor(item.hDC, RGB(255, 255, 255));
     DrawTextW(item.hDC, label.c_str(), -1, &badge,
@@ -1384,9 +2200,9 @@ void BrowserWindow::TrackHover(POINT point) {
   hovered_tab_close_ = false;
   hovered_new_tab_ = false;
 
-  if (point.y < kTabBarHeight) {
+  if (point.y < TabBarHeight()) {
     for (size_t index = 0; index < tabs_.size(); ++index) {
-      const RECT rect = TabRect(index, client.right, tabs_.size());
+      const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
       if (PtInRect(&rect, point)) {
         hovered_tab_ = index;
         const RECT close = TabCloseRect(rect);
@@ -1395,15 +2211,14 @@ void BrowserWindow::TrackHover(POINT point) {
       }
     }
     if (hovered_tab_ == static_cast<size_t>(-1)) {
-      const RECT last = TabRect(tabs_.size(), client.right, tabs_.size());
-      RECT plus{last.left + 2, 11, last.left + 36, kTabBarHeight - 4};
+      RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
       hovered_new_tab_ = PtInRect(&plus, point) != FALSE;
     }
   }
 
   if (previous_tab != hovered_tab_ || previous_close != hovered_tab_close_ ||
       previous_new_tab != hovered_new_tab_) {
-    RECT strip{0, 0, client.right, kTabBarHeight};
+    RECT strip{0, 0, client.right, TabBarHeight()};
     InvalidateRect(window_, &strip, FALSE);
   }
 }
@@ -1416,7 +2231,7 @@ void BrowserWindow::ClearHover() {
   hovered_new_tab_ = false;
   RECT client{};
   GetClientRect(window_, &client);
-  RECT strip{0, 0, client.right, kTabBarHeight};
+  RECT strip{0, 0, client.right, TabBarHeight()};
   InvalidateRect(window_, &strip, FALSE);
 }
 
@@ -1428,9 +2243,16 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       Layout();
       return 0;
     case WM_SIZE:
+      // The Shields panel is positioned against the shield button, so it would
+      // float detached once the chrome is laid out again.
+      mtk::shields::ClosePanel();
       Layout();
       InvalidateRect(window_, nullptr, FALSE);
       return 0;
+    case WM_MOVE:
+      // Same reason as WM_SIZE: the popup is anchored in screen coordinates.
+      mtk::shields::ClosePanel();
+      break;
     case WM_ERASEBKGND:
       return 1;
     case WM_PAINT: {
@@ -1438,12 +2260,17 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       HDC dc = BeginPaint(window_, &paint);
       RECT client{};
       GetClientRect(window_, &client);
+      // Full screen shows only the page, so there is no chrome to draw.
+      if (full_screen_) {
+        EndPaint(window_, &paint);
+        return 0;
+      }
       // Draw the chrome off-screen first so gradients never flicker.
       HDC buffer = CreateCompatibleDC(dc);
-      HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, kChromeHeight);
+      HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, ChromeHeight());
       HBITMAP old_bitmap = static_cast<HBITMAP>(SelectObject(buffer, bitmap));
       Paint(buffer);
-      BitBlt(dc, 0, 0, client.right, kChromeHeight, buffer, 0, 0, SRCCOPY);
+      BitBlt(dc, 0, 0, client.right, ChromeHeight(), buffer, 0, 0, SRCCOPY);
       SelectObject(buffer, old_bitmap);
       DeleteObject(bitmap);
       DeleteDC(buffer);
@@ -1458,13 +2285,25 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     case WM_MOUSELEAVE:
       ClearHover();
       return 0;
+    case WM_MOUSEWHEEL: {
+      // Wheel over the tab strip scrolls it when the tabs no longer fit.
+      POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      ScreenToClient(window_, &point);
+      if (!full_screen_ && point.y >= 0 && point.y < TabBarHeight()) {
+        const int notches = GET_WHEEL_DELTA_WPARAM(w_param) / WHEEL_DELTA;
+        ScrollTabs(-notches * Scaled(120));
+        TrackHover(point);
+        return 0;
+      }
+      break;
+    }
     case WM_TIMER:
       if (w_param == kProgressTimer) {
         ++progress_phase_;
         RECT client{};
         GetClientRect(window_, &client);
-        RECT track{0, kChromeHeight - kProgressHeight, client.right,
-                   kChromeHeight};
+        RECT track{0, ChromeHeight() - ProgressHeight(), client.right,
+                   ChromeHeight()};
         InvalidateRect(window_, &track, FALSE);
       } else if (w_param == kLibrarySaveTimer) {
         KillTimer(window_, kLibrarySaveTimer);
@@ -1472,6 +2311,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       } else if (w_param == kDownloadSaveTimer) {
         KillTimer(window_, kDownloadSaveTimer);
         mtk::downloads::Manager::Get().Flush();
+      } else if (w_param == kUpdateStartupTimer) {
+        KillTimer(window_, kUpdateStartupTimer);
+        StartUpdateCheck(false);
+      } else if (w_param == kUpdatePeriodicTimer) {
+        StartUpdateCheck(false);
       } else if (w_param == kSessionSaveTimer) {
         KillTimer(window_, kSessionSaveTimer);
         SaveSessionSnapshot();
@@ -1496,11 +2340,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       break;
     case WM_LBUTTONDOWN: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
-      if (point.y < kTabBarHeight) {
+      if (point.y < TabBarHeight()) {
         RECT client{};
         GetClientRect(window_, &client);
         for (size_t index = 0; index < tabs_.size(); ++index) {
-          const RECT rect = TabRect(index, client.right, tabs_.size());
+          const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
           if (PtInRect(&rect, point)) {
             const RECT close = TabCloseRect(rect);
             if (PtInRect(&close, point)) CloseTab(index);
@@ -1508,8 +2352,8 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
             return 0;
           }
         }
-        const RECT next = TabRect(tabs_.size(), client.right, tabs_.size());
-        RECT plus{next.left, 0, next.left + 44, kTabBarHeight};
+        RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
+        InflateRect(&plus, Scaled(3), Scaled(8));
         if (PtInRect(&plus, point)) CreateTab(kHomeUrl);
       }
       return 0;
@@ -1526,7 +2370,18 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           }
           break;
         case kHomeId: if (tab && tab->client->browser()) tab->client->browser()->GetMainFrame()->LoadURL(kHomeUrl); break;
-        case kGoId: NavigateFromOmnibox(); break;
+
+        case kAddressId:
+          if (HIWORD(w_param) == EN_CHANGE) RefreshSuggestions();
+          break;
+        case kSuggestionsId:
+          // Keyboard navigation uses LB_SETCURSEL, which sends no notification,
+          // so these arrive only from an actual mouse pick.
+          if (HIWORD(w_param) == LBN_SELCHANGE ||
+              HIWORD(w_param) == LBN_DBLCLK) {
+            AcceptSuggestion();
+          }
+          break;
         case kFindId:
           if (HIWORD(w_param) == EN_CHANGE) RunFind(true, false);
           break;
@@ -1539,29 +2394,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case kFindCloseId:
           HideFindBar();
           break;
-        case kShieldId: {
-          const bool standard_downloads =
-              mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard;
-          const std::wstring summary =
-              L"MTK Shields are active.\n\nBlocked on this session: " +
-              std::to_wstring(BrowserClient::blocked_count()) +
-              L"\n\n"
-              L"\u2022 Ad, tracker and telemetry requests blocked\n"
-              L"\u2022 Adult and piracy domains blocked\n"
-              L"\u2022 Adult search terms blocked\n"
-              L"\u2022 SafeSearch and HTTPS upgrade enforced\n" +
-              (standard_downloads
-                   ? std::wstring(
-                         L"\u2022 Downloads: standard mode, any file type is "
-                         L"saved\n")
-                   : std::wstring(
-                         L"\u2022 Downloads: safe mode, programs and scripts "
-                         L"blocked\n")) +
-              L"\u2022 Popups and risky permissions denied";
-          MessageBoxW(window_, summary.c_str(), L"MTK Shields",
-                      MB_OK | MB_ICONINFORMATION);
+        case kShieldId:
+          mtk::shields::ShowPanel(
+              instance_, window_, shield_, BrowserClient::blocked_count(),
+              mtk::downloads::CurrentMode() ==
+                  mtk::downloads::Mode::kStandard);
           break;
-        }
         case kDownloadsId:
           ShowDownloadsDialog();
           break;
@@ -1580,6 +2418,18 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_DOWNLOADS:
           ShowDownloadsDialog();
           break;
+        case IDM_FULL_SCREEN:
+          ToggleFullScreen();
+          break;
+        case IDM_REOPEN_TAB:
+          ReopenClosedTab();
+          break;
+        case IDM_CLEAR_DATA:
+          ShowClearDataDialog();
+          break;
+        case IDM_CHECK_UPDATES:
+          StartUpdateCheck(true);
+          break;
         case IDM_SETTINGS:
           ShowSettingsDialog();
           break;
@@ -1588,6 +2438,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     }
     case WM_CLOSE: {
       if (closing_) return 0;
+      // The Shields panel hosts its own browser, so it has to unwind with the
+      // tabs rather than be torn down implicitly with its owner.
+      mtk::shields::ClosePanel();
       // Freeze session updates before taking the final snapshot. Otherwise a
       // deferred timer can run while CEF tabs are closing and overwrite it.
       closing_ = true;
@@ -1616,10 +2469,27 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       }
       return 0;
     }
+    case kUpdateResultMessage:
+      HandleUpdateResult();
+      return 0;
     case kFinalizeCloseMessage:
       if (closing_ && window_) DestroyWindow(window_);
       return 0;
+    case WM_DPICHANGED: {
+      // Windows supplies the correct new window bounds for the new scale.
+      const RECT* suggested = reinterpret_cast<const RECT*>(l_param);
+      if (suggested) {
+        SetWindowPos(window_, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      ApplyDpi(HIWORD(w_param));
+      return 0;
+    }
     case WM_DESTROY:
+      KillTimer(window_, kUpdateStartupTimer);
+      KillTimer(window_, kUpdatePeriodicTimer);
       KillTimer(window_, kLibrarySaveTimer);
       KillTimer(window_, kDownloadSaveTimer);
       KillTimer(window_, kSessionSaveTimer);

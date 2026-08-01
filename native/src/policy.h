@@ -42,6 +42,9 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
 std::vector<std::pair<std::string, std::string>> PrivacyRequestHeaders(
     const std::string& raw_url);
 std::string EnforceSafeSearch(std::string url);
+// Replacement address for a browse surface that must not load, or an empty
+// string when the URL needs no substitution.
+std::string SafeSurfaceRedirect(const std::string& raw_url);
 // Extracts the lowercase hostname of a URL, or an empty string when absent.
 std::string HostOf(const std::string& raw_url);
 bool IsAdOrTracker(const std::string& raw_url, ResourceType type,

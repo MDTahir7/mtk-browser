@@ -17,6 +17,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
 #include "filter_engine.h"
+#include "inline_asset.h"
 #include "policy.h"
 
 namespace {
@@ -38,15 +39,62 @@ std::wstring AsciiToWide(const std::string& value) {
   return std::wstring(value.begin(), value.end());
 }
 
+// CEF's bundled PDF viewer is the only Chrome extension origin that MTK
+// Browser permits. The trailing slash makes this an exact origin match (a
+// lookalike host such as "...id.evil" cannot pass).
+constexpr char kPdfViewerOrigin[] =
+    "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
+// The viewer's own UI code lives in Chromium's shared resource bundle. Only
+// this read-only asset path is permitted; chrome://settings, chrome://net-*
+// and every other internal page stay unreachable, and main-frame navigation
+// is still restricted to http/https by EvaluateNavigation.
+constexpr char kSharedResourcesOrigin[] = "chrome://resources/";
+
+bool IsTrustedPdfViewerUrl(const std::string& url) {
+  return url.starts_with(kPdfViewerOrigin) ||
+         url.starts_with(kSharedResourcesOrigin);
+}
+
+// Decorative loop rendered for the block page. The asset ships beside the
+// executable and is inlined into the page, so the block page stays a single
+// self-contained data: URL that needs no local file access. Loading and
+// validation live in mtk::assets, which the Shields panel shares.
+constexpr wchar_t kBlockAnimationFile[] = L"mtk_block_shield.webm";
+
+// A data: URL carries its own bytes and reaches no network, so permitting this
+// one media type keeps the block page self-contained without widening the
+// fail-closed request policy. Everything else still goes through it.
+bool IsInertBlockAnimation(const std::string& url,
+                           cef_resource_type_t resource_type) {
+  return resource_type == RT_MEDIA &&
+         url.starts_with(mtk::assets::kWebmDataUrlPrefix);
+}
+
 std::string BlockPage(const std::wstring& reason) {
   const std::string text(reason.begin(), reason.end());
+  const std::string& animation =
+      mtk::assets::WebmDataUrl(kBlockAnimationFile);
+  // The glyph stays in the markup as the fallback for a missing asset and for
+  // readers who ask the platform to reduce motion.
+  std::string art = "<div class=shield>&%239678;</div>";
+  if (!animation.empty()) {
+    art = "<video class=anim autoplay loop muted playsinline "
+          "disablepictureinpicture aria-hidden=true src=" +
+          animation + "></video>" + art;
+  }
   return "data:text/html,<meta charset=utf-8><title>Blocked by MTK Browser</title><style>"
          "body{font-family:Segoe UI;background:%230b1020;color:%23f8fafc;"
          "display:grid;place-items:center;min-height:90vh;margin:0}"
-         ".card{max-width:620px;padding:48px;border:1px solid %232c3856;"
+         ".card{max-width:620px;padding:40px 48px 48px;border:1px solid %232c3856;"
          "border-radius:24px;text-align:center;background:%2311182b}"
-         ".shield{font-size:52px;color:%237c5cff}p{color:%23aab7d1;line-height:1.7}"
-         "</style><main class=card><div class=shield>&%239678;</div>"
+         ".anim{width:152px;height:152px;display:block;margin:0 auto;"
+         "pointer-events:none}.anim~.shield{display:none}"
+         "@media (prefers-reduced-motion:reduce){.anim{display:none}"
+         ".anim~.shield{display:block}}"
+         ".shield{font-size:52px;color:%237c5cff}"
+         "h1{margin:14px 0 8px;font-weight:600}"
+         "p{color:%23aab7d1;line-height:1.7}"
+         "</style><main class=card>" + art +
          "<h1>Navigation blocked</h1><p>" + text +
          "</p><p>MTK Browser stopped this request using your active safety policy."
          "</p></main>";
@@ -79,6 +127,15 @@ constexpr char kCollapseScript[] = R"JS(
   const KEEP = /^(body|html|head|main|nav|header|footer|article|form|table|tbody|tr)$/;
   const CONTENT =
     'img,video,canvas,picture,svg,input,select,textarea,button,a[href]';
+  // Interactive surfaces that must never be collapsed. A hidden in-player ad
+  // marker used to seed an upward walk that removed YouTube's seek bar, so
+  // media players and widget roles are excluded from collapsing entirely.
+  const PROTECT = [
+    'video', 'audio', '.html5-video-player', '.ytp-chrome-bottom',
+    '.ytp-chrome-top', '[role="slider"]', '[role="progressbar"]',
+    '[role="toolbar"]', '[role="menu"]', '[role="menubar"]',
+    '[role="tablist"]', '[role="dialog"]', '[role="navigation"]'
+  ].join(',');
 
   const hide = element => {
     element.style.setProperty('display', 'none', 'important');
@@ -100,10 +157,14 @@ constexpr char kCollapseScript[] = R"JS(
   };
 
   const collapseFrom = seed => {
+    // An ad inside a player is an overlay: it reserves no page layout, so
+    // there is nothing to collapse and its ancestors are real controls.
+    if (seed.closest(PROTECT)) return;
     let node = seed;
     for (let depth = 0; depth < 5 && node; ++depth) {
       const parent = node.parentElement;
       if (!parent || KEEP.test(parent.tagName.toLowerCase())) break;
+      if (parent.matches(PROTECT) || parent.closest(PROTECT)) break;
       if (parent.hasAttribute('data-mtk-collapsed')) break;
       if (meaningful(parent)) break;
       const box = parent.getBoundingClientRect();
@@ -432,6 +493,7 @@ void BrowserClient::OnDownloadUpdated(
   if (callback) g_download_callbacks[id] = callback;
 
   mtk::downloads::Item item = *match;
+  const mtk::downloads::State previous_state = item.state;
   item.received_bytes = download_item->GetReceivedBytes();
   if (download_item->GetTotalBytes() > 0) {
     item.total_bytes = download_item->GetTotalBytes();
@@ -455,6 +517,14 @@ void BrowserClient::OnDownloadUpdated(
   if (download_item->IsComplete()) {
     item.state = mtk::downloads::State::kComplete;
     item.percent = 100;
+    // Mark the finished file as coming from the internet zone, exactly once.
+    // Windows and Defender/SmartScreen rely on this marker to warn before the
+    // file is executed, and Office uses it to open documents in Protected View.
+    if (previous_state != mtk::downloads::State::kComplete &&
+        !item.full_path.empty() &&
+        !mtk::downloads::ApplyMarkOfTheWeb(item.full_path, item.url)) {
+      item.detail = L"saved, but could not be marked as an internet download";
+    }
   } else if (download_item->IsCanceled()) {
     item.state = mtk::downloads::State::kCanceled;
   } else if (download_item->IsInterrupted()) {
@@ -574,6 +644,15 @@ bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser>,
     return false;
   }
 
+  // Some browse surfaces have a safe equivalent, so substituting it keeps the
+  // feature reachable instead of showing a dead end.
+  if (const std::string alternative =
+          mtk::policy::SafeSurfaceRedirect(requested_url);
+      !alternative.empty() && alternative != requested_url) {
+    frame->LoadURL(alternative);
+    return true;
+  }
+
   const auto decision = mtk::policy::EvaluateNavigation(requested_url);
   if (!decision.allow) {
     block_page_pending_ = true;
@@ -608,6 +687,11 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
       url.starts_with("data:text/html")) {
     return this;
   }
+  // The Chromium PDF renderer is packaged as one internal extension. Permit
+  // only that exact origin; all other extension and custom-scheme requests
+  // still go through the fail-closed policy below.
+  if (IsTrustedPdfViewerUrl(url)) return this;
+  if (IsInertBlockAnimation(url, request->GetResourceType())) return this;
 
   const auto decision = mtk::policy::EvaluateRequest(
       url, MapResourceType(request->GetResourceType()),
@@ -675,8 +759,10 @@ CefResourceRequestHandler::ReturnValue BrowserClient::OnBeforeResourceLoad(
     CefRefPtr<CefCallback>) {
   if (!request) return RV_CONTINUE;
   const std::string url = request->GetURL();
-  if (request->GetResourceType() == RT_MAIN_FRAME &&
-      url.starts_with("data:text/html")) {
+  if ((request->GetResourceType() == RT_MAIN_FRAME &&
+       url.starts_with("data:text/html")) ||
+      IsTrustedPdfViewerUrl(url) ||
+      IsInertBlockAnimation(url, request->GetResourceType())) {
     return RV_CONTINUE;
   }
 

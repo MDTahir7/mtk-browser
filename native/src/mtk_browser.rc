@@ -3,7 +3,56 @@
 
 IDI_MTK_BROWSER ICON "../resources/mtk_browser.ico"
 
-IDD_SETTINGS DIALOGEX 0, 0, 320, 278
+// Per-monitor DPI awareness and modern common controls.
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "mtk_browser.manifest"
+
+IDD_PIN_PROMPT DIALOGEX 0, 0, 268, 96
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Parent PIN — MTK Browser"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "", IDC_PIN_PROMPT_TEXT, 14, 12, 240, 20
+  LTEXT "Parent PIN", -1, 14, 40, 240, 10
+  EDITTEXT IDC_PIN_PROMPT_VALUE, 14, 53, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  DEFPUSHBUTTON "Unlock", IDOK, 118, 76, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 188, 76, 66, 14
+END
+
+IDD_PIN_SETUP DIALOGEX 0, 0, 268, 168
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Parent PIN — MTK Browser"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "A parent PIN stops safety settings from being changed by someone else. Use at least 4 characters.", -1, 14, 10, 240, 26
+  LTEXT "Current PIN", IDC_PIN_SETUP_CURRENT_LABEL, 14, 42, 240, 10
+  EDITTEXT IDC_PIN_SETUP_CURRENT, 14, 55, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT "New PIN", -1, 14, 76, 240, 10
+  EDITTEXT IDC_PIN_SETUP_NEW, 14, 89, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  LTEXT "Confirm new PIN", -1, 14, 110, 240, 10
+  EDITTEXT IDC_PIN_SETUP_CONFIRM, 14, 123, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
+  PUSHBUTTON "Remove PIN", IDC_PIN_SETUP_REMOVE, 14, 146, 76, 14
+  DEFPUSHBUTTON "Save PIN", IDOK, 118, 146, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 188, 146, 66, 14
+END
+
+IDD_CLEAR_DATA DIALOGEX 0, 0, 300, 200
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Clear browsing data — MTK Browser"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "Choose what to remove from this computer. This cannot be undone.", -1, 14, 10, 272, 20
+  AUTOCHECKBOX "Browsing history", IDC_CLEAR_HISTORY, 14, 36, 272, 10
+  AUTOCHECKBOX "Download history (files on disk are kept)", IDC_CLEAR_DOWNLOADS, 14, 52, 272, 10
+  AUTOCHECKBOX "Cookies and site data (signs you out of sites)", IDC_CLEAR_COOKIES, 14, 68, 272, 10
+  AUTOCHECKBOX "Cached files and images", IDC_CLEAR_CACHE, 14, 84, 272, 10
+  AUTOCHECKBOX "Saved tabs from the last session", IDC_CLEAR_SESSION, 14, 100, 272, 10
+  AUTOCHECKBOX "Bookmarks", IDC_CLEAR_BOOKMARKS, 14, 116, 272, 10
+  LTEXT "Settings, the parent PIN and the download mode are never changed here.", -1, 14, 138, 272, 20
+  DEFPUSHBUTTON "Clear now", IDOK, 148, 176, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 220, 176, 66, 14
+END
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 340
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTK Browser Settings"
 FONT 9, "Segoe UI"
@@ -20,8 +69,12 @@ BEGIN
   LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", -1, 16, 198, 286, 28
   LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", -1, 16, 230, 286, 10
   LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 244, 286, 10
-  DEFPUSHBUTTON "Save", IDOK, 162, 258, 66, 14
-  PUSHBUTTON "Cancel", IDCANCEL, 236, 258, 66, 14
+  AUTOCHECKBOX "Check for signed MTK Browser updates automatically", IDC_SETTINGS_AUTO_UPDATE, 16, 262, 286, 10
+  LTEXT "Parent controls", -1, 16, 282, 140, 10
+  LTEXT "", IDC_SETTINGS_PIN_STATE, 16, 296, 190, 20
+  PUSHBUTTON "Parent PIN...", IDC_SETTINGS_PIN, 212, 294, 90, 14
+  DEFPUSHBUTTON "Save", IDOK, 162, 318, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 236, 318, 66, 14
 END
 
 IDD_LIBRARY DIALOGEX 0, 0, 430, 250

@@ -6,9 +6,7 @@
 #include <string>
 
 #include "include/cef_app.h"
-#if defined(MTK_ENABLE_CEF_SANDBOX)
 #include "include/cef_sandbox_win.h"
-#endif
 #include "browser_window.h"
 #include "download_manager.h"
 #include "filter_engine.h"
@@ -67,24 +65,30 @@ bool FocusRunningInstance() {
   return true;
 }
 
-}  // namespace
+// Per-monitor DPI awareness normally comes from the executable manifest. With
+// the sandbox enabled the executable is CEF's bootstrap, so the build also
+// stamps the manifest onto it; this call is a defensive fallback for the case
+// where that manifest is missing, and is a no-op when it is present.
+void EnsurePerMonitorDpiAwareness() {
+  if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+    using SetContext = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    if (auto set_context = reinterpret_cast<SetContext>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+      set_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+  }
+}
 
-int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+// Shared entry point. `sandbox_info` is supplied by CEF's bootstrap when the
+// sandbox is enabled and is null for the unsandboxed debugging build.
+int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   CefMainArgs main_args(instance);
   CefRefPtr<MtkApp> app = new MtkApp(instance, show_command);
-#if defined(MTK_ENABLE_CEF_SANDBOX)
-  CefScopedSandboxInfo sandbox_info;
-#endif
 
-  const int exit_code = CefExecuteProcess(
-      main_args, app,
-#if defined(MTK_ENABLE_CEF_SANDBOX)
-      sandbox_info
-#else
-      nullptr
-#endif
-  );
+  const int exit_code = CefExecuteProcess(main_args, app, sandbox_info);
   if (exit_code >= 0) return exit_code;
+
+  EnsurePerMonitorDpiAwareness();
 
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.
@@ -121,22 +125,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   mtk::filters::Engine::Get().LoadFromDirectory(ApplicationDirectory());
 
   CefSettings settings;
-#if !defined(MTK_ENABLE_CEF_SANDBOX)
-  settings.no_sandbox = true;
-#endif
+  // The sandbox is driven by the bootstrap-supplied sandbox info. It is only
+  // disabled when this is the unsandboxed debugging build.
+  settings.no_sandbox = sandbox_info == nullptr;
   settings.persist_session_cookies = false;
   CefString(&settings.root_cache_path) = profile_path;
   CefString(&settings.accept_language_list) =
       mtk::preferences::Store::Get().values().accept_language;
 
-  if (!CefInitialize(
-      main_args, settings, app,
-#if defined(MTK_ENABLE_CEF_SANDBOX)
-      sandbox_info
-#else
-      nullptr
-#endif
-  )) {
+  if (!CefInitialize(main_args, settings, app, sandbox_info)) {
     MessageBoxW(nullptr,
                 L"MTK Browser could not start its browser engine.\n\n"
                 L"This usually means the CEF runtime files are missing next to "
@@ -151,3 +148,30 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   if (singleton) CloseHandle(singleton);
   return 0;
 }
+
+}  // namespace
+
+#if defined(CEF_USE_BOOTSTRAP)
+
+// Sandboxed packaging. CEF's bootstrap executable creates the sandbox
+// information, loads this DLL and calls this export for every process, so the
+// normal CefExecuteProcess/CefInitialize sequence still runs inside
+// RunBrowser(). `version_info` describes the bootstrap that loaded us and is
+// only needed when libcef.dll is resolved dynamically, which MTK Browser does
+// not do: it ships libcef.dll beside the executable.
+extern "C" __declspec(dllexport) int RunWinMain(HINSTANCE instance,
+                                                LPTSTR /*command_line*/,
+                                                int show_command,
+                                                void* sandbox_info,
+                                                cef_version_info_t*) {
+  return RunBrowser(instance, show_command, sandbox_info);
+}
+
+#else
+
+// Unsandboxed debugging build: a single executable with no bootstrap.
+int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+  return RunBrowser(instance, show_command, nullptr);
+}
+
+#endif  // defined(CEF_USE_BOOTSTRAP)

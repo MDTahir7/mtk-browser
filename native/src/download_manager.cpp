@@ -582,4 +582,35 @@ std::wstring DescribeItem(const Item& item) {
   return text;
 }
 
+bool ApplyMarkOfTheWeb(const std::wstring& full_path, const std::string& url) {
+  if (full_path.empty()) return false;
+  // The marker must never become a way to smuggle extra stream content, so only
+  // a policy-approved http(s) address is recorded and it is length-bounded.
+  std::string host_url;
+  if (const auto decision = mtk::policy::EvaluateNavigation(url);
+      decision.allow && (decision.url.starts_with("https://") ||
+                         decision.url.starts_with("http://")) &&
+      decision.url.size() <= 2048 &&
+      decision.url.find_first_of("\r\n") == std::string::npos) {
+    host_url = decision.url;
+  }
+
+  // ZoneId=3 is URLZONE_INTERNET. Windows reads this stream to decide that the
+  // file is untrusted.
+  std::string content = "[ZoneTransfer]\r\nZoneId=3\r\n";
+  if (!host_url.empty()) content += "HostUrl=" + host_url + "\r\n";
+
+  const std::wstring stream_path = full_path + L":Zone.Identifier";
+  HANDLE stream = CreateFileW(stream_path.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (stream == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok =
+      WriteFile(stream, content.data(), static_cast<DWORD>(content.size()),
+                &written, nullptr) &&
+      written == content.size();
+  CloseHandle(stream);
+  return ok;
+}
+
 }  // namespace mtk::downloads

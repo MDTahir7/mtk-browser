@@ -45,6 +45,8 @@ class BrowserWindow final : public BrowserClientDelegate {
     bool can_go_forward = false;
   };
 
+  void RememberClosedTab(const Tab& tab);
+
   static LRESULT CALLBACK WindowProc(HWND window, UINT message,
                                      WPARAM w_param, LPARAM l_param);
   static LRESULT CALLBACK AddressProc(HWND window, UINT message,
@@ -58,6 +60,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
   bool HandleShortcut(int virtual_key, bool control, bool alt, bool shift);
   void CreateControls();
+  void CreateFonts();
+  void ApplyDpi(UINT dpi);
   bool CreateTab(const std::string& initial_url);
   void ShowFindBar();
   void HideFindBar();
@@ -65,6 +69,28 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ZoomActiveTab(cef_zoom_command_t command);
   void ShowBrowserMenu();
   void ShowSettingsDialog();
+  void ShowClearDataDialog();
+  // Signed update check. The network work runs on a worker thread and reports
+  // back through kUpdateResultMessage.
+  void StartUpdateCheck(bool user_initiated);
+  void HandleUpdateResult();
+  // Borderless full-screen page view. The chrome is hidden, not destroyed.
+  void ToggleFullScreen();
+  // Reopens the most recently closed tab, like Ctrl+Shift+T elsewhere.
+  bool ReopenClosedTab();
+  // Horizontal tab-strip scrolling for when the tabs no longer fit.
+  int MaxTabScroll(int width) const;
+  void ScrollTabs(int delta);
+  void EnsureActiveTabVisible();
+  // Page area top: the chrome height normally, zero in full screen.
+  int PageTop() const;
+  // Omnibox autocomplete drawn from history and bookmarks.
+  void RefreshSuggestions();
+  void HideSuggestions();
+  void MoveSuggestion(int delta);
+  // True when a suggestion was highlighted and has been navigated to.
+  bool AcceptSuggestion();
+  void LayoutSuggestions();
   void ToggleBookmark();
   void ShowLibraryDialog(bool bookmarks);
   void ShowDownloadsDialog();
@@ -92,12 +118,12 @@ class BrowserWindow final : public BrowserClientDelegate {
   HINSTANCE instance_ = nullptr;
   HWND window_ = nullptr;
   HWND address_ = nullptr;
+  HWND suggestions_ = nullptr;
   HWND find_ = nullptr;
   HWND find_status_ = nullptr;
   HWND find_previous_ = nullptr;
   HWND find_next_ = nullptr;
   HWND find_close_ = nullptr;
-  HWND go_ = nullptr;
   HWND back_ = nullptr;
   HWND forward_ = nullptr;
   HWND reload_ = nullptr;
@@ -111,6 +137,19 @@ class BrowserWindow final : public BrowserClientDelegate {
   HFONT badge_font_ = nullptr;
   HBRUSH edit_brush_ = nullptr;
   std::vector<Tab> tabs_;
+  // URLs behind the visible suggestion rows, in the same order.
+  std::vector<std::string> suggestion_urls_;
+  // Recently closed tabs, newest last, bounded so it cannot grow unchecked.
+  std::vector<std::string> closed_tab_urls_;
+  // Horizontal scroll offset of the tab strip, in pixels.
+  int tab_scroll_ = 0;
+  bool full_screen_ = false;
+  // Window placement and style captured before entering full screen.
+  WINDOWPLACEMENT saved_placement_{};
+  LONG_PTR saved_style_ = 0;
+  // True while the omnibox text is being replaced programmatically, so the
+  // resulting EN_CHANGE does not rebuild the list.
+  bool suppress_suggestions_ = false;
   // Tabs disappear from the strip immediately, but their clients stay alive
   // here until CEF delivers OnBeforeClose.
   std::vector<CefRefPtr<BrowserClient>> closing_clients_;
@@ -125,4 +164,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool progress_active_ = false;
   int progress_phase_ = 0;
   bool closing_ = false;
+  // A single update check at a time; the worker owns the pending result until
+  // the UI thread collects it.
+  bool update_check_running_ = false;
+  bool update_check_user_initiated_ = false;
 };

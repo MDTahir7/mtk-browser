@@ -245,6 +245,22 @@ youtube.com##.ytd-video-masthead-ad-v3-renderer
 youtube.com##.ytp-ad-overlay-slot
 youtube.com##.ytp-ad-progress-list
 
+! ----------------------------------------------- Instagram discovery surfaces
+! Instagram exposes no network-level safe mode, so the unfiltered discovery
+! entry points are hidden and the request policy blocks their routes. Feed,
+! profiles, stories, messages and search remain reachable.
+! Instagram's sidebar Search button points at /explore/, so that link must NOT
+! be hidden or search disappears with it. Its navigation is redirected to the
+! keyword search page instead. Only Reels and the people/location browsers are
+! hidden here.
+instagram.com##a[href="/reels/"]
+instagram.com##a[href^="/reels/?"]
+instagram.com##a[href="/explore/people/"]
+instagram.com##a[href="/explore/locations/"]
+! Meta's ad click-through endpoint. Blocking it stops an accidental ad click
+! from leaving the browser's own safety policy behind.
+||facebook.com/ads/ig_redirect
+
 ! ---------------------------------------------------- Jagran ad-space collapse
 ! Jagran reserves fixed-height wrappers even when the ad request is blocked.
 ! Hide the known wrappers themselves (not their parent editorial columns) so

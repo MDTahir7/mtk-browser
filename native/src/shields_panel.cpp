@@ -1,0 +1,385 @@
+#include "shields_panel.h"
+
+#include <dwmapi.h>
+
+#include <string>
+
+#include "include/cef_browser.h"
+#include "include/cef_client.h"
+#include "include/cef_context_menu_handler.h"
+#include "include/cef_keyboard_handler.h"
+#include "include/cef_life_span_handler.h"
+#include "include/cef_request_handler.h"
+#include "include/cef_resource_request_handler.h"
+#include "inline_asset.h"
+
+namespace mtk::shields {
+namespace {
+
+constexpr wchar_t kPanelClassName[] = L"MtkShieldsPanel";
+constexpr wchar_t kBeaconFile[] = L"mtk_siren_alert.webm";
+// Validated against the real markup at this exact size: the content measures
+// 518 px tall, so nothing is clipped and no scrollbar appears.
+constexpr int kPanelLogicalWidth = 344;
+constexpr int kPanelLogicalHeight = 520;
+constexpr int kAnchorGapLogical = 6;
+// Kept as channels so both the GDI brush and CEF's background colour are built
+// without casting a constant through GetRValue and friends.
+constexpr BYTE kPanelRed = 0x11;
+constexpr BYTE kPanelGreen = 0x18;
+constexpr BYTE kPanelBlue = 0x2b;
+constexpr COLORREF kPanelBackground = RGB(kPanelRed, kPanelGreen, kPanelBlue);
+// Posted by the client once CEF has finished tearing the browser down, which is
+// when the popup may safely be destroyed.
+constexpr UINT kBrowserClosedMessage = WM_APP + 41;
+
+// Only one panel exists at a time, so its window and client are tracked here
+// rather than threaded through the caller.
+HWND g_panel = nullptr;
+CefRefPtr<CefClient> g_client;
+
+// A data: URL ends at the first '#', and a stray '%' would be read as the start
+// of an escape, so those two characters are encoded. Everything else is written
+// as plain markup at the call site. HTML entities survive this: "&#10003;"
+// becomes "&%2310003;" in the URL and decodes back before the parser sees it.
+std::string EscapeForDataUrl(const std::string& markup) {
+  std::string escaped;
+  escaped.reserve(markup.size() + markup.size() / 8);
+  for (const char character : markup) {
+    if (character == '%') {
+      escaped += "%25";
+    } else if (character == '#') {
+      escaped += "%23";
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
+}
+
+std::string PanelUrl(unsigned long blocked_count, bool standard_downloads) {
+  const std::string& beacon = mtk::assets::WebmDataUrl(kBeaconFile);
+  // The glyph stays in the markup as the fallback for a missing asset and for
+  // readers who ask the platform to reduce motion.
+  std::string art = "<div class=beacon>&#9678;</div>";
+  if (!beacon.empty()) {
+    // The asset URL is already percent-safe, so it is spliced in after escaping
+    // rather than being run through EscapeForDataUrl with the markup.
+    art = "<video class=anim autoplay loop muted playsinline "
+          "disablepictureinpicture aria-hidden=true src=\x01></video>" + art;
+  }
+
+  const std::string downloads =
+      standard_downloads
+          ? "<li><i>&#10003;</i><div>Standard downloads<small>Any file type is "
+            "saved</small></div></li>"
+          : "<li><i>&#10003;</i><div>Safe downloads<small>Programs and scripts "
+            "are blocked</small></div></li>";
+
+  const std::string markup =
+      "<meta charset=utf-8><title>MTK Shields</title><style>"
+      ":root{color-scheme:dark}"
+      "html,body{margin:0;height:100%;overflow:hidden}"
+      "body{font-family:Segoe UI,sans-serif;background:#11182b;color:#f0f4ff;"
+      "border:1px solid #2a3350;box-sizing:border-box;display:flex;"
+      "flex-direction:column;-webkit-user-select:none;user-select:none}"
+      ".hero{flex:0 0 auto;display:flex;flex-direction:column;"
+      "align-items:center;padding:14px 18px 12px;"
+      "background:radial-gradient(120px 74px at 50% 6px,#241a52,#11182b)}"
+      ".anim{width:104px;height:104px;display:block;pointer-events:none}"
+      ".anim~.beacon{display:none}"
+      "@media (prefers-reduced-motion:reduce){.anim{display:none}"
+      ".anim~.beacon{display:block}}"
+      ".beacon{font-size:46px;line-height:104px;color:#7c5cff}"
+      "h1{margin:2px 0 0;font-size:15px;font-weight:600}"
+      ".pill{margin-top:7px;font-size:10px;font-weight:700;letter-spacing:1px;"
+      "color:#4ade80;background:rgba(74,222,128,.14);"
+      "border:1px solid rgba(74,222,128,.36);border-radius:99px;padding:3px 10px}"
+      ".count{flex:0 0 auto;display:flex;align-items:baseline;"
+      "justify-content:center;gap:8px;padding:11px 18px;background:#161f38;"
+      "border-top:1px solid #2a3350;border-bottom:1px solid #2a3350}"
+      ".count b{font-size:26px;font-weight:700;color:#60a5fa}"
+      ".count span{font-size:11.5px;color:#96a2be}"
+      "ul{flex:1 1 auto;list-style:none;margin:0;padding:9px 18px 12px;"
+      "overflow:hidden}"
+      "li{display:flex;gap:9px;align-items:flex-start;padding:4.5px 0;"
+      "font-size:12px;line-height:1.35}"
+      "li i{flex:0 0 12px;color:#4ade80;font-style:normal;font-weight:700;"
+      "font-size:11px}"
+      "li small{display:block;color:#96a2be;font-size:10.5px}"
+      ".hint{flex:0 0 auto;padding:0 18px 11px;font-size:10.5px;color:#6d7ba0;"
+      "text-align:center}"
+      "</style><div class=hero>" + art +
+      "<h1>MTK Shields are active</h1><div class=pill>PROTECTING</div></div>"
+      "<div class=count><b>" + std::to_string(blocked_count) +
+      "</b><span>requests blocked this session</span></div><ul>"
+      "<li><i>&#10003;</i><div>Ad, tracker and telemetry requests blocked"
+      "</div></li>"
+      "<li><i>&#10003;</i><div>Adult and piracy domains blocked</div></li>"
+      "<li><i>&#10003;</i><div>Adult search terms blocked</div></li>"
+      "<li><i>&#10003;</i><div>SafeSearch and HTTPS upgrade enforced</div></li>" +
+      downloads +
+      "<li><i>&#10003;</i><div>Popups and risky permissions denied</div></li>"
+      "</ul><div class=hint>Press Esc or click outside to close</div>";
+
+  std::string url = "data:text/html," + EscapeForDataUrl(markup);
+  // Restore the placeholder with the already-encoded asset URL.
+  const size_t slot = url.find('\x01');
+  if (slot != std::string::npos) url.replace(slot, 1, beacon);
+  return url;
+}
+
+void ShowFallbackSummary(HWND owner, unsigned long blocked_count,
+                         bool standard_downloads) {
+  const std::wstring summary =
+      L"MTK Shields are active.\n\nBlocked on this session: " +
+      std::to_wstring(blocked_count) +
+      L"\n\n"
+      L"\u2022 Ad, tracker and telemetry requests blocked\n"
+      L"\u2022 Adult and piracy domains blocked\n"
+      L"\u2022 Adult search terms blocked\n"
+      L"\u2022 SafeSearch and HTTPS upgrade enforced\n" +
+      (standard_downloads
+           ? std::wstring(L"\u2022 Downloads: standard mode, any file type is "
+                          L"saved\n")
+           : std::wstring(L"\u2022 Downloads: safe mode, programs and scripts "
+                          L"blocked\n")) +
+      L"\u2022 Popups and risky permissions denied";
+  MessageBoxW(owner, summary.c_str(), L"MTK Shields",
+              MB_OK | MB_ICONINFORMATION);
+}
+
+// Presentation only: no script bridge, no downloads, no navigation. Everything
+// the panel needs is already inside the one data: URL it is given, so every
+// other request is refused.
+class PanelClient final : public CefClient,
+                          public CefLifeSpanHandler,
+                          public CefKeyboardHandler,
+                          public CefContextMenuHandler,
+                          public CefRequestHandler,
+                          public CefResourceRequestHandler {
+ public:
+  explicit PanelClient(HWND panel) : panel_(panel) {}
+
+  CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
+    return this;
+  }
+  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+
+  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+    browser_ = browser;
+  }
+
+  // The popup owns the lifetime, so CEF must not destroy the host window on its
+  // own; the panel closes the browser and waits for OnBeforeClose.
+  bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
+
+  void OnBeforeClose(CefRefPtr<CefBrowser>) override {
+    browser_ = nullptr;
+    if (panel_) PostMessageW(panel_, kBrowserClosedMessage, 0, 0);
+  }
+
+  bool OnPreKeyEvent(CefRefPtr<CefBrowser>, const CefKeyEvent& event,
+                     CefEventHandle, bool*) override {
+    if (event.type == KEYEVENT_RAWKEYDOWN &&
+        event.windows_key_code == VK_ESCAPE) {
+      if (panel_) PostMessageW(panel_, WM_CLOSE, 0, 0);
+      return true;
+    }
+    return false;
+  }
+
+  // A summary panel has nothing to inspect, copy or reload.
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                           CefRefPtr<CefContextMenuParams>,
+                           CefRefPtr<CefMenuModel> model) override {
+    if (model) model->Clear();
+  }
+
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                      CefRefPtr<CefRequest> request, bool, bool) override {
+    // Returning true cancels. Only the panel's own document may ever load.
+    return !IsPanelDocument(request->GetURL().ToString());
+  }
+
+  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                        const CefString&, cef_window_open_disposition_t,
+                        bool) override {
+    return true;  // handled, meaning discarded
+  }
+
+  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(
+      CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest>, bool,
+      bool, const CefString&, bool&) override {
+    return this;
+  }
+
+  ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                                   CefRefPtr<CefRequest> request,
+                                   CefRefPtr<CefCallback>) override {
+    const std::string url = request->GetURL().ToString();
+    // The document and its inlined loop both carry their own bytes and reach no
+    // network. Anything else is refused, so the panel cannot be made to fetch.
+    if (IsPanelDocument(url) ||
+        url.starts_with(mtk::assets::kWebmDataUrlPrefix)) {
+      return RV_CONTINUE;
+    }
+    return RV_CANCEL;
+  }
+
+  CefRefPtr<CefBrowser> browser() const { return browser_; }
+  void Detach() { panel_ = nullptr; }
+
+ private:
+  static bool IsPanelDocument(const std::string& url) {
+    return url.starts_with("data:text/html,");
+  }
+
+  HWND panel_ = nullptr;
+  CefRefPtr<CefBrowser> browser_;
+
+  IMPLEMENT_REFCOUNTING(PanelClient);
+};
+
+PanelClient* CurrentClient() {
+  return static_cast<PanelClient*>(g_client.get());
+}
+
+void DestroyPanel() {
+  if (auto* client = CurrentClient()) client->Detach();
+  g_client = nullptr;
+  if (g_panel) {
+    HWND panel = g_panel;
+    g_panel = nullptr;
+    DestroyWindow(panel);
+  }
+}
+
+LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
+                           LPARAM l_param) {
+  switch (message) {
+    case WM_ACTIVATE:
+      // Clicking anywhere outside activates another window, which is the
+      // dismissal gesture users expect from a toolbar popup.
+      if (LOWORD(w_param) == WA_INACTIVE) {
+        PostMessageW(window, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      break;
+    case WM_CLOSE: {
+      // Let CEF unwind first; the window is destroyed on kBrowserClosedMessage.
+      auto* client = CurrentClient();
+      if (client && client->browser()) {
+        client->browser()->GetHost()->CloseBrowser(true);
+        return 0;
+      }
+      DestroyPanel();
+      return 0;
+    }
+    case kBrowserClosedMessage:
+      DestroyPanel();
+      return 0;
+    case WM_ERASEBKGND:
+      return 1;  // the hosted browser paints the whole client area
+    case WM_NCDESTROY:
+      if (g_panel == window) g_panel = nullptr;
+      break;
+    default:
+      break;
+  }
+  return DefWindowProcW(window, message, w_param, l_param);
+}
+
+bool EnsureClassRegistered(HINSTANCE instance) {
+  static bool registered = false;
+  if (registered) return true;
+  WNDCLASSEXW description{};
+  description.cbSize = sizeof(description);
+  description.lpfnWndProc = PanelProc;
+  description.hInstance = instance;
+  description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  description.hbrBackground = CreateSolidBrush(kPanelBackground);
+  description.lpszClassName = kPanelClassName;
+  registered = RegisterClassExW(&description) != 0;
+  return registered;
+}
+
+}  // namespace
+
+void ClosePanel() {
+  if (g_panel) PostMessageW(g_panel, WM_CLOSE, 0, 0);
+}
+
+void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
+               unsigned long blocked_count, bool standard_downloads) {
+  // A second click on the shield button should dismiss the open panel rather
+  // than stack another one.
+  if (g_panel) {
+    ClosePanel();
+    return;
+  }
+  if (!EnsureClassRegistered(instance)) {
+    ShowFallbackSummary(owner, blocked_count, standard_downloads);
+    return;
+  }
+
+  const UINT dpi = GetDpiForWindow(owner) ? GetDpiForWindow(owner) : 96;
+  const int width = MulDiv(kPanelLogicalWidth, static_cast<int>(dpi), 96);
+  const int height = MulDiv(kPanelLogicalHeight, static_cast<int>(dpi), 96);
+
+  RECT anchor_rect{};
+  if (!anchor || !GetWindowRect(anchor, &anchor_rect)) {
+    GetWindowRect(owner, &anchor_rect);
+  }
+  int x = anchor_rect.right - width;
+  int y = anchor_rect.bottom + MulDiv(kAnchorGapLogical, static_cast<int>(dpi), 96);
+
+  // Keep the whole panel on the monitor the button lives on.
+  MONITORINFO monitor{sizeof(monitor)};
+  if (GetMonitorInfoW(MonitorFromRect(&anchor_rect, MONITOR_DEFAULTTONEAREST),
+                      &monitor)) {
+    x = std::max<int>(monitor.rcWork.left, std::min<int>(x, monitor.rcWork.right - width));
+    y = std::max<int>(monitor.rcWork.top, std::min<int>(y, monitor.rcWork.bottom - height));
+  }
+
+  g_panel = CreateWindowExW(WS_EX_TOOLWINDOW, kPanelClassName, L"MTK Shields",
+                            WS_POPUP, x, y, width, height, owner, nullptr,
+                            instance, nullptr);
+  if (!g_panel) {
+    ShowFallbackSummary(owner, blocked_count, standard_downloads);
+    return;
+  }
+  // Win11 rounds the popup; on Win10 this attribute is ignored.
+  const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+  DwmSetWindowAttribute(g_panel, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
+                        sizeof(corner));
+
+  CefRefPtr<PanelClient> client = new PanelClient(g_panel);
+  g_client = client;
+
+  CefWindowInfo info;
+  info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+  info.SetAsChild(g_panel, CefRect(0, 0, width, height));
+  CefBrowserSettings settings;
+  // Matches the page background so the panel never flashes white while loading.
+  settings.background_color =
+      CefColorSetARGB(255, kPanelRed, kPanelGreen, kPanelBlue);
+  if (!CefBrowserHost::CreateBrowser(info, client,
+                                     PanelUrl(blocked_count, standard_downloads),
+                                     settings, nullptr, nullptr)) {
+    client->Detach();
+    g_client = nullptr;
+    HWND panel = g_panel;
+    g_panel = nullptr;
+    DestroyWindow(panel);
+    ShowFallbackSummary(owner, blocked_count, standard_downloads);
+    return;
+  }
+
+  ShowWindow(g_panel, SW_SHOW);
+  SetForegroundWindow(g_panel);
+}
+
+}  // namespace mtk::shields

@@ -17,18 +17,33 @@ set(MTK_BROWSER_SOURCES
   src/browser_client.h
   src/browser_window.cpp
   src/browser_window.h
+  src/inline_asset.cpp
+  src/inline_asset.h
+  src/shields_panel.cpp
+  src/shields_panel.h
   src/policy.cpp
   src/policy.h
   src/filter_engine.cpp
   src/filter_engine.h
+  src/updater.cpp
+  src/updater.h
+  src/update_public_key.h
   resources/mtk_filters.txt
+  resources/mtk_block_shield.webm
+  resources/mtk_siren_alert.webm
 )
 
 SET_CEF_TARGET_OUT_DIR()
 
-add_executable(mtk_browser WIN32 ${MTK_BROWSER_SOURCES})
-
-SET_EXECUTABLE_TARGET_PROPERTIES(mtk_browser)
+if(MTK_ENABLE_CEF_SANDBOX)
+  # Sandboxed packaging: this application is a DLL loaded by CEF's bootstrap
+  # executable, which sets up the Chromium sandbox before calling RunWinMain.
+  add_library(mtk_browser SHARED ${MTK_BROWSER_SOURCES})
+  SET_LIBRARY_TARGET_PROPERTIES(mtk_browser)
+else()
+  add_executable(mtk_browser WIN32 ${MTK_BROWSER_SOURCES})
+  SET_EXECUTABLE_TARGET_PROPERTIES(mtk_browser)
+endif()
 
 target_include_directories(mtk_browser PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -42,6 +57,11 @@ target_link_libraries(mtk_browser PRIVATE
   uxtheme.lib
   shell32.lib
   ole32.lib
+  # Windows CNG, used for the parent-PIN PBKDF2 verifier and update signatures.
+  bcrypt.lib
+  # HTTPS update checks and base64 decoding, both from the OS.
+  winhttp.lib
+  crypt32.lib
 )
 
 set_target_properties(mtk_browser PROPERTIES
@@ -49,14 +69,50 @@ set_target_properties(mtk_browser PROPERTIES
   VS_DEBUGGER_WORKING_DIRECTORY "${CEF_TARGET_OUT_DIR}"
 )
 
-# Stage the MTK Shields filter list beside the executable so the engine can
-# load it at startup.
+# Stage the MTK Shields filter list and the two rendered loops beside the
+# executable so all three can be loaded at runtime.
 add_custom_command(TARGET mtk_browser POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_filters.txt"
           "$<TARGET_FILE_DIR:mtk_browser>/mtk_filters.txt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_block_shield.webm"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_block_shield.webm"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_siren_alert.webm"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_siren_alert.webm"
   VERBATIM
 )
+
+if(MTK_ENABLE_CEF_SANDBOX)
+  # CEF's bootstrap loads "<exe base name>.dll", so the shipped executable must
+  # be named MTKBrowser.exe next to MTKBrowser.dll. The bootstrap refuses to run
+  # under its original name, which also stops a stray copy from doing anything.
+  add_custom_command(TARGET mtk_browser POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CEF_BINARY_DIR}/bootstrap.exe"
+            "$<TARGET_FILE_DIR:mtk_browser>/MTKBrowser.exe"
+    COMMENT "Staging CEF bootstrap as MTKBrowser.exe..."
+    VERBATIM
+  )
+
+  # Icon, version details and the process-wide manifest (per-monitor DPI, long
+  # paths, common controls) all belong on the executable that users see, which
+  # is now CEF's binary, so they are stamped onto our copy after staging.
+  add_custom_command(TARGET mtk_browser POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E env python
+            "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/apply_exe_resources.py"
+            "$<TARGET_FILE:mtk_browser>"
+            "$<TARGET_FILE_DIR:mtk_browser>/MTKBrowser.exe"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/mtk_browser.manifest"
+    COMMENT "Applying MTK Browser icon, version and manifest to MTKBrowser.exe..."
+    VERBATIM
+  )
+
+  # Grant the LPAC ACLs that Chromium's sandboxed processes need to read the
+  # application directory.
+  SET_LPAC_ACLS(mtk_browser)
+endif()
 
 COPY_FILES(mtk_browser "${CEF_BINARY_FILES}"
            "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")

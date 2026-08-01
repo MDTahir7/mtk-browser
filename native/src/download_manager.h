@@ -104,4 +104,13 @@ class Manager final {
 // Human readable status line for the downloads UI.
 std::wstring DescribeItem(const Item& item);
 
+// Writes the Windows "mark of the web" onto a finished download, recording that
+// the file came from the internet zone. Windows, Defender/SmartScreen and
+// Office then treat it as untrusted: execution warns, and Office documents open
+// in Protected View. Returns false when the marker could not be written, which
+// happens on file systems without alternate data stream support.
+//
+// This marks the file; it does not itself run an antivirus scan.
+bool ApplyMarkOfTheWeb(const std::wstring& full_path, const std::string& url);
+
 }  // namespace mtk::downloads

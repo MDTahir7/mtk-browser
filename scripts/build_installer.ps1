@@ -16,7 +16,7 @@ if (-not (Test-Path $icon)) {
     if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed.' }
 }
 
-& cmake --build 'build/native-adblock' --config Release --target mtk_browser
+& cmake --build 'build/native-sandbox' --config Release --target mtk_browser
 if ($LASTEXITCODE -ne 0) { throw 'Native Release build failed.' }
 
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'stage_release.ps1')
@@ -56,7 +56,11 @@ function Invoke-CodeSign([string]$Path) {
 }
 
 $stagedExe = Join-Path $repoRoot 'dist\MTK Browser\MTKBrowser.exe'
-$stagedExeSigned = Invoke-CodeSign $stagedExe
+$stagedDll = Join-Path $repoRoot 'dist\MTK Browser\MTKBrowser.dll'
+# CEF's bootstrap requires the EXE and the application DLL to carry the same
+# signing state, so they are always signed together.
+$stagedDllSigned = Invoke-CodeSign $stagedDll
+$stagedExeSigned = (Invoke-CodeSign $stagedExe) -and $stagedDllSigned
 
 $isccCandidates = @(
     (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),

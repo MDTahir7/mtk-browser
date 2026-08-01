@@ -299,14 +299,10 @@ std::string DecodeQuery(std::string_view value) {
   return decoded;
 }
 
-// True when any whole word of the decoded query/path matches a blocked word,
-// or contains one of the unambiguous adult/illegal substrings.
-bool HasBlockedSearchTerm(std::string_view raw_url) {
-  const auto query_start = raw_url.find('?');
-  const std::string text = DecodeQuery(
-      query_start == std::string_view::npos ? std::string_view{}
-                                           : raw_url.substr(query_start + 1));
-
+// True when any whole word of the given text matches a blocked word, or
+// contains one of the unambiguous adult/illegal substrings. Word boundaries
+// keep names such as "essex" or "analytics" allowed.
+bool HasBlockedTerm(std::string_view text) {
   size_t start = 0;
   while (start < text.size()) {
     size_t end = start;
@@ -334,6 +330,21 @@ bool HasBlockedSearchTerm(std::string_view raw_url) {
     }
   }
   return false;
+}
+
+bool HasBlockedSearchTerm(std::string_view raw_url) {
+  const auto query_start = raw_url.find('?');
+  if (query_start == std::string_view::npos) return false;
+  return HasBlockedTerm(DecodeQuery(raw_url.substr(query_start + 1)));
+}
+
+// Path plus query of a URL, without scheme or host.
+std::string_view PathAndQuery(std::string_view url) {
+  const auto scheme_end = url.find("://");
+  if (scheme_end == std::string_view::npos) return {};
+  const auto path_start = url.find('/', scheme_end + 3);
+  if (path_start == std::string_view::npos) return {};
+  return url.substr(path_start);
 }
 
 // Host-level adult/illegal classification, applied to every resource type so
@@ -461,14 +472,33 @@ bool IsSocialPlatformNsfw(const std::string& raw_url) {
     }
   }
 
+  // Instagram offers no network-enforceable safe mode, so MTK Browser closes
+  // the unfiltered discovery surfaces instead: Explore, the Reels feed, their
+  // API routes, and any hashtag or search term that matches the word lists.
+  // A single post opened from a follower's own feed is still shown; MTK
+  // Browser cannot classify the media inside it.
   if (host == "instagram.com" || host.ends_with(".instagram.com")) {
-    if (url.find("/explore/tags/porn") != std::string::npos ||
-        url.find("/explore/tags/nsfw") != std::string::npos ||
-        url.find("/explore/tags/xxx") != std::string::npos ||
-        url.find("/explore/tags/sex") != std::string::npos ||
-        url.find("/explore/tags/nude") != std::string::npos) {
+    const std::string target = DecodeQuery(PathAndQuery(url));
+    // Instagram serves search and hashtag pages from under /explore/, so those
+    // two routes stay usable and are judged by the word lists below instead.
+    // Only the "browse anything" surfaces are closed outright.
+    const bool search_surface = target.starts_with("/explore/search") ||
+                                target.starts_with("/explore/tags/") ||
+                                target.find("/web/search/") != std::string::npos;
+    if (!search_surface &&
+        (target.starts_with("/explore") ||
+         target.find("/explore/") != std::string::npos ||
+         target.find("explore_grid") != std::string::npos ||
+         target.find("/discover/") != std::string::npos)) {
       return true;
     }
+    if (target.starts_with("/reels/") || target == "/reels" ||
+        target.find("/clips/discover") != std::string::npos ||
+        target.find("reels_tray") != std::string::npos) {
+      return true;
+    }
+    // Covers /<tag> pages, topsearch suggestions and graphql search variables.
+    if (HasBlockedTerm(target)) return true;
   }
 
   if (host == "twitch.tv" || host.ends_with(".twitch.tv")) {
@@ -517,6 +547,23 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
   return {true, {}};
 }
 
+std::string SafeSurfaceRedirect(const std::string& raw_url) {
+  const std::string url = Lower(raw_url);
+  const std::string host = ExtractHost(url);
+  if (host != "instagram.com" && !host.ends_with(".instagram.com")) return {};
+
+  // Instagram's Search button points at /explore/, so a hard block would take
+  // search away with it. Send those browse surfaces to the keyword search page
+  // instead; the grid of arbitrary recommended posts is what must not load.
+  const std::string target = DecodeQuery(PathAndQuery(url));
+  const bool browse_grid = target == "/explore" || target == "/explore/" ||
+                           target.starts_with("/explore?") ||
+                           target.starts_with("/explore/people") ||
+                           target.starts_with("/explore/locations");
+  if (!browse_grid) return {};
+  return "https://www.instagram.com/explore/search/keyword/?q=";
+}
+
 NavigationDecision EvaluateNavigation(const std::string& raw_url) {
   const auto decision = EvaluateRequest(raw_url, ResourceType::kMainFrame);
   if (!decision.allow) return {false, {}, decision.reason};
@@ -558,8 +605,21 @@ NavigationDecision ResolveInput(const std::string& raw_input) {
 }
 
 std::vector<std::pair<std::string, std::string>> PrivacyRequestHeaders(
-    const std::string&) {
-  return {{"DNT", "1"}, {"Sec-GPC", "1"}};
+    const std::string& raw_url) {
+  std::vector<std::pair<std::string, std::string>> headers{{"DNT", "1"},
+                                                           {"Sec-GPC", "1"}};
+  // Google's documented network-level control for YouTube Restricted Mode.
+  // It must reach the watch pages and the InnerTube API hosts that serve
+  // search, recommendation and playback metadata, otherwise the SPA can still
+  // return mature results. See support.google.com/a/answer/6214622.
+  const std::string host = ExtractHost(Lower(raw_url));
+  const bool youtube_restrictable =
+      HostMatches(host, "youtube.com") ||
+      HostMatches(host, "youtube-nocookie.com") ||
+      HostMatches(host, "youtubei.googleapis.com") ||
+      HostMatches(host, "youtube.googleapis.com");
+  if (youtube_restrictable) headers.push_back({"YouTube-Restrict", "Strict"});
+  return headers;
 }
 
 std::string HostOf(const std::string& raw_url) {

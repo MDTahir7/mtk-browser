@@ -16,13 +16,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 file(TO_CMAKE_PATH "${CEF_ROOT}" CEF_ROOT)
 
-option(MTK_ENABLE_CEF_SANDBOX "Use the CEF 150 Windows bootstrap sandbox" OFF)
-if(MTK_ENABLE_CEF_SANDBOX)
-  message(FATAL_ERROR
-    "CEF 150 sandboxing uses bootstrap.exe plus an application DLL. "
-    "The current development executable target does not implement that packaging yet.")
-endif()
-set(USE_SANDBOX OFF CACHE BOOL "CEF bootstrap sandbox" FORCE)
+# CEF 150 sandboxing on Windows uses CEF's bootstrap executable plus an
+# application DLL that exports RunWinMain. MTK Browser ships that packaging:
+# MTKBrowser.exe is CEF's bootstrap and MTKBrowser.dll is this application.
+# Turning this off produces a single unsandboxed executable, which is only
+# intended for local debugging.
+option(MTK_ENABLE_CEF_SANDBOX "Use the CEF 150 Windows bootstrap sandbox" ON)
+set(USE_SANDBOX ${MTK_ENABLE_CEF_SANDBOX} CACHE BOOL "CEF bootstrap sandbox" FORCE)
 
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
 find_package(CEF REQUIRED)
