@@ -46,6 +46,11 @@ constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT_PTR kDownloadSaveTimer = 3;
 constexpr UINT_PTR kSessionSaveTimer = 4;
+// Hover playback for the rendered shield. 33 ms is one frame at 30 fps, which is
+// the rate the strip is rendered at.
+constexpr UINT_PTR kShieldAnimTimer = 7;
+constexpr UINT kShieldFrameMs = 33;
+constexpr wchar_t kShieldStripFile[] = L"mtk_shield_hover.png";
 // First automatic update check runs shortly after startup so it never competes
 // with loading the first page, then repeats twice a day.
 constexpr UINT_PTR kUpdateStartupTimer = 5;
@@ -1315,6 +1320,39 @@ LRESULT CALLBACK BrowserWindow::AddressProc(HWND window, UINT message,
   return DefSubclassProc(window, message, w_param, l_param);
 }
 
+LRESULT CALLBACK BrowserWindow::ShieldProc(HWND window, UINT message,
+                                           WPARAM w_param, LPARAM l_param,
+                                           UINT_PTR, DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  if (self) {
+    if (message == WM_MOUSEMOVE) {
+      // TME_LEAVE has to be re-armed on every entry, otherwise the leave
+      // notification arrives only once and the animation would keep running.
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window, 0};
+      TrackMouseEvent(&track);
+      self->SetShieldHover(true);
+    } else if (message == WM_MOUSELEAVE) {
+      self->SetShieldHover(false);
+    }
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, ShieldProc, 3);
+  return DefSubclassProc(window, message, w_param, l_param);
+}
+
+void BrowserWindow::SetShieldHover(bool hovering) {
+  if (shield_hovering_ == hovering) return;
+  shield_hovering_ = hovering;
+  if (!shield_strip_.valid()) return;
+  if (hovering) {
+    shield_frame_ = 0;
+    SetTimer(window_, kShieldAnimTimer, kShieldFrameMs, nullptr);
+  } else {
+    KillTimer(window_, kShieldAnimTimer);
+    shield_frame_ = 0;
+  }
+  if (shield_) InvalidateRect(shield_, nullptr, FALSE);
+}
+
 LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
                                          WPARAM w_param, LPARAM l_param,
                                          UINT_PTR, DWORD_PTR reference_data) {
@@ -1626,6 +1664,10 @@ void BrowserWindow::CreateControls() {
                     reinterpret_cast<DWORD_PTR>(this));
   SetWindowSubclass(find_, FindProc, 2,
                     reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(shield_, ShieldProc, 3,
+                    reinterpret_cast<DWORD_PTR>(this));
+  // A missing or malformed strip is not an error: the shield keeps its glyph.
+  shield_strip_.Load(kShieldStripFile);
 }
 
 bool BrowserWindow::CreateTab(const std::string& initial_url) {
@@ -2153,14 +2195,27 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
                pressed ? kBorderColor : kControlHoverColor);
   }
 
-  wchar_t text[16]{};
-  GetWindowTextW(item.hwndItem, text, 16);
-  SelectObject(item.hDC, glyph_font_);
-  SetTextColor(item.hDC, disabled ? kDisabledColor
-                                  : (item.CtlID == kShieldId ? kShieldColor
-                                                             : kTextColor));
-  DrawTextW(item.hDC, text, -1, &bounds,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  bool painted_icon = false;
+  if (item.CtlID == kShieldId && shield_strip_.valid()) {
+    // The rendered shield replaces the glyph. Frame 0 is the resting pose, so a
+    // button that is not hovered still shows the same artwork.
+    RECT icon = bounds;
+    const int inset = Scaled(6);
+    InflateRect(&icon, -inset, -inset);
+    painted_icon = shield_strip_.Draw(item.hDC, icon,
+                                      shield_hovering_ ? shield_frame_ : 0);
+  }
+
+  if (!painted_icon) {
+    wchar_t text[16]{};
+    GetWindowTextW(item.hwndItem, text, 16);
+    SelectObject(item.hDC, glyph_font_);
+    SetTextColor(item.hDC, disabled ? kDisabledColor
+                                    : (item.CtlID == kShieldId ? kShieldColor
+                                                               : kTextColor));
+    DrawTextW(item.hDC, text, -1, &bounds,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
 
   unsigned long badge_value = 0;
   if (item.CtlID == kShieldId) {
@@ -2316,6 +2371,13 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         StartUpdateCheck(false);
       } else if (w_param == kUpdatePeriodicTimer) {
         StartUpdateCheck(false);
+      } else if (w_param == kShieldAnimTimer) {
+        if (shield_hovering_ && shield_strip_.valid()) {
+          shield_frame_ = (shield_frame_ + 1) % shield_strip_.frame_count();
+          if (shield_) InvalidateRect(shield_, nullptr, FALSE);
+        } else {
+          KillTimer(window_, kShieldAnimTimer);
+        }
       } else if (w_param == kSessionSaveTimer) {
         KillTimer(window_, kSessionSaveTimer);
         SaveSessionSnapshot();

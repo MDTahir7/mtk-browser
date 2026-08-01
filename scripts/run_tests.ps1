@@ -31,20 +31,28 @@ $sources = @(
     (Join-Path $testDir 'policy_tests.cpp'),
     (Join-Path $testDir 'download_tests.cpp'),
     (Join-Path $testDir 'session_tests.cpp'),
+    (Join-Path $testDir 'icon_strip_tests.cpp'),
     (Join-Path $sourceDir 'policy.cpp'),
     (Join-Path $sourceDir 'filter_engine.cpp'),
     (Join-Path $sourceDir 'download_manager.cpp'),
     (Join-Path $sourceDir 'session_store.cpp'),
-    (Join-Path $sourceDir 'preferences.cpp')
+    (Join-Path $sourceDir 'preferences.cpp'),
+    (Join-Path $sourceDir 'icon_strip.cpp')
 )
 foreach ($source in $sources) {
     if (-not (Test-Path $source)) { throw "Missing source file: $source" }
 }
 
 $exe = Join-Path $outputDir 'mtk_tests.exe'
+
+# The icon strip loader reads from the directory of the running executable, so the
+# shipped asset is staged beside the test binary and the real file is exercised.
+Copy-Item (Join-Path $repoRoot 'native\resources\mtk_shield_hover.png') `
+    (Join-Path $outputDir 'mtk_shield_hover.png') -Force
 $quoted = ($sources | ForEach-Object { '"' + $_ + '"' }) -join ' '
 $command = "cl /nologo /std:c++20 /EHsc /W3 /permissive- /DNOMINMAX /I`"$sourceDir`" " +
-           "/I`"$testDir`" $quoted /Fo`"$outputDir\\`" /Fe`"$exe`" shell32.lib ole32.lib bcrypt.lib"
+           "/I`"$testDir`" $quoted /Fo`"$outputDir\\`" /Fe`"$exe`" " +
+           "shell32.lib ole32.lib bcrypt.lib windowscodecs.lib msimg32.lib gdi32.lib user32.lib"
 
 $batch = Join-Path $outputDir 'run_tests.cmd'
 @(

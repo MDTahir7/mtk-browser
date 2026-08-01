@@ -60,6 +60,26 @@ foreach ($assetName in $inlineAnimations.Keys) {
     }
 }
 
+# The toolbar shield plays a rendered frame strip. Its frames must stay square
+# and within the loader's limits in native/src/icon_strip.cpp, or the button
+# silently falls back to the flat glyph.
+$iconStrip = Join-Path $target 'mtk_shield_hover.png'
+if (-not (Test-Path $iconStrip)) {
+    throw 'Shield hover strip (mtk_shield_hover.png) is missing from the build output.'
+}
+Add-Type -AssemblyName System.Drawing
+$stripImage = [System.Drawing.Image]::FromFile($iconStrip)
+try {
+    $stripWidth = $stripImage.Width
+    $stripHeight = $stripImage.Height
+} finally {
+    $stripImage.Dispose()
+}
+if ($stripHeight -le 0 -or $stripHeight -gt 256 -or $stripWidth -gt 4096 -or
+    ($stripWidth % $stripHeight) -ne 0) {
+    throw "Shield hover strip is ${stripWidth}x${stripHeight}; frames must be square, at most 256 px, and the strip at most 4096 px wide."
+}
+
 # CEF's bootstrap refuses to run under its original name, so an unrenamed copy
 # would only ever be a confusing dead file in the install directory.
 Get-ChildItem -Path $target -File -Include 'bootstrap.exe', 'bootstrapc.exe' |

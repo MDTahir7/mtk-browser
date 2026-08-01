@@ -7,6 +7,7 @@
 
 #include "include/cef_browser.h"
 #include "browser_client.h"
+#include "icon_strip.h"
 
 class BrowserWindow final : public BrowserClientDelegate {
  public:
@@ -57,6 +58,12 @@ class BrowserWindow final : public BrowserClientDelegate {
                                    WPARAM w_param, LPARAM l_param,
                                    UINT_PTR subclass_id,
                                    DWORD_PTR reference_data);
+  // Owner-draw buttons only repaint when Windows asks them to, so hover has to
+  // be observed on the control itself to drive the shield animation.
+  static LRESULT CALLBACK ShieldProc(HWND window, UINT message,
+                                     WPARAM w_param, LPARAM l_param,
+                                     UINT_PTR subclass_id,
+                                     DWORD_PTR reference_data);
   LRESULT HandleMessage(UINT message, WPARAM w_param, LPARAM l_param);
   bool HandleShortcut(int virtual_key, bool control, bool alt, bool shift);
   void CreateControls();
@@ -97,6 +104,7 @@ class BrowserWindow final : public BrowserClientDelegate {
   void OpenLibraryEntry(bool bookmarks, size_t index);
   void ScheduleLibrarySave();
   void ScheduleSessionSave();
+  void SetShieldHover(bool hovering);
   void SaveSessionSnapshot();
   void CreateStartupTabs();
   void SelectTab(size_t index);
@@ -164,6 +172,11 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool progress_active_ = false;
   int progress_phase_ = 0;
   bool closing_ = false;
+  // Rendered shield frames for the toolbar button, plus the hover playback
+  // state. An unavailable strip leaves the static glyph in place.
+  mtk::icons::Strip shield_strip_;
+  bool shield_hovering_ = false;
+  int shield_frame_ = 0;
   // A single update check at a time; the worker owns the pending result until
   // the UI thread collects it.
   bool update_check_running_ = false;

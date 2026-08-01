@@ -11,6 +11,8 @@ set(MTK_BROWSER_SOURCES
   src/download_manager.h
   src/session_store.cpp
   src/session_store.h
+  src/icon_strip.cpp
+  src/icon_strip.h
   src/mtk_app.cpp
   src/mtk_app.h
   src/browser_client.cpp
@@ -31,6 +33,7 @@ set(MTK_BROWSER_SOURCES
   resources/mtk_filters.txt
   resources/mtk_block_shield.webm
   resources/mtk_siren_alert.webm
+  resources/mtk_shield_hover.png
 )
 
 SET_CEF_TARGET_OUT_DIR()
@@ -62,6 +65,10 @@ target_link_libraries(mtk_browser PRIVATE
   # HTTPS update checks and base64 decoding, both from the OS.
   winhttp.lib
   crypt32.lib
+  # Windows Imaging Component decodes and scales the toolbar icon strip, and
+  # msimg32 provides AlphaBlend for compositing its premultiplied frames.
+  windowscodecs.lib
+  msimg32.lib
 )
 
 set_target_properties(mtk_browser PROPERTIES
@@ -81,6 +88,9 @@ add_custom_command(TARGET mtk_browser POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_siren_alert.webm"
           "$<TARGET_FILE_DIR:mtk_browser>/mtk_siren_alert.webm"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_shield_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_shield_hover.png"
   VERBATIM
 )
 
