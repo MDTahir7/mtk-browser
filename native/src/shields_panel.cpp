@@ -18,10 +18,10 @@ namespace {
 
 constexpr wchar_t kPanelClassName[] = L"MtkShieldsPanel";
 constexpr wchar_t kBeaconFile[] = L"mtk_siren_alert.webm";
-// Validated against the real markup at this exact size: the content measures
-// 518 px tall, so nothing is clipped and no scrollbar appears.
+// Sized for the real markup with a little slack, so rounding the type up to whole
+// pixels cannot clip the last row. Verified against the live panel.
 constexpr int kPanelLogicalWidth = 344;
-constexpr int kPanelLogicalHeight = 520;
+constexpr int kPanelLogicalHeight = 540;
 constexpr int kAnchorGapLogical = 6;
 // Kept as channels so both the GDI brush and CEF's background colour are built
 // without casting a constant through GetRValue and friends.
@@ -32,11 +32,28 @@ constexpr COLORREF kPanelBackground = RGB(kPanelRed, kPanelGreen, kPanelBlue);
 // Posted by the client once CEF has finished tearing the browser down, which is
 // when the popup may safely be destroyed.
 constexpr UINT kBrowserClosedMessage = WM_APP + 41;
+// Posted once the hosted browser exists, which is when dismissal may be armed.
+constexpr UINT kBrowserReadyMessage = WM_APP + 42;
 
 // Only one panel exists at a time, so its window and client are tracked here
 // rather than threaded through the caller.
 HWND g_panel = nullptr;
 CefRefPtr<CefClient> g_client;
+// Activation arrives before CEF has finished creating the hosted browser, and an
+// early WA_INACTIVE used to tear the popup down while the browser was still
+// starting. That left a live browser with no window, which is why the panel
+// could not be dismissed afterwards. Dismissal is therefore armed only once the
+// browser exists.
+bool g_dismiss_armed = false;
+// A click on the shield button first deactivates the panel, so the watchdog
+// closes it a moment before the button command arrives. Without this the command
+// would immediately reopen what the user meant to close.
+ULONGLONG g_closed_tick = 0;
+constexpr ULONGLONG kReopenGuardMs = 450;
+// Polling the foreground window is what makes "click outside" reliable: it works
+// whether the click lands on our own window, another application, or the shell.
+constexpr UINT_PTR kDismissTimer = 1;
+constexpr UINT kDismissPollMs = 150;
 
 // A data: URL ends at the first '#', and a stray '%' would be read as the start
 // of an escape, so those two characters are encoded. Everything else is written
@@ -99,15 +116,18 @@ std::string PanelUrl(unsigned long blocked_count, bool standard_downloads) {
       "justify-content:center;gap:8px;padding:11px 18px;background:#161f38;"
       "border-top:1px solid #2a3350;border-bottom:1px solid #2a3350}"
       ".count b{font-size:26px;font-weight:700;color:#60a5fa}"
-      ".count span{font-size:11.5px;color:#96a2be}"
+      ".count span{font-size:12px;color:#96a2be}"
       "ul{flex:1 1 auto;list-style:none;margin:0;padding:9px 18px 12px;"
       "overflow:hidden}"
-      "li{display:flex;gap:9px;align-items:flex-start;padding:4.5px 0;"
-      "font-size:12px;line-height:1.35}"
+      // Every length here is a whole CSS pixel on purpose. Half pixels land
+      // between device pixels at 125% and 150% scaling, and the resulting
+      // antialiasing is what made this panel look soft next to the page.
+      "li{display:flex;gap:9px;align-items:flex-start;padding:5px 0;"
+      "font-size:12px;line-height:1.4}"
       "li i{flex:0 0 12px;color:#4ade80;font-style:normal;font-weight:700;"
       "font-size:11px}"
-      "li small{display:block;color:#96a2be;font-size:10.5px}"
-      ".hint{flex:0 0 auto;padding:0 18px 11px;font-size:10.5px;color:#6d7ba0;"
+      "li small{display:block;color:#96a2be;font-size:11px}"
+      ".hint{flex:0 0 auto;padding:0 18px 11px;font-size:11px;color:#6d7ba0;"
       "text-align:center}"
       "</style><div class=hero>" + art +
       "<h1>MTK Shields are active</h1><div class=pill>PROTECTING</div></div>"
@@ -170,11 +190,25 @@ class PanelClient final : public CefClient,
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
+    // The popup was already dismissed while this browser was starting, so it has
+    // no host window to live in and is closed at once instead of being orphaned.
+    if (!panel_) {
+      browser->GetHost()->CloseBrowser(true);
+      return;
+    }
+    PostMessageW(panel_, kBrowserReadyMessage, 0, 0);
   }
 
-  // The popup owns the lifetime, so CEF must not destroy the host window on its
-  // own; the panel closes the browser and waits for OnBeforeClose.
-  bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
+  // Returning false lets CEF continue the close, and CEF then sends WM_CLOSE to
+  // this browser's host window. That second WM_CLOSE must not call CloseBrowser
+  // again, or the popup and CEF hand the same close back and forth forever and
+  // the panel never goes away, so the state is recorded here.
+  bool DoClose(CefRefPtr<CefBrowser>) override {
+    closing_ = true;
+    return false;
+  }
+
+  bool closing() const { return closing_; }
 
   void OnBeforeClose(CefRefPtr<CefBrowser>) override {
     browser_ = nullptr;
@@ -238,6 +272,7 @@ class PanelClient final : public CefClient,
   }
 
   HWND panel_ = nullptr;
+  bool closing_ = false;
   CefRefPtr<CefBrowser> browser_;
 
   IMPLEMENT_REFCOUNTING(PanelClient);
@@ -250,28 +285,61 @@ PanelClient* CurrentClient() {
 void DestroyPanel() {
   if (auto* client = CurrentClient()) client->Detach();
   g_client = nullptr;
+  g_dismiss_armed = false;
+  g_closed_tick = GetTickCount64();
   if (g_panel) {
     HWND panel = g_panel;
     g_panel = nullptr;
+    KillTimer(panel, kDismissTimer);
     DestroyWindow(panel);
   }
+}
+
+// True while the panel, or the CEF child inside it, owns the foreground.
+bool PanelHoldsForeground(HWND panel) {
+  const HWND foreground = GetForegroundWindow();
+  if (!foreground) return false;
+  return foreground == panel || GetAncestor(foreground, GA_ROOT) == panel;
 }
 
 LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
                            LPARAM l_param) {
   switch (message) {
+    case kBrowserReadyMessage:
+      // The hosted browser exists, so losing activation now genuinely means the
+      // user clicked away.
+      g_dismiss_armed = true;
+      SetTimer(window, kDismissTimer, kDismissPollMs, nullptr);
+      return 0;
     case WM_ACTIVATE:
       // Clicking anywhere outside activates another window, which is the
       // dismissal gesture users expect from a toolbar popup.
-      if (LOWORD(w_param) == WA_INACTIVE) {
+      if (g_dismiss_armed && LOWORD(w_param) == WA_INACTIVE) {
+        PostMessageW(window, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      break;
+    case WM_TIMER:
+      // Activation messages alone are not dependable here: the click may land on
+      // the CEF child of another window, or on the shell, and some of those
+      // paths never deliver WA_INACTIVE to this popup.
+      if (w_param == kDismissTimer && g_dismiss_armed &&
+          !PanelHoldsForeground(window)) {
+        PostMessageW(window, WM_CLOSE, 0, 0);
+      }
+      return 0;
+    case WM_KEYDOWN:
+      // Esc reaches the popup itself when focus has not moved into the browser.
+      if (w_param == VK_ESCAPE) {
         PostMessageW(window, WM_CLOSE, 0, 0);
         return 0;
       }
       break;
     case WM_CLOSE: {
-      // Let CEF unwind first; the window is destroyed on kBrowserClosedMessage.
+      // First close: ask CEF to unwind and wait. Once DoClose has run, CEF sends
+      // WM_CLOSE here again, and that is the pass that tears the popup down.
       auto* client = CurrentClient();
-      if (client && client->browser()) {
+      if (client && client->browser() && !client->closing()) {
         client->browser()->GetHost()->CloseBrowser(true);
         return 0;
       }
@@ -320,6 +388,9 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
     ClosePanel();
     return;
   }
+  // The same click that reaches this command is what deactivated an open panel a
+  // moment ago, so treat it as the closing half of the toggle.
+  if (GetTickCount64() - g_closed_tick < kReopenGuardMs) return;
   if (!EnsureClassRegistered(instance)) {
     ShowFallbackSummary(owner, blocked_count, standard_downloads);
     return;
@@ -333,13 +404,19 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
   if (!anchor || !GetWindowRect(anchor, &anchor_rect)) {
     GetWindowRect(owner, &anchor_rect);
   }
+  // Right-aligning under the button is the usual toolbar-popup placement, but the
+  // shield sits near the left edge, where that would push most of the panel off
+  // screen and the clamp would drop it in the corner away from its button. Left
+  // alignment is used whenever the right-aligned edge would not fit.
+  MONITORINFO monitor{sizeof(monitor)};
+  const bool have_monitor = GetMonitorInfoW(
+      MonitorFromRect(&anchor_rect, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE;
   int x = anchor_rect.right - width;
+  if (have_monitor && x < monitor.rcWork.left) x = anchor_rect.left;
   int y = anchor_rect.bottom + MulDiv(kAnchorGapLogical, static_cast<int>(dpi), 96);
 
   // Keep the whole panel on the monitor the button lives on.
-  MONITORINFO monitor{sizeof(monitor)};
-  if (GetMonitorInfoW(MonitorFromRect(&anchor_rect, MONITOR_DEFAULTTONEAREST),
-                      &monitor)) {
+  if (have_monitor) {
     x = std::max<int>(monitor.rcWork.left, std::min<int>(x, monitor.rcWork.right - width));
     y = std::max<int>(monitor.rcWork.top, std::min<int>(y, monitor.rcWork.bottom - height));
   }
