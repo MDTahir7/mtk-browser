@@ -37,9 +37,11 @@ has been actually built and verified, and any limitation is written down.
   - One `BrowserWindow` per top-level window, per-window tab list, window state
     persistence, and a profile-scoped singleton that focuses the right window.
 - [~] **T1.7 Automated tests + CI**
-  - Started: native logic test suite under `tests/` with `scripts/run_tests.ps1`
-    (policy, download rules, session store).
-  - Remaining: CI workflow that builds Release and runs the suite on every push.
+  - Done: 41-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+    covering navigation/request policy, download rules and file-name hardening,
+    and session-restore persistence. Verified passing locally.
+  - Remaining: a CI workflow that builds Release and runs the suite on every
+    push, plus coverage for CEF-dependent paths that need a live browser.
 
 ## Tier 2 — Daily-use parity
 
