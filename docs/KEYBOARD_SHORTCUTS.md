@@ -58,6 +58,7 @@ page is generated from a single table in `BrowserWindow::ShowShortcutsPage()`.
 | `Alt+O` | Bookmarks |
 | `Alt+H` | History |
 | `Alt+J` | Downloads |
+| `Alt+S` | Settings for this site |
 | `Alt+/` | This list, in a tab |
 
 ## What is left alone, and why

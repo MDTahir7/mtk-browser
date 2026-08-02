@@ -19,6 +19,7 @@
 #include "filter_engine.h"
 #include "inline_asset.h"
 #include "policy.h"
+#include "site_settings.h"
 
 namespace {
 
@@ -733,15 +734,53 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
   if (IsTrustedPdfViewerUrl(url)) return this;
   if (IsInertBlockAnimation(url, request->GetResourceType())) return this;
 
+  // A site can be excused from ad and tracker filtering, which is what the
+  // per-site Shields switch does. It cannot be excused from the safety rules:
+  // EvaluateRequest still refuses unsupported schemes, private-network hosts,
+  // unsafe hosts, adult search terms and NSFW social surfaces regardless.
+  const bool ad_filtering = AdFilteringAllowedForCurrentPage();
   const auto decision = mtk::policy::EvaluateRequest(
       url, MapResourceType(request->GetResourceType()),
-      request_initiator.ToString());
+      request_initiator.ToString(), ad_filtering);
   if (!decision.allow) {
     g_blocked_count.fetch_add(1, std::memory_order_relaxed);
     disable_default_handling = true;
     return nullptr;
   }
   return this;
+}
+
+bool BrowserClient::AdFilteringAllowedForCurrentPage() const {
+  // The switch belongs to the page the user is on, not to the host being
+  // fetched, so a page with Shields off keeps its third-party resources.
+  if (!browser_) return true;
+  auto frame = browser_->GetMainFrame();
+  if (!frame) return true;
+  const std::string origin = mtk::sites::OriginOf(frame->GetURL().ToString());
+  if (origin.empty()) return true;
+  return mtk::sites::Store::Get().For(origin).ad_filtering;
+}
+
+CefRefPtr<CefCookieAccessFilter> BrowserClient::GetCookieAccessFilter(
+    CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest> request) {
+  // Only sites with cookies switched off need a filter; everything else keeps
+  // Chromium's default handling untouched.
+  if (!request) return nullptr;
+  const std::string origin = mtk::sites::OriginOf(request->GetURL().ToString());
+  if (origin.empty()) return nullptr;
+  return mtk::sites::Store::Get().For(origin).cookies ? nullptr : this;
+}
+
+bool BrowserClient::CanSendCookie(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                                  CefRefPtr<CefRequest>, const CefCookie&) {
+  // The filter is only installed for sites whose cookies are blocked.
+  return false;
+}
+
+bool BrowserClient::CanSaveCookie(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                                  CefRefPtr<CefRequest>, CefRefPtr<CefResponse>,
+                                  const CefCookie&) {
+  return false;
 }
 
 unsigned long BrowserClient::blocked_count() {
@@ -824,9 +863,45 @@ void BrowserClient::OnProtocolExecution(CefRefPtr<CefBrowser>,
 }
 
 bool BrowserClient::OnShowPermissionPrompt(
-    CefRefPtr<CefBrowser>, uint64_t, const CefString&, uint32_t,
+    CefRefPtr<CefBrowser>, uint64_t, const CefString& requesting_origin,
+    uint32_t requested_permissions,
     CefRefPtr<CefPermissionPromptCallback> callback) {
-  if (callback) callback->Continue(CEF_PERMISSION_RESULT_DENY);
+  if (!callback) return true;
+
+  // Default is still deny, and no prompt is ever raised here. A page asks at a
+  // moment of its own choosing, and answering with a modal dialog from inside
+  // this callback would both interrupt the user and re-enter CEF. Access is
+  // granted the other way round: someone opens "Settings for this site" and
+  // chooses Allow, which is recorded per origin and honoured here.
+  const auto rule =
+      mtk::sites::Store::Get().For(mtk::sites::OriginOf(requesting_origin));
+
+  const auto allows = [&rule](uint32_t requested) {
+    // Every requested permission has to be allowed; a combined request with one
+    // unapproved member is refused as a whole.
+    struct Mapping {
+      uint32_t bit;
+      mtk::sites::Permission decision;
+    };
+    const Mapping mappings[] = {
+        {CEF_PERMISSION_TYPE_CAMERA_STREAM, rule.camera},
+        {CEF_PERMISSION_TYPE_MIC_STREAM, rule.microphone},
+        {CEF_PERMISSION_TYPE_GEOLOCATION, rule.location},
+        {CEF_PERMISSION_TYPE_NOTIFICATIONS, rule.notifications},
+    };
+    uint32_t recognised = 0;
+    for (const auto& mapping : mappings) {
+      if ((requested & mapping.bit) == 0) continue;
+      if (mapping.decision != mtk::sites::Permission::kAllow) return false;
+      recognised |= mapping.bit;
+    }
+    // Anything outside the four permissions the product exposes stays denied.
+    return recognised != 0 && recognised == requested;
+  };
+
+  callback->Continue(allows(requested_permissions)
+                         ? CEF_PERMISSION_RESULT_ACCEPT
+                         : CEF_PERMISSION_RESULT_DENY);
   return true;
 }
 

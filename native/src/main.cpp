@@ -14,6 +14,7 @@
 #include "mtk_app.h"
 #include "preferences.h"
 #include "profile.h"
+#include "site_settings.h"
 
 namespace {
 
@@ -168,6 +169,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::preferences::Store::Get().Load();
   mtk::library::Store::Get().Load();
   mtk::downloads::Manager::Get().Load();
+  mtk::sites::Store::Get().Load();
 
   // Load MTK Shields rules before any browser exists so every request is
   // filtered from the first navigation onward.

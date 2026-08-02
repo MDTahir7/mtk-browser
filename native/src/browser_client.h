@@ -41,6 +41,7 @@ class BrowserClientDelegate {
 };
 
 class BrowserClient final : public CefClient,
+                            public CefCookieAccessFilter,
                             public CefContextMenuHandler,
                             public CefDisplayHandler,
                             public CefDownloadHandler,
@@ -157,6 +158,20 @@ class BrowserClient final : public CefClient,
                                    CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefRequest> request,
                                    CefRefPtr<CefCallback> callback) override;
+  // Installed only for sites whose cookies the user switched off.
+  CefRefPtr<CefCookieAccessFilter> GetCookieAccessFilter(
+      CefRefPtr<CefBrowser> browser,
+      CefRefPtr<CefFrame> frame,
+      CefRefPtr<CefRequest> request) override;
+  bool CanSendCookie(CefRefPtr<CefBrowser> browser,
+                     CefRefPtr<CefFrame> frame,
+                     CefRefPtr<CefRequest> request,
+                     const CefCookie& cookie) override;
+  bool CanSaveCookie(CefRefPtr<CefBrowser> browser,
+                     CefRefPtr<CefFrame> frame,
+                     CefRefPtr<CefRequest> request,
+                     CefRefPtr<CefResponse> response,
+                     const CefCookie& cookie) override;
   void OnProtocolExecution(CefRefPtr<CefBrowser> browser,
                            CefRefPtr<CefFrame> frame,
                            CefRefPtr<CefRequest> request,
@@ -192,6 +207,10 @@ class BrowserClient final : public CefClient,
   static bool CancelDownload(uint32_t id);
 
  private:
+  // True unless the page currently shown has ad and tracker filtering switched
+  // off in its site settings.
+  bool AdFilteringAllowedForCurrentPage() const;
+
   BrowserClientDelegate* delegate_ = nullptr;
   bool block_page_pending_ = false;
   CefRefPtr<CefBrowser> browser_;

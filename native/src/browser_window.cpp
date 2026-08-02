@@ -20,6 +20,7 @@
 #include "download_manager.h"
 #include "library_store.h"
 #include "profile.h"
+#include "site_settings.h"
 #include "policy.h"
 #include "preferences.h"
 #include "resource.h"
@@ -296,6 +297,107 @@ INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
   return FALSE;
 }
 
+struct SiteSettingsContext {
+  mtk::sites::Rule rule;
+  // Set when the dialog asked for the site's stored rule to be dropped.
+  bool forget = false;
+};
+
+// Permission combo boxes all offer the same three choices in the same order.
+void FillPermissionCombo(HWND dialog, int control, mtk::sites::Permission value) {
+  HWND combo = GetDlgItem(dialog, control);
+  if (!combo) return;
+  SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+  SendMessageW(combo, CB_ADDSTRING, 0,
+               reinterpret_cast<LPARAM>(L"Blocked (default)"));
+  SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Allowed"));
+  SendMessageW(combo, CB_ADDSTRING, 0,
+               reinterpret_cast<LPARAM>(L"Blocked, and never ask"));
+  const int selection = value == mtk::sites::Permission::kAllow
+                            ? 1
+                            : (value == mtk::sites::Permission::kBlock ? 2 : 0);
+  SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(selection), 0);
+  SetWindowTheme(combo, L"Explorer", nullptr);
+}
+
+mtk::sites::Permission PermissionFromCombo(HWND dialog, int control) {
+  const LRESULT selection =
+      SendMessageW(GetDlgItem(dialog, control), CB_GETCURSEL, 0, 0);
+  if (selection == 1) return mtk::sites::Permission::kAllow;
+  if (selection == 2) return mtk::sites::Permission::kBlock;
+  return mtk::sites::Permission::kAsk;
+}
+
+INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
+                                       WPARAM w_param, LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      auto* context = reinterpret_cast<SiteSettingsContext*>(l_param);
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
+      if (!context) return TRUE;
+      SetDlgItemTextW(dialog, IDC_SITE_ORIGIN,
+                      Utf8ToWide(context->rule.origin).c_str());
+      FillPermissionCombo(dialog, IDC_SITE_CAMERA, context->rule.camera);
+      FillPermissionCombo(dialog, IDC_SITE_MICROPHONE, context->rule.microphone);
+      FillPermissionCombo(dialog, IDC_SITE_LOCATION, context->rule.location);
+      FillPermissionCombo(dialog, IDC_SITE_NOTIFICATIONS,
+                          context->rule.notifications);
+      CheckDlgButton(dialog, IDC_SITE_AD_FILTERING,
+                     context->rule.ad_filtering ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_SITE_COOKIES,
+                     context->rule.cookies ? BST_CHECKED : BST_UNCHECKED);
+      SetDlgItemTextW(
+          dialog, IDC_SITE_ZOOM_TEXT,
+          (std::to_wstring(context->rule.zoom_percent) + L"%").c_str());
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      auto* context = reinterpret_cast<SiteSettingsContext*>(
+          GetWindowLongPtrW(dialog, GWLP_USERDATA));
+      switch (LOWORD(w_param)) {
+        case IDC_SITE_ZOOM_RESET:
+          if (context) {
+            context->rule.zoom_percent = mtk::sites::kDefaultZoomPercent;
+            SetDlgItemTextW(
+                dialog, IDC_SITE_ZOOM_TEXT,
+                (std::to_wstring(context->rule.zoom_percent) + L"%").c_str());
+          }
+          return TRUE;
+        case IDC_SITE_FORGET:
+          if (context) context->forget = true;
+          EndDialog(dialog, IDOK);
+          return TRUE;
+        case IDOK:
+          if (context) {
+            context->rule.camera = PermissionFromCombo(dialog, IDC_SITE_CAMERA);
+            context->rule.microphone =
+                PermissionFromCombo(dialog, IDC_SITE_MICROPHONE);
+            context->rule.location =
+                PermissionFromCombo(dialog, IDC_SITE_LOCATION);
+            context->rule.notifications =
+                PermissionFromCombo(dialog, IDC_SITE_NOTIFICATIONS);
+            context->rule.ad_filtering =
+                IsDlgButtonChecked(dialog, IDC_SITE_AD_FILTERING) == BST_CHECKED;
+            context->rule.cookies =
+                IsDlgButtonChecked(dialog, IDC_SITE_COOKIES) == BST_CHECKED;
+          }
+          EndDialog(dialog, IDOK);
+          return TRUE;
+        case IDCANCEL:
+          EndDialog(dialog, IDCANCEL);
+          return TRUE;
+        default:
+          break;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
 struct TextPromptContext {
   const wchar_t* caption = nullptr;
   const wchar_t* message = nullptr;
@@ -474,6 +576,9 @@ struct ClearDataChoice {
   bool cache = true;
   bool session = false;
   bool bookmarks = false;
+  // Per-site permissions, cookie choices, Shields state and zoom. Off by
+  // default: these are decisions someone made, not traces left behind.
+  bool site_settings = false;
 };
 
 INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
@@ -497,6 +602,8 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
                      choice->session ? BST_CHECKED : BST_UNCHECKED);
       CheckDlgButton(dialog, IDC_CLEAR_BOOKMARKS,
                      choice->bookmarks ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_SITE_SETTINGS,
+                     choice->site_settings ? BST_CHECKED : BST_UNCHECKED);
       return TRUE;
     }
     case WM_COMMAND:
@@ -513,9 +620,11 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
           choice->cache = checked(IDC_CLEAR_CACHE);
           choice->session = checked(IDC_CLEAR_SESSION);
           choice->bookmarks = checked(IDC_CLEAR_BOOKMARKS);
+          choice->site_settings = checked(IDC_CLEAR_SITE_SETTINGS);
           const bool anything = choice->history || choice->downloads ||
                                 choice->cookies || choice->cache ||
-                                choice->session || choice->bookmarks;
+                                choice->session || choice->bookmarks ||
+                                choice->site_settings;
           if (!anything) {
             MessageBoxW(dialog, L"Select at least one item to clear.",
                         L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
@@ -1344,6 +1453,13 @@ void BrowserWindow::ShowClearDataDialog() {
                                     : L"\n• No saved session to remove";
   }
 
+  if (choice.site_settings) {
+    auto& sites = mtk::sites::Store::Get();
+    report += sites.Clear() && sites.Flush()
+                  ? L"\n• Per-site settings reset to the defaults"
+                  : L"\n• Per-site settings could not be reset";
+  }
+
   MessageBoxW(window_, (L"Clear browsing data finished." + report).c_str(),
               L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
 }
@@ -1403,6 +1519,8 @@ void BrowserWindow::ShowBrowserMenu() {
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_PRINT,
               L"Print...\tAlt+P");
   AppendMenuW(popup, MF_STRING, IDM_SHORTCUTS, L"Keyboard shortcuts\tAlt+/");
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED),
+              IDM_SITE_SETTINGS, L"Settings for this site...\tAlt+S");
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
 
   // Profiles. Each one is a separate process because the data stores and the
@@ -2015,6 +2133,9 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     case 'J':
       ShowDownloadsDialog();
       return true;
+    case 'S':
+      ShowSiteSettingsDialog();
+      return true;
     case VK_OEM_2:  // Alt+/
       ShowShortcutsPage();
       return true;
@@ -2276,6 +2397,7 @@ void BrowserWindow::ShowShortcutsPage() {
       {"Alt+O", "Bookmarks"},
       {"Alt+H", "History"},
       {"Alt+J", "Downloads"},
+      {"Alt+S", "Settings for this site"},
       {"Alt+/", "This page"},
       {"Esc", "Leave full screen, or close the find bar"},
   };
@@ -2332,10 +2454,101 @@ void BrowserWindow::PrintActiveTab() {
 }
 
 void BrowserWindow::ZoomActiveTab(cef_zoom_command_t command) {
-  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
-    auto host = tab->client->browser()->GetHost();
-    if (host->CanZoom(command)) host->Zoom(command);
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client->browser()) return;
+  const std::string origin = mtk::sites::OriginOf(WideToUtf8(tab->url));
+
+  // Zoom moves along Chromium's own ladder of steps, so the levels match what
+  // other browsers offer, and the result is stored per site rather than only
+  // applied to this tab.
+  static constexpr int kSteps[] = {25,  33,  50,  67,  75,  80,  90, 100,
+                                   110, 125, 150, 175, 200, 250, 300, 400, 500};
+  const int current =
+      origin.empty()
+          ? mtk::sites::ZoomPercentForLevel(
+                tab->client->browser()->GetHost()->GetZoomLevel())
+          : mtk::sites::Store::Get().For(origin).zoom_percent;
+
+  int target = mtk::sites::kDefaultZoomPercent;
+  if (command != CEF_ZOOM_COMMAND_RESET) {
+    const bool zoom_in = command == CEF_ZOOM_COMMAND_IN;
+    target = current;
+    if (zoom_in) {
+      for (const int step : kSteps) {
+        if (step > current) {
+          target = step;
+          break;
+        }
+      }
+    } else {
+      for (int index = static_cast<int>(std::size(kSteps)) - 1; index >= 0;
+           --index) {
+        if (kSteps[index] < current) {
+          target = kSteps[index];
+          break;
+        }
+      }
+    }
   }
+
+  tab->client->browser()->GetHost()->SetZoomLevel(
+      mtk::sites::ZoomLevelForPercent(target));
+
+  if (origin.empty()) return;
+  auto& store = mtk::sites::Store::Get();
+  mtk::sites::Rule rule = store.For(origin);
+  rule.zoom_percent = target;
+  if (store.Set(rule)) store.Flush();
+}
+
+void BrowserWindow::ApplySiteZoom(Tab& tab) {
+  if (!tab.client || !tab.client->browser()) return;
+  const std::string origin = mtk::sites::OriginOf(WideToUtf8(tab.url));
+  const int percent = origin.empty()
+                          ? mtk::sites::kDefaultZoomPercent
+                          : mtk::sites::Store::Get().For(origin).zoom_percent;
+  tab.client->browser()->GetHost()->SetZoomLevel(
+      mtk::sites::ZoomLevelForPercent(percent));
+}
+
+void BrowserWindow::ShowSiteSettingsDialog() {
+  auto* tab = ActiveTab();
+  const std::string origin =
+      tab ? mtk::sites::OriginOf(WideToUtf8(tab->url)) : std::string();
+  if (origin.empty()) {
+    MessageBoxW(window_,
+                L"This page has no site settings. Open an ordinary web page "
+                L"first.",
+                L"Site settings", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  // Allowing a camera or a microphone is a safety decision, so the dialog sits
+  // behind the parent PIN like the rest of Settings.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Site settings are protected. Enter the parent PIN to change them.")) {
+    return;
+  }
+
+  auto& store = mtk::sites::Store::Get();
+  SiteSettingsContext context{store.For(origin), false};
+  if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SITE_SETTINGS), window_,
+                      SiteSettingsDialogProc,
+                      reinterpret_cast<LPARAM>(&context)) != IDOK) {
+    return;
+  }
+
+  const bool changed = context.forget ? store.Forget(origin)
+                                      : store.Set(context.rule);
+  if (!changed || !store.Flush()) {
+    MessageBoxW(window_, L"MTK Browser could not save the site settings.",
+                L"Site settings", MB_OK | MB_ICONERROR);
+    return;
+  }
+  // Cookie and filtering changes take effect on the next load, and the zoom is
+  // applied straight away so the result is visible.
+  if (tab) ApplySiteZoom(*tab);
+  if (tab && tab->client->browser()) tab->client->browser()->ReloadIgnoreCache();
 }
 
 void BrowserWindow::SelectTab(size_t index) {
@@ -3549,6 +3762,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_PROFILE_NEW:
           CreateProfile();
           break;
+        case IDM_SITE_SETTINGS:
+          ShowSiteSettingsDialog();
+          break;
         case IDM_NEW_WINDOW:
           OpenNewWindow({});
           break;
@@ -3788,6 +4004,11 @@ void BrowserWindow::OnBrowserLoadingChanged(BrowserClient* client, bool loading,
 
 void BrowserWindow::OnBrowserNavigationCompleted(BrowserClient* client,
                                                   const std::string& url) {
+  // The remembered zoom is applied for every window, private included: it is a
+  // display preference, not browsing data.
+  if (const size_t tab_index = FindTab(client); tab_index != kNoTab) {
+    ApplySiteZoom(tabs_[tab_index]);
+  }
   // Nothing a private window visits is written to history. This is the whole
   // point of the window, so it is checked before anything else.
   if (private_session_) return;

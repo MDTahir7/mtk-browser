@@ -35,7 +35,7 @@ BEGIN
   PUSHBUTTON "Cancel", IDCANCEL, 188, 146, 66, 14
 END
 
-IDD_CLEAR_DATA DIALOGEX 0, 0, 300, 200
+IDD_CLEAR_DATA DIALOGEX 0, 0, 300, 208
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Clear browsing data — MTK Browser"
 FONT 9, "Segoe UI"
@@ -47,9 +47,10 @@ BEGIN
   AUTOCHECKBOX "Cached files and images", IDC_CLEAR_CACHE, 14, 84, 272, 10
   AUTOCHECKBOX "Saved tabs from the last session", IDC_CLEAR_SESSION, 14, 100, 272, 10
   AUTOCHECKBOX "Bookmarks", IDC_CLEAR_BOOKMARKS, 14, 116, 272, 10
-  LTEXT "Settings, the parent PIN and the download mode are never changed here.", -1, 14, 138, 272, 20
-  DEFPUSHBUTTON "Clear now", IDOK, 148, 176, 66, 14
-  PUSHBUTTON "Cancel", IDCANCEL, 220, 176, 66, 14
+  AUTOCHECKBOX "Per-site settings (permissions, cookies, zoom)", IDC_CLEAR_SITE_SETTINGS, 14, 132, 272, 10
+  LTEXT "Settings, the parent PIN and the download mode are never changed here.", -1, 14, 152, 272, 20
+  DEFPUSHBUTTON "Clear now", IDOK, 148, 182, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 220, 182, 66, 14
 END
 
 IDD_SETTINGS DIALOGEX 0, 0, 320, 340
@@ -75,6 +76,37 @@ BEGIN
   PUSHBUTTON "Parent PIN...", IDC_SETTINGS_PIN, 212, 294, 90, 14
   DEFPUSHBUTTON "Save", IDOK, 162, 318, 66, 14
   PUSHBUTTON "Cancel", IDCANCEL, 236, 318, 66, 14
+END
+
+IDD_SITE_SETTINGS DIALOGEX 0, 0, 320, 268
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Site settings — MTK Browser"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "Settings for", -1, 14, 10, 292, 10
+  LTEXT "", IDC_SITE_ORIGIN, 14, 24, 292, 10
+  LTEXT "These choices apply only to this site.", -1, 14, 40, 292, 10
+
+  LTEXT "Camera", -1, 14, 62, 90, 10
+  COMBOBOX IDC_SITE_CAMERA, 110, 60, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
+  LTEXT "Microphone", -1, 14, 84, 90, 10
+  COMBOBOX IDC_SITE_MICROPHONE, 110, 82, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
+  LTEXT "Location", -1, 14, 106, 90, 10
+  COMBOBOX IDC_SITE_LOCATION, 110, 104, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
+  LTEXT "Notifications", -1, 14, 128, 90, 10
+  COMBOBOX IDC_SITE_NOTIFICATIONS, 110, 126, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
+
+  AUTOCHECKBOX "Block ads and trackers on this site", IDC_SITE_AD_FILTERING, 14, 156, 292, 10
+  AUTOCHECKBOX "Allow cookies and site data", IDC_SITE_COOKIES, 14, 172, 292, 10
+  LTEXT "Site safety, SafeSearch and adult-content blocking stay on for every site and cannot be switched off here.", -1, 14, 188, 292, 20
+
+  LTEXT "Zoom", -1, 14, 216, 40, 10
+  LTEXT "", IDC_SITE_ZOOM_TEXT, 58, 216, 100, 10
+  PUSHBUTTON "Reset zoom", IDC_SITE_ZOOM_RESET, 162, 213, 70, 14
+
+  PUSHBUTTON "Forget site", IDC_SITE_FORGET, 14, 240, 70, 14
+  DEFPUSHBUTTON "Save", IDOK, 174, 240, 62, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 244, 240, 62, 14
 END
 
 IDD_TEXT_PROMPT DIALOGEX 0, 0, 268, 92

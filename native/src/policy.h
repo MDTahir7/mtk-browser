@@ -36,9 +36,15 @@ struct RequestDecision {
 
 NavigationDecision EvaluateNavigation(const std::string& raw_url);
 NavigationDecision ResolveInput(const std::string& raw_input);
+// `apply_ad_filtering` false skips only the ad/tracker rules, which is what a
+// per-site "Shields off" choice means. Everything else this function refuses is
+// a safety rule (scheme, private network, adult or unsafe host, adult search
+// term, NSFW social surface) and stays in force no matter what: those are not
+// user-adjustable, by design.
 RequestDecision EvaluateRequest(const std::string& raw_url,
                                 ResourceType resource_type,
-                                const std::string& request_initiator = {});
+                                const std::string& request_initiator = {},
+                                bool apply_ad_filtering = true);
 std::vector<std::pair<std::string, std::string>> PrivacyRequestHeaders(
     const std::string& raw_url);
 std::string EnforceSafeSearch(std::string url);

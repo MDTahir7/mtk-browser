@@ -92,6 +92,11 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ZoomActiveTab(cef_zoom_command_t command);
   // Opens Chromium's print preview, which also provides Save as PDF.
   void PrintActiveTab();
+  // Per-site permissions, cookies, ad filtering and remembered zoom for the
+  // site in the active tab.
+  void ShowSiteSettingsDialog();
+  // Applies the site's remembered zoom to `tab`.
+  void ApplySiteZoom(Tab& tab);
   // Opens the keyboard shortcut reference in a new tab. The shortcuts are not
   // the ones other browsers use, so they have to be discoverable in the product
   // rather than only in the repository.

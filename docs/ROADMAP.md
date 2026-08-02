@@ -50,12 +50,13 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 62-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 71-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
-    tested against malformed, deeply nested and policy-refused input) and profile
-    id validation. Verified passing locally (62 passed, 0 failed).
+    tested against malformed, deeply nested and policy-refused input), profile id
+    validation, and per-site settings including a test that "Shields off" cannot
+    weaken a safety rule. Verified passing locally (71 passed, 0 failed).
   - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
     Needs a CI workflow that builds Release and runs the suite, plus coverage
     for CEF-dependent paths that need a live browser.
@@ -121,8 +122,25 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
       suggestions plus "Add to dictionary" in the context menu. Google's
       server-backed enhanced spellcheck is explicitly turned off, because it
       uploads typed text. Chromium has no Hunspell dictionary for Hindi.
-- [ ] **T2.10 Per-site settings**: permissions, cookies, remembered zoom. Not
-      started; needs a per-origin store and Shields integration.
+- [~] **T2.10 Per-site settings**
+  - Done: `native/src/site_settings.cpp` stores one rule per origin (scheme and
+    host) in `sites.v1`, holding camera, microphone, location and notification
+    decisions, ad/tracker filtering, cookies, and a remembered zoom level.
+    `Alt+S` opens the dialog for the site in the active tab, behind the parent
+    PIN because granting a camera is a safety decision. Zoom follows Chromium's
+    own ladder of steps and is reapplied on every navigation to that site.
+    Cookie blocking is enforced through CEF's cookie access filter, so it covers
+    both sending and storing. Clear browsing data can reset all of it.
+  - Permissions still default to refused and no prompt is raised from the
+    permission callback: a page asks at a moment of its choosing, and answering
+    with a modal dialog there would interrupt the user and re-enter CEF. Access
+    is granted the other way round, from the site settings dialog.
+  - The per-site Shields switch drops ad and tracker rules only. Safety rules
+    (scheme, private network, unsafe host, adult search term, NSFW social
+    surface) stay in force for every site and are not adjustable, which is
+    covered by a test.
+  - Remaining: a list of all sites with stored rules, per-site "clear this
+    site's data", and reaching the dialog from the Shields panel.
 - [x] **T2.11 Clear browsing data dialog** (history, downloads, cookies, cache,
       saved session, bookmarks)
 - [~] **T2.12 Media**: autoplay now requires a user gesture, and picture-in-picture,
@@ -147,8 +165,9 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
 - [ ] **T3.1 Extension support** (largest single effort)
 - [ ] **T3.2 Sync** across devices, end-to-end encrypted
 - [~] **T3.3 Shields panel** — the toolbar panel exists (`native/src/shields_panel.cpp`,
-      dismissal and DPI issues fixed). Remaining: true per-site rules that persist
-      per origin, and a custom filters UI.
+      dismissal and DPI issues fixed) and per-site ad/tracker filtering now
+      persists per origin through T2.10. Remaining: reaching that switch from the
+      panel itself, per-site blocked counts, and a custom filters UI.
 - [ ] **T3.4 Fingerprinting protection**
 - [ ] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
 - [ ] **T3.6 Managed, updatable filter and category feed** (signed, with fail-safe

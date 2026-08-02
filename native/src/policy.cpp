@@ -520,7 +520,8 @@ bool IsSocialPlatformNsfw(const std::string& raw_url) {
 
 RequestDecision EvaluateRequest(const std::string& raw_url,
                                 ResourceType resource_type,
-                                const std::string& request_initiator) {
+                                const std::string& request_initiator,
+                                bool apply_ad_filtering) {
   const std::string url = Lower(raw_url);
   if (url == "about:blank") return {true, {}};
   if (!url.starts_with("https://") && !url.starts_with("http://")) {
@@ -541,7 +542,8 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
   if (IsSocialPlatformNsfw(url)) {
     return {false, L"Social platform adult/NSFW section blocked"};
   }
-  if (IsAdOrTracker(url, resource_type, request_initiator)) {
+  if (apply_ad_filtering &&
+      IsAdOrTracker(url, resource_type, request_initiator)) {
     return {false, L"Ad or tracker blocked"};
   }
   return {true, {}};

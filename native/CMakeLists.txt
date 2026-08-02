@@ -7,6 +7,8 @@ set(MTK_BROWSER_SOURCES
   src/preferences.h
   src/profile.cpp
   src/profile.h
+  src/site_settings.cpp
+  src/site_settings.h
   src/library_store.cpp
   src/library_store.h
   src/bookmark_import.cpp
