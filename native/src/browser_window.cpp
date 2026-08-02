@@ -46,8 +46,8 @@ constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT_PTR kDownloadSaveTimer = 3;
 constexpr UINT_PTR kSessionSaveTimer = 4;
-// Hover playback for the rendered shield. 33 ms is one frame at 30 fps, which is
-// the rate the strip is rendered at.
+// Hover playback for the rendered shield: one pass at the rate the strip was
+// rendered at, then it holds. 33 ms is one frame at 30 fps.
 constexpr UINT_PTR kShieldAnimTimer = 7;
 constexpr UINT kShieldFrameMs = 33;
 constexpr wchar_t kShieldStripFile[] = L"mtk_shield_hover.png";
@@ -2197,8 +2197,9 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
 
   bool painted_icon = false;
   if (item.CtlID == kShieldId && shield_strip_.valid()) {
-    // The rendered shield replaces the glyph. Frame 0 is the resting pose, so a
-    // button that is not hovered still shows the same artwork.
+    // Frame 0 is the resting pose: a bare shield. Hover plays the sequence once
+    // and holds the last frame, where the swords are crossed and the tick is
+    // shown.
     RECT icon = bounds;
     const int inset = Scaled(6);
     InflateRect(&icon, -inset, -inset);
@@ -2372,8 +2373,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       } else if (w_param == kUpdatePeriodicTimer) {
         StartUpdateCheck(false);
       } else if (w_param == kShieldAnimTimer) {
-        if (shield_hovering_ && shield_strip_.valid()) {
-          shield_frame_ = (shield_frame_ + 1) % shield_strip_.frame_count();
+        // The shield sequence plays once and holds its final pose: the swords
+        // are drawn, they meet, and the tick stays. Looping it would make the
+        // swords retract into the shield again, which reads as a glitch.
+        if (shield_hovering_ && shield_strip_.valid() &&
+            shield_frame_ + 1 < shield_strip_.frame_count()) {
+          ++shield_frame_;
           if (shield_) InvalidateRect(shield_, nullptr, FALSE);
         } else {
           KillTimer(window_, kShieldAnimTimer);

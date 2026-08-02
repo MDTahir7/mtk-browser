@@ -22,3 +22,20 @@ The current workspace contains a legacy Electron prototype. Its bundled Electron
 | Proprietary modules | Product-owned source | Planned | Keep separate; do not copy Brave Shields or other MPL code. |
 
 No dependency may be introduced that could impose proprietary-source disclosure without documented legal approval.
+
+## Licensed artwork in the shipped application
+
+| Component | Source | Form that ships | Licence constraints |
+|---|---|---|---|
+| Toolbar Shields button animation (`native/resources/mtk_shield_hover.png`) | Magnific (formerly Freepik) 3D asset `security-shield-icon-009`, downloaded under the account holder's subscription | Rendered PNG frame strip only | Usable as a secondary element of the application interface. Confirmed with the vendor for this exact use: a PNG rendered from a downloaded 3D asset may be used as a toolbar button icon in a desktop application UI. |
+| Block page shield loop (`native/resources/mtk_block_shield.webm`), Shields panel beacon (`native/resources/mtk_siren_alert.webm`) | Product-owned Blender scenes in `assets/blender/` | Rendered WebM | Product-owned; no third-party restriction. |
+
+Rules that must not be broken for the Magnific-derived artwork:
+
+1. **No source redistribution.** The `.blend` and texture files must never be committed to this repository, placed in the installer payload, or delivered to anyone. Only rendered output ships. The current pipeline satisfies this: the source asset stays outside the repository and only the PNG strip is committed.
+2. **No logo or trademark use.** This artwork must not become the application icon, brand mark, store listing icon, or any registered trademark. The application icon (`native/resources/mtk_browser.ico`) is deliberately a separate, product-owned asset.
+3. **Secondary element only.** The artwork stays as interface decoration for the Shields button. It must not become the main visual of a product, a sticker or filter that users manipulate, or an item offered for sale on its own.
+4. **Copyright stays with the original author.** No ownership may be claimed over the asset or renders derived from it.
+5. **Attribution depends on the plan.** Free-tier accounts must credit Magnific in the application credits or store description; Premium and higher do not. Re-check this before publishing if the subscription tier changes.
+
+Because rules 1 and 2 constrain future branding work, a product-owned replacement should be rendered before this artwork is used anywhere near brand identity.

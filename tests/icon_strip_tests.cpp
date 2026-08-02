@@ -11,8 +11,8 @@ MTK_TEST(ShieldStripLoadsAsSquareFrames) {
   mtk::icons::Strip strip;
   MTK_EXPECT_TRUE(strip.Load(L"mtk_shield_hover.png"));
   MTK_EXPECT_TRUE(strip.valid());
-  // The hover loop is rendered as one period at 30 fps.
-  MTK_EXPECT_EQ_INT(strip.frame_count(), 24);
+  // One second at 30 fps: swords drawn, impact, then the tick.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
 }
 
 MTK_TEST(MissingStripLeavesLoaderInvalid) {
