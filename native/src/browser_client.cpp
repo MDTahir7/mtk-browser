@@ -55,10 +55,11 @@ bool IsTrustedPdfViewerUrl(const std::string& url) {
          url.starts_with(kSharedResourcesOrigin);
 }
 
-// Decorative loop rendered for the block page. The asset ships beside the
-// executable and is inlined into the page, so the block page stays a single
-// self-contained data: URL that needs no local file access. Loading and
-// validation live in mtk::assets, which the Shields panel shares.
+// Rendered sequence for the block page: the shield is drawn, two swords slide out
+// and meet, then a tick appears. The asset ships beside the executable and is
+// inlined into the page, so the block page stays a single self-contained data:
+// URL that needs no local file access. Loading and validation live in
+// mtk::assets, which the Shields panel shares.
 constexpr wchar_t kBlockAnimationFile[] = L"mtk_block_shield.webm";
 
 // A data: URL carries its own bytes and reaches no network, so permitting this
@@ -78,7 +79,11 @@ std::string BlockPage(const std::wstring& reason) {
   // readers who ask the platform to reduce motion.
   std::string art = "<div class=shield>&%239678;</div>";
   if (!animation.empty()) {
-    art = "<video class=anim autoplay loop muted playsinline "
+    // Played once rather than looped: the sequence ends with the swords crossed
+    // and the tick shown, and holding that pose is the point. Looping would drag
+    // the swords back into the shield every second on a page the reader is still
+    // looking at.
+    art = "<video class=anim autoplay muted playsinline "
           "disablepictureinpicture aria-hidden=true src=" +
           animation + "></video>" + art;
   }

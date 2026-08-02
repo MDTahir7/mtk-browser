@@ -28,7 +28,8 @@ No dependency may be introduced that could impose proprietary-source disclosure 
 | Component | Source | Form that ships | Licence constraints |
 |---|---|---|---|
 | Toolbar Shields button animation (`native/resources/mtk_shield_hover.png`) | Magnific (formerly Freepik) 3D asset `security-shield-icon-009`, downloaded under the account holder's subscription | Rendered PNG frame strip only | Usable as a secondary element of the application interface. Confirmed with the vendor for this exact use: a PNG rendered from a downloaded 3D asset may be used as a toolbar button icon in a desktop application UI. |
-| Block page shield loop (`native/resources/mtk_block_shield.webm`), Shields panel beacon (`native/resources/mtk_siren_alert.webm`) | Product-owned Blender scenes in `assets/blender/` | Rendered WebM | Product-owned; no third-party restriction. |
+| Block page shield sequence (`native/resources/mtk_block_shield.webm`) | Same Magnific asset `security-shield-icon-009`, rendered from the same Blender scene as the toolbar strip | Rendered VP9 WebM only | Same constraints as the toolbar strip. The earlier product-owned scene `assets/blender/mtk_block_shield.blend` is retained so this surface can be returned to fully owned artwork. |
+| Shields panel beacon (`native/resources/mtk_siren_alert.webm`) | Product-owned Blender scene in `assets/blender/` | Rendered WebM | Product-owned; no third-party restriction. |
 
 Rules that must not be broken for the Magnific-derived artwork:
 
