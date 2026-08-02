@@ -52,6 +52,10 @@ int BookmarksBarHeight() {
 int ChromeHeight() {
   return TabBarHeight() + ToolbarHeight() + BookmarksBarHeight();
 }
+// Open top-level windows, in creation order. Windows own themselves and remove
+// their entry here when destroyed; an empty list ends the message loop.
+std::vector<BrowserWindow*> g_windows;
+
 constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT_PTR kDownloadSaveTimer = 3;
@@ -123,6 +127,10 @@ constexpr COLORREF kTabBarTop = RGB(19, 23, 38);
 constexpr COLORREF kTabBarBottom = RGB(14, 18, 30);
 constexpr COLORREF kToolbarTop = RGB(27, 32, 50);
 constexpr COLORREF kToolbarBottom = RGB(20, 25, 40);
+// Private windows use a deeper, plainer chrome so the two kinds of window are
+// never confused for one another.
+constexpr COLORREF kPrivateBarTop = RGB(32, 24, 52);
+constexpr COLORREF kPrivateBarBottom = RGB(22, 17, 38);
 constexpr COLORREF kActiveTabTop = RGB(41, 48, 74);
 constexpr COLORREF kActiveTabBottom = RGB(28, 34, 54);
 constexpr COLORREF kHoverTabColor = RGB(28, 34, 53);
@@ -1314,6 +1322,9 @@ void BrowserWindow::ShowBrowserMenu() {
           : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tCtrl+J";
   AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW, L"New window\tCtrl+N");
+  AppendMenuW(popup, MF_STRING, IDM_NEW_PRIVATE_WINDOW,
+              L"New private window\tCtrl+Shift+N");
   AppendMenuW(popup,
               MF_STRING | (closed_tab_urls_.empty() ? MF_GRAYED : MF_ENABLED),
               IDM_REOPEN_TAB, L"Reopen closed tab\tCtrl+Shift+T");
@@ -1400,7 +1411,7 @@ void BrowserWindow::ScheduleLibrarySave() {
 }
 
 void BrowserWindow::ScheduleSessionSave() {
-  if (closing_ || !window_) return;
+  if (closing_ || !window_ || !owns_session_) return;
   if (mtk::preferences::Store::Get().values().startup_mode ==
       mtk::preferences::StartupMode::kContinueSession) {
     SetTimer(window_, kSessionSaveTimer, 1200, nullptr);
@@ -1408,6 +1419,9 @@ void BrowserWindow::ScheduleSessionSave() {
 }
 
 void BrowserWindow::SaveSessionSnapshot() {
+  // A window that does not own the session must not overwrite the snapshot,
+  // and must not clear it either.
+  if (!owns_session_) return;
   if (mtk::preferences::Store::Get().values().startup_mode !=
       mtk::preferences::StartupMode::kContinueSession) {
     mtk::session::Clear();
@@ -1420,8 +1434,16 @@ void BrowserWindow::SaveSessionSnapshot() {
 }
 
 void BrowserWindow::CreateStartupTabs() {
+  // A window opened by the user starts on the addresses it was given. Only the
+  // window that starts the process follows the startup preference, so a second
+  // window never restores the previous session on top of the current one.
+  if (!startup_urls_.empty()) {
+    for (const auto& url : startup_urls_) CreateTab(url);
+    if (!tabs_.empty()) return;
+  }
   if (mtk::preferences::Store::Get().values().startup_mode ==
-      mtk::preferences::StartupMode::kContinueSession) {
+          mtk::preferences::StartupMode::kContinueSession &&
+      owns_session_) {
     const auto snapshot = mtk::session::Load();
     for (const auto& url : snapshot.urls) CreateTab(url);
     if (!tabs_.empty()) {
@@ -1443,17 +1465,76 @@ BrowserWindow::~BrowserWindow() {
   if (edit_brush_) DeleteObject(edit_brush_);
 }
 
-bool BrowserWindow::Create(int show_command) {
-  WNDCLASSW window_class{};
-  window_class.hInstance = instance_;
-  window_class.lpfnWndProc = WindowProc;
-  window_class.lpszClassName = kWindowClass;
-  window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  window_class.hbrBackground = CreateSolidBrush(kWindowColor);
-  RegisterClassW(&window_class);
+BrowserWindow* BrowserWindow::Open(HINSTANCE instance, int show_command,
+                                   const std::vector<std::string>& startup_urls,
+                                   bool private_session) {
+  auto* window = new BrowserWindow(instance);
+  window->startup_urls_ = startup_urls;
+  window->private_session_ = private_session;
+  if (private_session) {
+    // An empty cache_path is what makes the context in-memory: cookies, cache
+    // and storage live only as long as this context does.
+    CefRequestContextSettings settings;
+    window->request_context_ = CefRequestContext::CreateContext(settings, nullptr);
+    if (!window->request_context_) {
+      delete window;
+      return nullptr;
+    }
+  }
+  // The first window owns the session snapshot; later windows do not, because
+  // the snapshot format holds one tab list. A private window never owns it.
+  window->owns_session_ = g_windows.empty() && !private_session;
+  g_windows.push_back(window);
+  if (!window->Create(show_command)) {
+    g_windows.erase(std::remove(g_windows.begin(), g_windows.end(), window),
+                    g_windows.end());
+    delete window;
+    return nullptr;
+  }
+  return window;
+}
 
-  window_ = CreateWindowExW(0, kWindowClass, L"MTK Browser",
-                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+size_t BrowserWindow::WindowCount() { return g_windows.size(); }
+
+void BrowserWindow::ActivateMetrics() const {
+  g_dpi = dpi_ <= 0 ? 96 : dpi_;
+  g_bookmarks_bar =
+      mtk::preferences::Store::Get().values().show_bookmarks_bar;
+}
+
+void BrowserWindow::OpenNewWindow(const std::string& url, bool private_session) {
+  std::vector<std::string> urls;
+  urls.push_back(url.empty() ? kHomeUrl : url);
+  if (!Open(instance_, SW_SHOWNORMAL, urls, private_session)) {
+    MessageBoxW(window_, L"MTK Browser could not open another window.",
+                L"MTK Browser", MB_OK | MB_ICONERROR);
+  }
+}
+
+bool BrowserWindow::Create(int show_command) {
+  // The class is process-wide, so it is registered once no matter how many
+  // windows are opened.
+  static bool class_registered = false;
+  if (!class_registered) {
+    WNDCLASSW window_class{};
+    window_class.hInstance = instance_;
+    window_class.lpfnWndProc = WindowProc;
+    window_class.lpszClassName = kWindowClass;
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    window_class.hbrBackground = CreateSolidBrush(kWindowColor);
+    class_registered = RegisterClassW(&window_class) != 0 ||
+                       GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    if (!class_registered) return false;
+  }
+
+  // Extra windows are offset so a new one does not land exactly on its opener.
+  const int offset = static_cast<int>(g_windows.size() % 6) * 28;
+  window_ = CreateWindowExW(0, kWindowClass,
+                            private_session_ ? L"Private — MTK Browser"
+                                             : L"MTK Browser",
+                            WS_OVERLAPPEDWINDOW,
+                            offset == 0 ? CW_USEDEFAULT : 60 + offset,
+                            offset == 0 ? CW_USEDEFAULT : 40 + offset,
                             1360, 860, nullptr, nullptr, instance_, this);
   if (!window_) return false;
 
@@ -1461,11 +1542,15 @@ bool BrowserWindow::Create(int show_command) {
   DwmSetWindowAttribute(window_, 20, &dark, sizeof(dark));
   ShowWindow(window_, show_command);
   UpdateWindow(window_);
-  // Any installer left over from a previous update is removed before a new
-  // check can download another one.
-  mtk::update::CleanupDownloads();
-  SetTimer(window_, kUpdateStartupTimer, kUpdateStartupDelayMs, nullptr);
-  SetTimer(window_, kUpdatePeriodicTimer, kUpdatePeriodMs, nullptr);
+  // Update checks belong to the process, not to each window, so only the first
+  // window schedules them. Otherwise three windows would mean three checks.
+  if (owns_session_) {
+    // Any installer left over from a previous update is removed before a new
+    // check can download another one.
+    mtk::update::CleanupDownloads();
+    SetTimer(window_, kUpdateStartupTimer, kUpdateStartupDelayMs, nullptr);
+    SetTimer(window_, kUpdatePeriodicTimer, kUpdatePeriodMs, nullptr);
+  }
   return true;
 }
 
@@ -1480,8 +1565,19 @@ LRESULT CALLBACK BrowserWindow::WindowProc(HWND window, UINT message,
     SetWindowLongPtrW(window, GWLP_USERDATA,
                       reinterpret_cast<LONG_PTR>(self));
   }
-  return self ? self->HandleMessage(message, w_param, l_param)
-              : DefWindowProcW(window, message, w_param, l_param);
+  if (!self) return DefWindowProcW(window, message, w_param, l_param);
+  // Metrics are shared file-level state, so they are pointed at this window
+  // before any of its messages are handled.
+  self->ActivateMetrics();
+  if (message == WM_NCDESTROY) {
+    // Last message a window receives, so the instance can be released here
+    // without any later message reaching freed memory.
+    SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    const LRESULT result = DefWindowProcW(window, message, w_param, l_param);
+    delete self;
+    return result;
+  }
+  return self->HandleMessage(message, w_param, l_param);
 }
 
 LRESULT CALLBACK BrowserWindow::AddressProc(HWND window, UINT message,
@@ -1736,6 +1832,10 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     else CreateTab(kHomeUrl);
     return true;
   }
+  if (control && !alt && virtual_key == 'N') {
+    OpenNewWindow({}, shift);
+    return true;
+  }
   if (control && !alt && virtual_key == 'J') {
     ShowDownloadsDialog();
     return true;
@@ -1818,7 +1918,8 @@ void BrowserWindow::CreateFonts() {
 }
 
 void BrowserWindow::ApplyDpi(UINT dpi) {
-  g_dpi = static_cast<int>(dpi == 0 ? 96 : dpi);
+  dpi_ = static_cast<int>(dpi == 0 ? 96 : dpi);
+  g_dpi = dpi_;
   CreateFonts();
   for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
                        menu_, address_, suggestions_,
@@ -1837,8 +1938,9 @@ void BrowserWindow::ApplyDpi(UINT dpi) {
 }
 
 void BrowserWindow::CreateControls() {
-  g_dpi = static_cast<int>(GetDpiForWindow(window_));
-  if (g_dpi <= 0) g_dpi = 96;
+  dpi_ = static_cast<int>(GetDpiForWindow(window_));
+  if (dpi_ <= 0) dpi_ = 96;
+  g_dpi = dpi_;
   CreateFonts();
   edit_brush_ = CreateSolidBrush(kControlColor);
   const DWORD button_style = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
@@ -1933,8 +2035,10 @@ bool BrowserWindow::CreateTab(const std::string& initial_url) {
                        std::max(1, static_cast<int>(client.bottom) -
                                        PageTop())));
   CefBrowserSettings settings;
+  // A private window passes its own in-memory context; an ordinary window
+  // passes nullptr and gets the shared on-disk one.
   if (!CefBrowserHost::CreateBrowser(info, tabs_.back().client, initial_url,
-                                     settings, nullptr, nullptr)) {
+                                     settings, nullptr, request_context_)) {
     tabs_.pop_back();
     active_tab_ = tabs_.empty() ? 0 : tabs_.size() - 1;
     if (auto* active = ActiveTab(); active && active->client->browser()) {
@@ -2617,8 +2721,15 @@ void BrowserWindow::Paint(HDC dc) {
   RECT tab_bar{0, 0, client.right, TabBarHeight()};
   RECT toolbar{0, TabBarHeight(), client.right,
                TabBarHeight() + ToolbarHeight()};
-  FillGradient(dc, tab_bar, kTabBarTop, kTabBarBottom);
-  FillGradient(dc, toolbar, kToolbarTop, kToolbarBottom);
+  // A private window is drawn darker, so it is obvious at a glance which window
+  // is which. Relying on the title alone would be too easy to miss.
+  if (private_session_) {
+    FillGradient(dc, tab_bar, kPrivateBarTop, kPrivateBarBottom);
+    FillGradient(dc, toolbar, kPrivateBarBottom, kPrivateBarBottom);
+  } else {
+    FillGradient(dc, tab_bar, kTabBarTop, kTabBarBottom);
+    FillGradient(dc, toolbar, kToolbarTop, kToolbarBottom);
+  }
 
   PaintTabStrip(dc, client);
   PaintBookmarksBar(dc, client);
@@ -3155,6 +3266,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_PRINT:
           PrintActiveTab();
           break;
+        case IDM_NEW_WINDOW:
+          OpenNewWindow({});
+          break;
+        case IDM_NEW_PRIVATE_WINDOW:
+          OpenNewWindow({}, true);
+          break;
         case IDM_BOOKMARKS_BAR:
           ToggleBookmarksBar();
           break;
@@ -3227,7 +3344,7 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       ApplyDpi(HIWORD(w_param));
       return 0;
     }
-    case WM_DESTROY:
+    case WM_DESTROY: {
       KillTimer(window_, kUpdateStartupTimer);
       KillTimer(window_, kUpdatePeriodicTimer);
       KillTimer(window_, kLibrarySaveTimer);
@@ -3236,13 +3353,27 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       mtk::library::Store::Get().Flush();
       mtk::downloads::Manager::Get().Flush();
       window_ = nullptr;
-      CefQuitMessageLoop();
+
+      g_windows.erase(std::remove(g_windows.begin(), g_windows.end(), this),
+                      g_windows.end());
+      // The snapshot belongs to whichever window is still open, so closing the
+      // first window does not stop session restore from working.
+      if (owns_session_ && !g_windows.empty()) {
+        owns_session_ = false;
+        g_windows.front()->owns_session_ = true;
+      }
+      // Only the last window ends the message loop.
+      if (g_windows.empty()) CefQuitMessageLoop();
       return 0;
+    }
   }
   return DefWindowProcW(window_, message, w_param, l_param);
 }
 
 void BrowserWindow::OnBrowserCreated(BrowserClient* client) {
+  // CEF calls in outside the window procedure, so the shared metrics have to be
+  // pointed at this window before anything is measured or laid out.
+  ActivateMetrics();
   const size_t index = FindTab(client);
   const bool detached_closing = std::any_of(
       closing_clients_.begin(), closing_clients_.end(),
@@ -3280,6 +3411,7 @@ void BrowserWindow::OnBrowserCreated(BrowserClient* client) {
 }
 
 void BrowserWindow::OnBrowserClosed(BrowserClient* client) {
+  ActivateMetrics();
   const size_t index = FindTab(client);
   if (index != kNoTab) {
     tabs_.erase(tabs_.begin() + static_cast<ptrdiff_t>(index));
@@ -3319,6 +3451,7 @@ void BrowserWindow::OnBrowserClosed(BrowserClient* client) {
 
 void BrowserWindow::OnBrowserAddressChanged(BrowserClient* client,
                                              const std::wstring& url) {
+  ActivateMetrics();
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
   tabs_[index].url = url;
@@ -3328,13 +3461,17 @@ void BrowserWindow::OnBrowserAddressChanged(BrowserClient* client,
 
 void BrowserWindow::OnBrowserTitleChanged(BrowserClient* client,
                                            const std::wstring& title) {
+  ActivateMetrics();
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
   tabs_[index].title = title.empty() ? L"New Tab" : title;
-  const auto decision = mtk::policy::EvaluateNavigation(WideToUtf8(tabs_[index].url));
-  if (decision.allow && mtk::library::Store::Get().UpdateHistoryTitle(
-                            decision.url, tabs_[index].title)) {
-    ScheduleLibrarySave();
+  if (!private_session_) {
+    const auto decision =
+        mtk::policy::EvaluateNavigation(WideToUtf8(tabs_[index].url));
+    if (decision.allow && mtk::library::Store::Get().UpdateHistoryTitle(
+                              decision.url, tabs_[index].title)) {
+      ScheduleLibrarySave();
+    }
   }
   if (index == active_tab_) UpdateControls();
   else InvalidateRect(window_, nullptr, FALSE);
@@ -3343,6 +3480,7 @@ void BrowserWindow::OnBrowserTitleChanged(BrowserClient* client,
 void BrowserWindow::OnBrowserLoadingChanged(BrowserClient* client, bool loading,
                                              bool can_go_back,
                                              bool can_go_forward) {
+  ActivateMetrics();
   const size_t index = FindTab(client);
   if (index == kNoTab) return;
   if (loading && index == active_tab_ && find_visible_) HideFindBar();
@@ -3354,6 +3492,9 @@ void BrowserWindow::OnBrowserLoadingChanged(BrowserClient* client, bool loading,
 
 void BrowserWindow::OnBrowserNavigationCompleted(BrowserClient* client,
                                                   const std::string& url) {
+  // Nothing a private window visits is written to history. This is the whole
+  // point of the window, so it is checked before anything else.
+  if (private_session_) return;
   const size_t index = FindTab(client);
   if (index == kNoTab || url.starts_with("data:") || url == "about:blank") return;
   const auto decision = mtk::policy::EvaluateNavigation(url);
@@ -3381,6 +3522,7 @@ void BrowserWindow::OnBrowserFindResult(BrowserClient* client, int identifier,
 
 void BrowserWindow::OnBrowserPopupRequested(BrowserClient*,
                                              const std::string& url) {
+  ActivateMetrics();
   CreateTab(url);
 }
 

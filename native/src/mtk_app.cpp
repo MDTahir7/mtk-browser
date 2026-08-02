@@ -313,9 +313,9 @@ void MtkApp::OnBeforeCommandLineProcessing(
 
 void MtkApp::OnContextInitialized() {
   ConfigureSpellcheck();
-  browser_window_ = std::make_unique<BrowserWindow>(instance_);
-  if (!browser_window_->Create(show_command_)) {
-    browser_window_.reset();
+  // Windows own themselves and end the message loop when the last one closes,
+  // so nothing is held here.
+  if (!BrowserWindow::Open(instance_, show_command_, {})) {
     CefQuitMessageLoop();
   }
 }

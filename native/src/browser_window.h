@@ -11,6 +11,16 @@
 
 class BrowserWindow final : public BrowserClientDelegate {
  public:
+  // Creates a top-level browser window that owns itself: it is registered on
+  // creation and deleted once its window is destroyed. Returns nullptr when the
+  // window could not be created. `startup_urls` empty means "use the configured
+  // startup behaviour", which only the first window does.
+  static BrowserWindow* Open(HINSTANCE instance, int show_command,
+                             const std::vector<std::string>& startup_urls,
+                             bool private_session = false);
+  // Number of open top-level windows. The message loop ends at zero.
+  static size_t WindowCount();
+
   explicit BrowserWindow(HINSTANCE instance);
   ~BrowserWindow();
 
@@ -113,6 +123,14 @@ class BrowserWindow final : public BrowserClientDelegate {
   void SetShieldHover(bool hovering);
   void SaveSessionSnapshot();
   void CreateStartupTabs();
+  // Opens another top-level window, optionally starting on `url`. A private
+  // window gets its own in-memory request context, so its cookies, cache and
+  // storage never reach disk and are discarded when it closes.
+  void OpenNewWindow(const std::string& url, bool private_session = false);
+  // Points the shared DPI and bookmarks-bar metrics at this window. Those are
+  // file-level state shared by the painting helpers, so every entry point that
+  // can run for a different window has to set them first.
+  void ActivateMetrics() const;
   void SelectTab(size_t index);
   void CloseTab(size_t index);
   // Tab management. Pinned tabs are always the leading run of the strip, so
@@ -152,6 +170,20 @@ class BrowserWindow final : public BrowserClientDelegate {
 
   HINSTANCE instance_ = nullptr;
   HWND window_ = nullptr;
+  // This window's DPI, so several windows on displays with different scaling
+  // each paint at their own size.
+  int dpi_ = 96;
+  // Only one window writes the session snapshot, because the snapshot format
+  // holds a single tab list. Ownership passes to a remaining window when the
+  // owner closes.
+  bool owns_session_ = false;
+  // Urls this window opens with. Empty means "follow the startup preference",
+  // which is only true of the first window.
+  std::vector<std::string> startup_urls_;
+  // Private window state. `request_context_` is only set for private windows;
+  // an ordinary window passes nullptr and uses the global on-disk context.
+  bool private_session_ = false;
+  CefRefPtr<CefRequestContext> request_context_;
   HWND address_ = nullptr;
   HWND suggestions_ = nullptr;
   HWND find_ = nullptr;

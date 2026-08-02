@@ -35,7 +35,6 @@ class MtkApp final : public CefApp,
  private:
   HINSTANCE instance_ = nullptr;
   int show_command_ = SW_SHOWDEFAULT;
-  std::unique_ptr<BrowserWindow> browser_window_;
 
   IMPLEMENT_REFCOUNTING(MtkApp);
 };

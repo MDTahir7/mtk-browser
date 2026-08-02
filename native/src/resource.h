@@ -53,6 +53,8 @@
 #define IDM_PRINT 4010
 #define IDM_BOOKMARKS_BAR 4011
 #define IDM_IMPORT_BOOKMARKS 4012
+#define IDM_NEW_WINDOW 4013
+#define IDM_NEW_PRIVATE_WINDOW 4014
 
 // Kept distinct from IDC_CLEAR_HISTORY; both dialogs share one id space in the
 // resource script, so a duplicate here silently aliases two controls.

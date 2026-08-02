@@ -39,9 +39,16 @@ has been actually built and verified, and any limitation is written down.
   - Register `http`, `https`, `.htm`, `.html` ProgIDs and Windows
     `RegisteredApplications` capabilities; add an in-app "Make default" action.
   - Touches: `installer/MTKBrowser.iss`, small native helper.
-- [ ] **T1.6 Multi-window support**
-  - One `BrowserWindow` per top-level window, per-window tab list, window state
-    persistence, and a profile-scoped singleton that focuses the right window.
+- [~] **T1.6 Multi-window support**
+  - Done: windows own themselves through `BrowserWindow::Open`, are tracked in a
+    registry, and only the last one to close ends the message loop. `Ctrl+N` and
+    a menu entry open another window, each with its own tab list and its own DPI
+    so two windows on differently scaled displays both paint correctly. One
+    window owns the session snapshot (the format holds a single tab list) and
+    ownership moves to a remaining window when the owner closes; update checks
+    are likewise scheduled once per process, not once per window.
+  - Remaining: per-window size/position persistence, dragging a tab out into a
+    new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
   - Done: 54-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
@@ -59,9 +66,19 @@ has been actually built and verified, and any limitation is written down.
 pass, but the behaviour has not been checked on screen yet. UI work is not marked
 `[x]` on a compile alone.
 
-- [ ] **T2.1 Private/Incognito window** (separate in-memory CEF request context).
-      Blocked on T1.6: a private session needs its own top-level window.
-- [ ] **T2.2 Multiple profiles** with a profile picker. Also wants T1.6 first.
+- [~] **T2.1 Private window**
+  - Done: `Ctrl+Shift+N` and a menu entry open a window backed by its own
+    `CefRequestContext` with no cache path, so its cookies, cache and storage are
+    in memory only and are discarded with the window. Nothing it visits is
+    written to history, it never owns the session snapshot, and its closed-tab
+    list dies with it. The chrome is drawn in a deeper violet so the two kinds of
+    window cannot be confused.
+  - Remaining: on-screen confirmation, an explanation page on first use, and a
+    decision on whether downloads started there should appear in the shared
+    download history (today they do).
+- [ ] **T2.2 Multiple profiles** with a profile picker. Needs preferences, the
+      library and the session store to become per-profile first; all three are
+      currently singletons bound to one directory.
 - [ ] **T2.3 Password manager + autofill** (OS-encrypted storage, never
       plaintext). Not started; this is the largest Tier 2 item and needs a
       threat model written down before any code.
