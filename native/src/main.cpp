@@ -13,6 +13,7 @@
 #include "library_store.h"
 #include "mtk_app.h"
 #include "preferences.h"
+#include "password_store.h"
 #include "profile.h"
 #include "site_settings.h"
 #include "strings.h"
@@ -171,6 +172,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::library::Store::Get().Load();
   mtk::downloads::Manager::Get().Load();
   mtk::sites::Store::Get().Load();
+  mtk::passwords::Store::Get().Load();
   // UI language follows the language preference, so it is read once the
   // preferences are loaded and before any window exists.
   mtk::strings::Refresh();

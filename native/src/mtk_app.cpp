@@ -3,6 +3,7 @@
 #include <string>
 
 #include "browser_window.h"
+#include "password_bridge.h"
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
 #include "include/cef_frame.h"
@@ -320,13 +321,31 @@ void MtkApp::OnContextInitialized() {
   }
 }
 
-void MtkApp::OnContextCreated(CefRefPtr<CefBrowser>,
+void MtkApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame> frame,
-                              CefRefPtr<CefV8Context>) {
+                              CefRefPtr<CefV8Context> context) {
+  // The router has to see every context, including subframes, or its replies
+  // have nowhere to land.
+  mtk::password_bridge::RendererOnContextCreated(browser, frame, context);
   if (!frame || !frame->IsMain()) return;
-  // Run in the freshly-created page context. Both scripts are intentionally
-  // bounded and check the hostname themselves: no mutation observer and no
-  // periodic page-data traversal.
+  // Run in the freshly-created page context. All three scripts are intentionally
+  // bounded and check the page themselves: no mutation observer and no periodic
+  // page-data traversal.
   frame->ExecuteJavaScript(kShieldsPageScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kInstagramGuardScript, frame->GetURL(), 0);
+  frame->ExecuteJavaScript(mtk::password_bridge::PageScript(), frame->GetURL(), 0);
+}
+
+void MtkApp::OnContextReleased(CefRefPtr<CefBrowser> browser,
+                               CefRefPtr<CefFrame> frame,
+                               CefRefPtr<CefV8Context> context) {
+  mtk::password_bridge::RendererOnContextReleased(browser, frame, context);
+}
+
+bool MtkApp::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
+                                      CefRefPtr<CefFrame> frame,
+                                      CefProcessId source_process,
+                                      CefRefPtr<CefProcessMessage> message) {
+  return mtk::password_bridge::RendererOnProcessMessage(browser, frame,
+                                                        source_process, message);
 }

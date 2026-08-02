@@ -18,6 +18,7 @@
 #include "download_manager.h"
 #include "filter_engine.h"
 #include "inline_asset.h"
+#include "password_bridge.h"
 #include "policy.h"
 #include "site_settings.h"
 
@@ -304,6 +305,21 @@ CefRefPtr<CefPermissionHandler> BrowserClient::GetPermissionHandler() {
   return this;
 }
 CefRefPtr<CefRequestHandler> BrowserClient::GetRequestHandler() { return this; }
+
+bool BrowserClient::OnProcessMessageReceived(
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+    CefProcessId source_process, CefRefPtr<CefProcessMessage> message) {
+  return mtk::password_bridge::OnProcessMessage(browser, frame, source_process,
+                                                message);
+}
+
+void BrowserClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
+                                              TerminationStatus, int,
+                                              const CefString&) {
+  // Pending queries from the dead renderer have to be dropped, or their
+  // callbacks would outlive the frame that made them.
+  mtk::password_bridge::OnRenderProcessTerminated(browser);
+}
 
 void BrowserClient::OnBeforeContextMenu(
     CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>,
@@ -620,6 +636,7 @@ bool BrowserClient::DoClose(CefRefPtr<CefBrowser> browser) {
 }
 
 void BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
+  mtk::password_bridge::OnBeforeClose(browser);
   if (browser_ && browser_->IsSame(browser)) browser_ = nullptr;
   if (delegate_) delegate_->OnBrowserClosed(this);
 }

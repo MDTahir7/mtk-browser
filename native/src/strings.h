@@ -23,6 +23,7 @@ namespace mtk::strings {
     L"दूसरे ब्राउज़र से बुकमार्क आयात करें...")                                  \
   V(kHistory, L"History", L"इतिहास")                                            \
   V(kDownloads, L"Downloads", L"डाउनलोड")                                       \
+  V(kSavedPasswords, L"Saved passwords...", L"सहेजे गए पासवर्ड...")               \
   V(kDownloadsActive, L"Downloads (%d active)", L"डाउनलोड (%d चल रहे)")          \
   V(kNewWindow, L"New window", L"नई विंडो")                                     \
   V(kNewPrivateWindow, L"New private window", L"नई निजी विंडो")                  \

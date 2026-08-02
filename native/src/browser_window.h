@@ -95,6 +95,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   // Per-site permissions, cookies, ad filtering and remembered zoom for the
   // site in the active tab.
   void ShowSiteSettingsDialog();
+  // Saved sign-ins. Opening the list requires the parent PIN when one is set.
+  void ShowPasswordsDialog();
   // Applies the site's remembered zoom to `tab`.
   void ApplySiteZoom(Tab& tab);
   // Opens the keyboard shortcut reference in a new tab. The shortcuts are not

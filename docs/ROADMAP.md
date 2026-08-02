@@ -50,14 +50,15 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 76-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 85-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
     tested against malformed, deeply nested and policy-refused input), profile id
     validation, and per-site settings including a test that "Shields off" cannot
-    weaken a safety rule, and UI string encoding. Verified passing locally
-    (76 passed, 0 failed).
+    weaken a safety rule, UI string encoding, and the password store including a
+    real DPAPI round trip and the https/exact-origin rules. Verified passing
+    locally (85 passed, 0 failed).
   - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
     Needs a CI workflow that builds Release and runs the suite, plus coverage
     for CEF-dependent paths that need a live browser.
@@ -92,9 +93,29 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     validation and the command-line parsing are covered by tests.
   - Remaining: profile avatars/display names separate from the id, deleting a
     profile from the UI, and a first-run picker.
-- [ ] **T2.3 Password manager + autofill** (OS-encrypted storage, never
-      plaintext). Not started; this is the largest Tier 2 item and needs a
-      threat model written down before any code.
+- [~] **T2.3 Password manager + autofill**
+  - The threat model was written first and is in `docs/PASSWORD_MANAGER.md`,
+    including what this does **not** protect against. Any change to the rules
+    changes that document in the same commit.
+  - Done: `native/src/password_store.cpp` keeps one credential per origin and
+    user name in `passwords.v1`, with the password held only as a user-scoped
+    DPAPI blob whose extra entropy includes the profile id, so another Windows
+    account, another machine or another profile cannot decrypt it.
+    `CRYPTPROTECT_UI_FORBIDDEN` keeps decryption from ever raising a prompt.
+  - Capture and fill run over CEF's message router
+    (`native/src/password_bridge.cpp`). The browser side derives the origin from
+    the frame's own URL rather than from anything the page sent, so a page can
+    only ask about itself, and every field is bounded. Saving always asks first.
+    Filling happens only over https, only on an exact origin match, and not at
+    all when several accounts are saved for one site, because that would be a
+    guess.
+  - `Alt+K` opens the saved list behind the parent PIN, with show, copy one,
+    remove and remove all. Filling is not PIN-gated, since gating the everyday
+    case would make the feature pointless. Clear browsing data can delete the
+    lot, with its own confirmation.
+  - Remaining: an account picker for sites with several saved sign-ins, an
+    "update the saved password" flow when a changed password is submitted, and
+    on-screen verification of capture and fill on real sign-in forms.
 - [~] **T2.4 Bookmarks bar, folders, and Chrome import**
   - Done: bookmarks bar under the toolbar (painted, DPI-scaled, `Ctrl+Shift+B`,
     remembered in preferences), `Ctrl+D` to save a page, and an importer for

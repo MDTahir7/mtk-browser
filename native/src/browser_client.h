@@ -55,6 +55,16 @@ class BrowserClient final : public CefClient,
  public:
   explicit BrowserClient(BrowserClientDelegate* delegate);
 
+  // Renderer queries for the password channel arrive here.
+  bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
+                                CefRefPtr<CefFrame> frame,
+                                CefProcessId source_process,
+                                CefRefPtr<CefProcessMessage> message) override;
+  void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
+                                 TerminationStatus status,
+                                 int error_code,
+                                 const CefString& error_string) override;
+
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override;
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override;
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override;

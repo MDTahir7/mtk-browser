@@ -13,6 +13,10 @@ set(MTK_BROWSER_SOURCES
   src/downloads_panel.h
   src/strings.cpp
   src/strings.h
+  src/password_store.cpp
+  src/password_store.h
+  src/password_bridge.cpp
+  src/password_bridge.h
   src/library_store.cpp
   src/library_store.h
   src/bookmark_import.cpp

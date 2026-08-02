@@ -36,7 +36,9 @@ $sources = @(
     (Join-Path $testDir 'profile_tests.cpp'),
     (Join-Path $testDir 'site_settings_tests.cpp'),
     (Join-Path $testDir 'strings_tests.cpp'),
+    (Join-Path $testDir 'password_tests.cpp'),
     (Join-Path $sourceDir 'strings.cpp'),
+    (Join-Path $sourceDir 'password_store.cpp'),
     (Join-Path $sourceDir 'policy.cpp'),
     (Join-Path $sourceDir 'bookmark_import.cpp'),
     (Join-Path $sourceDir 'profile.cpp'),
@@ -62,7 +64,8 @@ $quoted = ($sources | ForEach-Object { '"' + $_ + '"' }) -join ' '
 # without this MSVC would read them in the system ANSI code page.
 $command = "cl /nologo /std:c++20 /utf-8 /EHsc /W3 /permissive- /DNOMINMAX /I`"$sourceDir`" " +
            "/I`"$testDir`" $quoted /Fo`"$outputDir\\`" /Fe`"$exe`" " +
-           "shell32.lib ole32.lib bcrypt.lib windowscodecs.lib msimg32.lib gdi32.lib user32.lib"
+           "shell32.lib ole32.lib bcrypt.lib crypt32.lib windowscodecs.lib " +
+           "msimg32.lib gdi32.lib user32.lib"
 
 $batch = Join-Path $outputDir 'run_tests.cmd'
 @(

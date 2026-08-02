@@ -20,6 +20,7 @@
 #include "download_manager.h"
 #include "downloads_panel.h"
 #include "library_store.h"
+#include "password_store.h"
 #include "profile.h"
 #include "site_settings.h"
 #include "strings.h"
@@ -294,6 +295,149 @@ INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
       break;
     case WM_CLOSE:
       EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+void PopulatePasswordList(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_PASSWORDS_LIST);
+  SendMessageW(list, LB_RESETCONTENT, 0, 0);
+  const auto& credentials = mtk::passwords::Store::Get().credentials();
+  for (size_t index = 0; index < credentials.size(); ++index) {
+    const std::wstring row = Utf8ToWide(credentials[index].origin) + L"  —  " +
+                             credentials[index].user_name;
+    const LRESULT added =
+        SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
+    if (added != LB_ERR && added != LB_ERRSPACE) {
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(added), index);
+    }
+  }
+  const bool any = !credentials.empty();
+  for (const int control : {IDC_PASSWORDS_REVEAL, IDC_PASSWORDS_COPY,
+                            IDC_PASSWORDS_REMOVE, IDC_PASSWORDS_CLEAR}) {
+    EnableWindow(GetDlgItem(dialog, control), any ? TRUE : FALSE);
+  }
+  if (any) SendMessageW(list, LB_SETCURSEL, 0, 0);
+  SetDlgItemTextW(dialog, IDC_PASSWORDS_NOTE,
+                  mtk::preferences::PinIsSet()
+                      ? L"The parent PIN was required to open this list."
+                      : L"No parent PIN is set, so anyone using this account can "
+                        L"open this list. Set one in Settings.");
+}
+
+// Index of the selected credential, or -1.
+ptrdiff_t SelectedCredentialIndex(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_PASSWORDS_LIST);
+  const LRESULT row = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  if (row == LB_ERR) return -1;
+  const LRESULT data =
+      SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+  if (data == LB_ERR) return -1;
+  const auto& credentials = mtk::passwords::Store::Get().credentials();
+  return static_cast<size_t>(data) < credentials.size()
+             ? static_cast<ptrdiff_t>(data)
+             : -1;
+}
+
+// Puts one password on the clipboard. Never the whole list, and never as a file.
+bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
+  if (!OpenClipboard(owner)) return false;
+  EmptyClipboard();
+  const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+  HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+  bool ok = false;
+  if (memory) {
+    if (void* target = GlobalLock(memory)) {
+      memcpy(target, text.c_str(), bytes);
+      GlobalUnlock(memory);
+      ok = SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
+    }
+    if (!ok) GlobalFree(memory);
+  }
+  CloseClipboard();
+  return ok;
+}
+
+INT_PTR CALLBACK PasswordsDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                     LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG:
+      PopulatePasswordList(dialog);
+      return TRUE;
+    case WM_COMMAND: {
+      const WORD command = LOWORD(w_param);
+      if (command == IDCANCEL) {
+        EndDialog(dialog, 0);
+        return TRUE;
+      }
+      if (command == IDC_PASSWORDS_CLEAR) {
+        if (MessageBoxW(dialog,
+                        L"Remove every saved password?\n\nThey cannot be "
+                        L"recovered afterwards.",
+                        L"Saved passwords", MB_YESNO | MB_ICONWARNING) != IDYES) {
+          return TRUE;
+        }
+        auto& store = mtk::passwords::Store::Get();
+        if (!store.Clear() || !store.Flush()) {
+          MessageBoxW(dialog, L"MTK Browser could not remove the saved passwords.",
+                      L"Saved passwords", MB_OK | MB_ICONERROR);
+        }
+        PopulatePasswordList(dialog);
+        return TRUE;
+      }
+
+      const ptrdiff_t selected = SelectedCredentialIndex(dialog);
+      if (selected < 0) return TRUE;
+      // A copy is taken because the list rebuilds after any change.
+      const mtk::passwords::Credential credential =
+          mtk::passwords::Store::Get().credentials()[static_cast<size_t>(selected)];
+
+      if (command == IDC_PASSWORDS_REMOVE) {
+        auto& store = mtk::passwords::Store::Get();
+        if (!store.Remove(credential.origin, credential.user_name) ||
+            !store.Flush()) {
+          MessageBoxW(dialog, L"That password could not be removed.",
+                      L"Saved passwords", MB_OK | MB_ICONERROR);
+        }
+        PopulatePasswordList(dialog);
+        return TRUE;
+      }
+      if (command == IDC_PASSWORDS_REVEAL || command == IDC_PASSWORDS_COPY) {
+        std::wstring password;
+        if (!mtk::passwords::Store::Get().Reveal(credential.origin,
+                                                credential.user_name, &password)) {
+          MessageBoxW(dialog,
+                      L"That password could not be decrypted. It was saved by a "
+                      L"different Windows account or a different profile.",
+                      L"Saved passwords", MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        if (command == IDC_PASSWORDS_COPY) {
+          const bool copied = CopyTextToClipboard(dialog, password);
+          // The plaintext is wiped from this process even though the clipboard
+          // now holds a copy, which the person chose.
+          mtk::passwords::Scrub(&password);
+          MessageBoxW(dialog,
+                      copied ? L"Password copied. Clear your clipboard when you "
+                               L"are done."
+                             : L"The password could not be copied.",
+                      L"Saved passwords",
+                      MB_OK | (copied ? MB_ICONINFORMATION : MB_ICONWARNING));
+          return TRUE;
+        }
+        std::wstring shown = Utf8ToWide(credential.origin) + L"\n" +
+                             credential.user_name + L"\n\n" + password;
+        mtk::passwords::Scrub(&password);
+        MessageBoxW(dialog, shown.c_str(), L"Saved password",
+                    MB_OK | MB_ICONINFORMATION);
+        mtk::passwords::Scrub(&shown);
+        return TRUE;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      EndDialog(dialog, 0);
       return TRUE;
   }
   return FALSE;
@@ -581,6 +725,9 @@ struct ClearDataChoice {
   // Per-site permissions, cookie choices, Shields state and zoom. Off by
   // default: these are decisions someone made, not traces left behind.
   bool site_settings = false;
+  // Saved sign-ins. Off by default and confirmed separately, because losing
+  // them is not recoverable.
+  bool passwords = false;
 };
 
 INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
@@ -606,6 +753,8 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
                      choice->bookmarks ? BST_CHECKED : BST_UNCHECKED);
       CheckDlgButton(dialog, IDC_CLEAR_SITE_SETTINGS,
                      choice->site_settings ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_CLEAR_PASSWORDS,
+                     choice->passwords ? BST_CHECKED : BST_UNCHECKED);
       return TRUE;
     }
     case WM_COMMAND:
@@ -623,10 +772,11 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
           choice->session = checked(IDC_CLEAR_SESSION);
           choice->bookmarks = checked(IDC_CLEAR_BOOKMARKS);
           choice->site_settings = checked(IDC_CLEAR_SITE_SETTINGS);
+          choice->passwords = checked(IDC_CLEAR_PASSWORDS);
           const bool anything = choice->history || choice->downloads ||
                                 choice->cookies || choice->cache ||
                                 choice->session || choice->bookmarks ||
-                                choice->site_settings;
+                                choice->site_settings || choice->passwords;
           if (!anything) {
             MessageBoxW(dialog, L"Select at least one item to clear.",
                         L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
@@ -636,6 +786,14 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
               MessageBoxW(dialog,
                           L"Delete all bookmarks as well?\n\nThis cannot be "
                           L"undone.",
+                          L"Clear browsing data",
+                          MB_YESNO | MB_ICONWARNING) != IDYES) {
+            return TRUE;
+          }
+          if (choice->passwords &&
+              MessageBoxW(dialog,
+                          L"Delete every saved password?\n\nThey cannot be "
+                          L"recovered afterwards.",
                           L"Clear browsing data",
                           MB_YESNO | MB_ICONWARNING) != IDYES) {
             return TRUE;
@@ -1462,6 +1620,13 @@ void BrowserWindow::ShowClearDataDialog() {
                   : L"\n• Per-site settings could not be reset";
   }
 
+  if (choice.passwords) {
+    auto& store = mtk::passwords::Store::Get();
+    report += store.Clear() && store.Flush()
+                  ? L"\n• Saved passwords deleted"
+                  : L"\n• Saved passwords could not be deleted";
+  }
+
   MessageBoxW(window_, (L"Clear browsing data finished." + report).c_str(),
               L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
 }
@@ -1517,6 +1682,8 @@ void BrowserWindow::ShowBrowserMenu() {
               label(Text::kImportBookmarks).c_str());
   AppendMenuW(popup, MF_STRING, IDM_HISTORY,
               label(Text::kHistory, L"\tAlt+H").c_str());
+  AppendMenuW(popup, MF_STRING, IDM_PASSWORDS,
+              label(Text::kSavedPasswords, L"\tAlt+K").c_str());
   const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
   std::wstring downloads_label = label(Text::kDownloads, L"\tAlt+J");
   if (active_downloads > 0) {
@@ -2194,6 +2361,9 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     case 'S':
       ShowSiteSettingsDialog();
       return true;
+    case 'K':
+      ShowPasswordsDialog();
+      return true;
     case VK_OEM_2:  // Alt+/
       ShowShortcutsPage();
       return true;
@@ -2461,6 +2631,7 @@ void BrowserWindow::ShowShortcutsPage() {
       {"Alt+O", "Bookmarks"},
       {"Alt+H", "History"},
       {"Alt+J", "Downloads"},
+      {"Alt+K", "Saved passwords"},
       {"Alt+S", "Settings for this site"},
       {"Alt+/", "This page"},
       {"Esc", "Leave full screen, or close the find bar"},
@@ -2573,6 +2744,19 @@ void BrowserWindow::ApplySiteZoom(Tab& tab) {
                           : mtk::sites::Store::Get().For(origin).zoom_percent;
   tab.client->browser()->GetHost()->SetZoomLevel(
       mtk::sites::ZoomLevelForPercent(percent));
+}
+
+void BrowserWindow::ShowPasswordsDialog() {
+  // Filling a saved password is the everyday case and is not gated. Reading the
+  // list is, because that is where someone could walk off with a parent's
+  // credentials.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Saved passwords are protected. Enter the parent PIN to see them.")) {
+    return;
+  }
+  DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_PASSWORDS), window_,
+                  PasswordsDialogProc, 0);
 }
 
 void BrowserWindow::ShowSiteSettingsDialog() {
@@ -3841,6 +4025,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_SITE_SETTINGS:
           ShowSiteSettingsDialog();
+          break;
+        case IDM_PASSWORDS:
+          ShowPasswordsDialog();
           break;
         case IDM_NEW_WINDOW:
           OpenNewWindow({});
