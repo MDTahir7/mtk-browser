@@ -97,6 +97,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ShowSiteSettingsDialog();
   // Saved sign-ins. Opening the list requires the parent PIN when one is set.
   void ShowPasswordsDialog();
+  // Registers the browser with Windows and opens the Default apps page, which is
+  // the only place the choice can actually be made on Windows 10 and 11.
+  void MakeDefaultBrowser();
   // Applies the site's remembered zoom to `tab`.
   void ApplySiteZoom(Tab& tab);
   // Opens the keyboard shortcut reference in a new tab. The shortcuts are not

@@ -1,0 +1,60 @@
+name: Logic tests
+
+# The logic suite covers navigation and request policy, download rules and file
+# name hardening, session restore, the bookmarks importer, profile ids, per-site
+# settings, UI string encoding and the password store. None of it needs CEF, so
+# it runs on a plain Windows runner with the MSVC toolchain that is already
+# installed there.
+#
+# A full Release build is deliberately not run here: it needs the 1 GB CEF binary
+# distribution, which would have to be downloaded and cached on every runner. That
+# belongs in a separate, slower workflow if it is ever wanted, and the local build
+# is what gates a commit today.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  logic-tests:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
+      - name: Run logic tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_tests.ps1
+
+      - name: Check the shipped animation and icon assets
+        shell: pwsh
+        # These are committed binaries that no build step regenerates, and the
+        # release staging script refuses to package them when they drift outside
+        # the loader's limits. Checking here means a bad asset fails on push
+        # rather than at packaging time.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          foreach ($name in 'mtk_block_shield.webm', 'mtk_siren_alert.webm') {
+            $file = Get-Item "native/resources/$name"
+            if ($file.Length -le 0 -or $file.Length -gt 700KB) {
+              throw "$name is $($file.Length) bytes; the browser only inlines assets up to 700 KB."
+            }
+          }
+          $strip = [System.Drawing.Image]::FromFile((Resolve-Path 'native/resources/mtk_shield_hover.png'))
+          try { $width = $strip.Width; $height = $strip.Height } finally { $strip.Dispose() }
+          if ($height -le 0 -or $height -gt 256 -or $width -gt 4096 -or ($width % $height) -ne 0) {
+            throw "Shield hover strip is ${width}x${height}; frames must be square, at most 256 px, and the strip at most 4096 px wide."
+          }
+          Write-Output "Assets OK: strip ${width}x${height}"

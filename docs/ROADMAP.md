@@ -7,15 +7,26 @@ has been actually built and verified, and any limitation is written down.
 
 ## Tier 1 — Release blockers
 
-- [~] **T1.1 Chromium sandbox enabled**
+- [x] **T1.1 Chromium sandbox enabled**
   - Done: `MTK_ENABLE_CEF_SANDBOX` is `ON` by default and forces `USE_SANDBOX`,
     the app builds as `MTKBrowser.dll` loaded by CEF's renamed `bootstrap.exe`,
     `main.cpp` derives `no_sandbox` from the real `sandbox_info` handle, and
     staging refuses a payload missing the DLL or with mismatched signing state.
     The 0.3.0 payload ships both files (EXE 3.1 MB, DLL 1.0 MB).
-  - Remaining: confirm at runtime that renderer, GPU and utility processes are
-    actually running inside the sandbox (e.g. Process Explorer integrity level /
-    mitigation policies), and record the result here.
+  - Verified at runtime on 2 Aug 2026 by launching the Release build in a
+    throwaway profile (`--profile=sbxcheck`) and reading each child process's
+    token integrity level:
+
+    | Process | Integrity |
+    |---|---|
+    | browser | Medium |
+    | renderer (x2) | Untrusted |
+    | GPU | Low |
+    | utility, `storage.mojom.StorageService` | Untrusted |
+    | utility, `network.mojom.NetworkService` | Medium |
+
+    No process carried `--no-sandbox`. The network service running at Medium is
+    Chromium's own design on Windows, not a gap in this packaging.
   - Touches: `CMakeLists.txt`, `native/CMakeLists.txt`, `native/src/main.cpp`,
     `scripts/stage_release.ps1`, `installer/MTKBrowser.iss`.
 - [ ] **T1.2 Code signing for release artifacts**
@@ -31,14 +42,34 @@ has been actually built and verified, and any limitation is written down.
     treated as hostile. `scripts/publish_update.ps1` signs a release manifest.
   - Remaining: key rotation plan, rollback path, and an end-to-end test of a
     real published update (needs T1.2 signing to be meaningful).
-- [ ] **T1.4 Crash handling and recovery**
-  - Detect unclean shutdown, offer tab restore, and capture a local crash record.
-  - Session file already exists (`native/src/session_store.cpp`); needs a
-    "was the last exit clean?" marker.
-- [ ] **T1.5 Default browser + file/protocol associations**
-  - Register `http`, `https`, `.htm`, `.html` ProgIDs and Windows
-    `RegisteredApplications` capabilities; add an in-app "Make default" action.
-  - Touches: `installer/MTKBrowser.iss`, small native helper.
+- [x] **T1.4 Crash handling and recovery**
+  - `native/src/crash_guard.cpp` writes a marker in the profile directory at
+    startup and deletes it on a normal exit, so a marker found at startup means
+    the previous run never reached its shutdown. Unclean exits are appended to a
+    bounded local `crashes.v1`; nothing is sent anywhere.
+  - The session snapshot is now kept while running in both startup modes, because
+    that is the only way tabs can be offered back after a crash. A clean exit in
+    "open home page" mode deletes it, so choosing the home page still leaves
+    nothing behind. Private windows never contribute to it.
+  - Verified end to end on 2 Aug 2026 in a throwaway profile: the marker and
+    snapshot existed while running, both survived a forced kill, the next start
+    wrote `2026-08-02 09:31:53 unclean exit (run started 2026-08-02 09:27:26)`
+    and put the "Restore tabs" dialog on screen, and a later clean close removed
+    the marker again.
+- [~] **T1.5 Default browser + file/protocol associations**
+  - Done: `native/src/default_browser.cpp` writes the `MTKBrowserHTML` ProgID,
+    `Capabilities` with `http`/`https` URL associations and the HTML file
+    associations, and the `RegisteredApplications` entry, all under HKCU so no
+    administrator rights are needed. Registration runs on every start, which also
+    repairs a stale entry, and the installer removes those keys on uninstall so
+    Windows stops offering a browser that is gone. The menu shows either "Make
+    MTK Browser the default..." or that it already is, read from the live
+    `https` association rather than from our own keys.
+  - Windows 10 and 11 do not let a program make itself the default, so the action
+    registers and then opens the Default apps page and says so plainly instead of
+    pretending to have done it.
+  - Remaining: on-screen confirmation that MTK Browser appears in that list and
+    that a link from another program opens in it.
 - [~] **T1.6 Multi-window support**
   - Done: windows own themselves through `BrowserWindow::Open`, are tracked in a
     registry, and only the last one to close ends the message loop. `Ctrl+N` and
@@ -50,18 +81,24 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 85-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 89-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
     tested against malformed, deeply nested and policy-refused input), profile id
     validation, and per-site settings including a test that "Shields off" cannot
     weaken a safety rule, UI string encoding, and the password store including a
-    real DPAPI round trip and the https/exact-origin rules. Verified passing
-    locally (85 passed, 0 failed).
-  - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
-    Needs a CI workflow that builds Release and runs the suite, plus coverage
-    for CEF-dependent paths that need a live browser.
+    real DPAPI round trip and the https/exact-origin rules, and crash-history
+    trimming. Verified passing locally (89 passed, 0 failed).
+  - Done: `.github/workflows/tests.yml` runs the suite on every push to `main`,
+    on pull requests and on demand. It uses a plain `windows-2022` runner because
+    none of these tests need CEF, and it also checks the committed animation and
+    icon-strip assets against the same limits the release staging script
+    enforces, so a bad asset fails on push rather than at packaging time.
+  - Remaining: a Release build in CI would have to download and cache the ~1 GB
+    CEF binary distribution, so that is deliberately left out; the local build is
+    what gates a commit today. Coverage for CEF-dependent paths still needs a
+    live browser.
 
 ## Tier 2 — Daily-use parity
 
@@ -238,13 +275,15 @@ anyone arriving from Chrome or Brave will press `Ctrl+T` and get nothing.
 
 ## Recommended order
 
-1. T1.1 verify the sandbox at runtime (code is in, proof is missing)
-2. T1.7 CI workflow (cheap, and it protects everything after it)
-3. T1.4 crash recovery, then T1.5 default browser
-4. T1.6 multi-window + T2.6 tab UX
-5. T2.1 private window, T2.8 PDF viewer, T2.7 printing
-6. T1.2 code signing when a certificate is purchased, which also unblocks the
-   remaining T1.3 auto-update work
+1. **On-screen verification of everything marked `[~]`.** Tier 1 and Tier 2 are
+   built; most of it has never been looked at on a screen. That is now the
+   cheapest way to find real problems, and it needs a person.
+2. T1.2 code signing, once a certificate is purchased. It also unblocks the
+   remaining T1.3 auto-update work (rollback and a real published update).
+3. The "remaining" notes inside the Tier 2 items: bookmark folders, an account
+   picker for sites with several saved sign-ins, Hindi for the resource dialogs,
+   real drag-out for downloads.
+4. Tier 3, starting with the Shields panel work that T2.10 already made possible.
 
 ## Coordination note
 

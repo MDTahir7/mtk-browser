@@ -82,6 +82,7 @@
 #define IDM_PROFILE_NEW 4016
 #define IDM_SITE_SETTINGS 4017
 #define IDM_PASSWORDS 4018
+#define IDM_MAKE_DEFAULT 4019
 // Profile entries take a small reserved block; the window keeps the matching
 // names in menu order.
 #define IDM_PROFILE_FIRST 4100

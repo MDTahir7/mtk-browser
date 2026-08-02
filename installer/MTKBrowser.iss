@@ -52,6 +52,14 @@ Name: "{autoprograms}\MTK Browser\Uninstall MTK Browser"; Filename: "{uninstalle
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\MTKBrowser.exe"; ValueType: string; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletekey
 
+; Default-browser registration. The browser writes these itself on every start,
+; because that also repairs a stale entry, but they are declared here so
+; uninstalling removes them. Otherwise Windows keeps offering a browser that is
+; no longer installed in its Default apps list.
+Root: HKCU; Subkey: "Software\Classes\MTKBrowserHTML"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\MTK Browser"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: none; ValueName: "MTK Browser"; Flags: uninsdeletevalue
+
 [InstallDelete]
 Type: files; Name: "{autodesktop}\MTK Safe Browser.lnk"
 Type: files; Name: "{autoprograms}\MTK Safe Browser.lnk"

@@ -13,8 +13,11 @@
 #include "library_store.h"
 #include "mtk_app.h"
 #include "preferences.h"
+#include "crash_guard.h"
+#include "default_browser.h"
 #include "password_store.h"
 #include "profile.h"
+#include "session_store.h"
 #include "site_settings.h"
 #include "strings.h"
 
@@ -176,6 +179,14 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   // UI language follows the language preference, so it is read once the
   // preferences are loaded and before any window exists.
   mtk::strings::Refresh();
+  // Records that this run has started, and reports whether the previous one
+  // ended without getting to its clean shutdown.
+  mtk::crash::BeginSession();
+  // Registration only writes this application's own HKCU keys and does not make
+  // anything the default; it is what lets Windows list MTK Browser in Default
+  // apps at all. Doing it on every start also repairs an entry a previous
+  // installation left stale.
+  mtk::default_browser::Register();
 
   // Load MTK Shields rules before any browser exists so every request is
   // filtered from the first navigation onward.
@@ -202,6 +213,16 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
 
   CefRunMessageLoop();
   CefShutdown();
+  // Reaching here means the message loop ended normally, which is exactly what
+  // the marker records. Anything that kills the process skips this line, and the
+  // next start finds the marker and offers the tabs back.
+  mtk::crash::EndSessionCleanly();
+  // With the home page as the startup choice, the snapshot only exists for crash
+  // recovery, so a clean exit removes it.
+  if (mtk::preferences::Store::Get().values().startup_mode !=
+      mtk::preferences::StartupMode::kContinueSession) {
+    mtk::session::Clear();
+  }
   if (singleton) CloseHandle(singleton);
   return 0;
 }

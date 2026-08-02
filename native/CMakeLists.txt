@@ -15,6 +15,10 @@ set(MTK_BROWSER_SOURCES
   src/strings.h
   src/password_store.cpp
   src/password_store.h
+  src/crash_guard.cpp
+  src/crash_guard.h
+  src/default_browser.cpp
+  src/default_browser.h
   src/password_bridge.cpp
   src/password_bridge.h
   src/library_store.cpp
@@ -92,6 +96,8 @@ target_link_libraries(mtk_browser PRIVATE
   # msimg32 provides AlphaBlend for compositing its premultiplied frames.
   windowscodecs.lib
   msimg32.lib
+  # AssocQueryString, used to ask Windows which program currently handles https.
+  shlwapi.lib
 )
 
 set_target_properties(mtk_browser PROPERTIES

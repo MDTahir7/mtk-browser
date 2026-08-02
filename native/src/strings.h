@@ -36,6 +36,10 @@ namespace mtk::strings {
   V(kClearBrowsingData, L"Clear browsing data...", L"ब्राउज़िंग डेटा हटाएँ...")    \
   V(kCheckForUpdates, L"Check for updates...", L"अपडेट देखें...")                 \
   V(kCheckingForUpdates, L"Checking for updates...", L"अपडेट देखे जा रहे हैं...")  \
+  V(kMakeDefaultBrowser, L"Make MTK Browser the default...",                     \
+    L"MTK Browser को डिफ़ॉल्ट बनाएँ...")                                          \
+  V(kIsDefaultBrowser, L"MTK Browser is the default browser",                     \
+    L"MTK Browser पहले से डिफ़ॉल्ट ब्राउज़र है")                                    \
   V(kSettings, L"Settings", L"सेटिंग")                                           \
   V(kProfilePrefix, L"Profile: ", L"प्रोफ़ाइल: ")                                \
   V(kNewProfile, L"New profile...", L"नई प्रोफ़ाइल...")                           \

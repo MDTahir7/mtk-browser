@@ -20,6 +20,8 @@
 #include "download_manager.h"
 #include "downloads_panel.h"
 #include "library_store.h"
+#include "crash_guard.h"
+#include "default_browser.h"
 #include "password_store.h"
 #include "profile.h"
 #include "site_settings.h"
@@ -1751,6 +1753,13 @@ void BrowserWindow::ShowBrowserMenu() {
               label(update_check_running_ ? Text::kCheckingForUpdates
                                           : Text::kCheckForUpdates)
                   .c_str());
+  // The entry says which state you are in, so pressing it is never a surprise.
+  const bool is_default = mtk::default_browser::IsDefault();
+  AppendMenuW(popup, MF_STRING | (is_default ? MF_GRAYED : MF_ENABLED),
+              IDM_MAKE_DEFAULT,
+              label(is_default ? Text::kIsDefaultBrowser
+                               : Text::kMakeDefaultBrowser)
+                  .c_str());
   AppendMenuW(popup, MF_STRING, IDM_SETTINGS, label(Text::kSettings).c_str());
   POINT point{};
   GetCursorPos(&point);
@@ -1849,22 +1858,20 @@ void BrowserWindow::ScheduleLibrarySave() {
 }
 
 void BrowserWindow::ScheduleSessionSave() {
-  if (closing_ || !window_ || !owns_session_) return;
-  if (mtk::preferences::Store::Get().values().startup_mode ==
-      mtk::preferences::StartupMode::kContinueSession) {
-    SetTimer(window_, kSessionSaveTimer, 1200, nullptr);
-  }
+  if (closing_ || !window_ || !owns_session_ || private_session_) return;
+  // Snapshots are taken in both startup modes; see SaveSessionSnapshot().
+  SetTimer(window_, kSessionSaveTimer, 1200, nullptr);
 }
 
 void BrowserWindow::SaveSessionSnapshot() {
   // A window that does not own the session must not overwrite the snapshot,
   // and must not clear it either.
   if (!owns_session_) return;
-  if (mtk::preferences::Store::Get().values().startup_mode !=
-      mtk::preferences::StartupMode::kContinueSession) {
-    mtk::session::Clear();
-    return;
-  }
+  // The snapshot is kept while the browser is running even when the startup
+  // preference is "open home page", because that is the only way tabs can be
+  // offered back after a crash. A clean exit in that mode deletes it, so
+  // choosing the home page still means nothing is left on disk afterwards.
+  if (private_session_) return;
   std::vector<std::string> urls;
   urls.reserve(tabs_.size());
   for (const auto& tab : tabs_) urls.push_back(WideToUtf8(tab.url));
@@ -1879,6 +1886,29 @@ void BrowserWindow::CreateStartupTabs() {
     for (const auto& url : startup_urls_) CreateTab(url);
     if (!tabs_.empty()) return;
   }
+  // After an unclean exit the tabs are offered back even when the startup
+  // preference is the home page, because losing them was not the user's choice.
+  if (owns_session_ && mtk::crash::LastExitWasUnclean() &&
+      mtk::preferences::Store::Get().values().startup_mode !=
+          mtk::preferences::StartupMode::kContinueSession) {
+    const auto snapshot = mtk::session::Load();
+    if (!snapshot.urls.empty()) {
+      const std::wstring question =
+          L"MTK Browser did not close normally last time.\n\nRestore the " +
+          std::to_wstring(snapshot.urls.size()) +
+          (snapshot.urls.size() == 1 ? L" tab that was open?"
+                                     : L" tabs that were open?");
+      if (MessageBoxW(window_, question.c_str(), L"Restore tabs",
+                      MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        for (const auto& url : snapshot.urls) CreateTab(url);
+        if (!tabs_.empty()) {
+          active_tab_ = std::min(snapshot.active_index, tabs_.size() - 1);
+          return;
+        }
+      }
+    }
+  }
+
   if (mtk::preferences::Store::Get().values().startup_mode ==
           mtk::preferences::StartupMode::kContinueSession &&
       owns_session_) {
@@ -2744,6 +2774,31 @@ void BrowserWindow::ApplySiteZoom(Tab& tab) {
                           : mtk::sites::Store::Get().For(origin).zoom_percent;
   tab.client->browser()->GetHost()->SetZoomLevel(
       mtk::sites::ZoomLevelForPercent(percent));
+}
+
+void BrowserWindow::MakeDefaultBrowser() {
+  if (!mtk::default_browser::Register()) {
+    MessageBoxW(window_,
+                L"MTK Browser could not register itself with Windows, so it "
+                L"cannot be offered as the default browser.",
+                L"Default browser", MB_OK | MB_ICONERROR);
+    return;
+  }
+  // Windows 10 and 11 do not allow a program to make itself the default, so the
+  // honest step is to say what happens next rather than to appear to do it.
+  if (MessageBoxW(window_,
+                  L"Windows asks you to confirm this yourself.\n\nMTK Browser "
+                  L"is now registered, and the Windows \"Default apps\" page "
+                  L"will open. Choose MTK Browser for HTTP and HTTPS there.",
+                  L"Default browser", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+    return;
+  }
+  if (!mtk::default_browser::PromptUserToChoose(window_)) {
+    MessageBoxW(window_,
+                L"The Windows settings page could not be opened. Open Settings "
+                L"> Apps > Default apps and choose MTK Browser there.",
+                L"Default browser", MB_OK | MB_ICONWARNING);
+  }
 }
 
 void BrowserWindow::ShowPasswordsDialog() {
@@ -4028,6 +4083,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_PASSWORDS:
           ShowPasswordsDialog();
+          break;
+        case IDM_MAKE_DEFAULT:
+          MakeDefaultBrowser();
           break;
         case IDM_NEW_WINDOW:
           OpenNewWindow({});
