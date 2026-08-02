@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -21,6 +22,7 @@
 #include "password_bridge.h"
 #include "policy.h"
 #include "site_settings.h"
+#include "user_filters.h"
 
 namespace {
 
@@ -33,6 +35,12 @@ constexpr int kPrintPageId = MENU_ID_USER_FIRST + 3;
 constexpr size_t kMaxSpellSuggestions = 5;
 
 std::atomic<unsigned long> g_blocked_count{0};
+
+// Blocked requests per page origin, for the Shields panel. Requests are filtered
+// on the IO thread while the panel reads on the UI thread, so this needs a lock;
+// it is a display counter, not part of any decision.
+std::mutex g_site_block_mutex;
+std::unordered_map<std::string, unsigned long> g_site_blocks;
 std::unordered_map<uint32_t, CefRefPtr<CefDownloadItemCallback>>
     g_download_callbacks;
 
@@ -760,11 +768,55 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
       url, MapResourceType(request->GetResourceType()),
       request_initiator.ToString(), ad_filtering);
   if (!decision.allow) {
-    g_blocked_count.fetch_add(1, std::memory_order_relaxed);
+    CountBlockedRequest();
     disable_default_handling = true;
     return nullptr;
   }
+
+  // Rules the user wrote themselves. They are consulted after the built-in
+  // policy, so a custom allow rule can never open something the safety rules
+  // refuse; it can only rescue an address the ad rules would have caught.
+  if (ad_filtering) {
+    std::string lowered = url;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char character) {
+                     return static_cast<char>(
+                         character >= 'A' && character <= 'Z' ? character + 32
+                                                             : character);
+                   });
+    if (mtk::user_filters::Evaluate(lowered) ==
+        mtk::user_filters::Decision::kBlock) {
+      CountBlockedRequest();
+      disable_default_handling = true;
+      return nullptr;
+    }
+  }
   return this;
+}
+
+void BrowserClient::CountBlockedRequest() const {
+  g_blocked_count.fetch_add(1, std::memory_order_relaxed);
+  // Also counted per site, so the Shields panel can say what was blocked on the
+  // page in front of you rather than only a session total.
+  if (!browser_) return;
+  auto frame = browser_->GetMainFrame();
+  if (!frame) return;
+  const std::string origin = mtk::sites::OriginOf(frame->GetURL().ToString());
+  if (origin.empty()) return;
+  std::lock_guard<std::mutex> lock(g_site_block_mutex);
+  // Bounded: an origin that is no longer open is not worth remembering, and this
+  // is only a display counter.
+  if (g_site_blocks.size() > 200 && !g_site_blocks.contains(origin)) {
+    g_site_blocks.clear();
+  }
+  ++g_site_blocks[origin];
+}
+
+unsigned long BrowserClient::blocked_count_for_origin(const std::string& origin) {
+  if (origin.empty()) return 0;
+  std::lock_guard<std::mutex> lock(g_site_block_mutex);
+  const auto found = g_site_blocks.find(origin);
+  return found == g_site_blocks.end() ? 0 : found->second;
 }
 
 bool BrowserClient::AdFilteringAllowedForCurrentPage() const {

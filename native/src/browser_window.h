@@ -100,6 +100,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   // Registers the browser with Windows and opens the Default apps page, which is
   // the only place the choice can actually be made on Windows 10 and 11.
   void MakeDefaultBrowser();
+  // Editor for the user's own filter rules, behind the parent PIN because a rule
+  // can allow as well as block.
+  void ShowUserFiltersDialog();
   // Applies the site's remembered zoom to `tab`.
   void ApplySiteZoom(Tab& tab);
   // Opens the keyboard shortcut reference in a new tab. The shortcuts are not

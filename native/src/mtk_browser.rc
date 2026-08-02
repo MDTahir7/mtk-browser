@@ -54,7 +54,7 @@ BEGIN
   PUSHBUTTON "Cancel", IDCANCEL, 220, 198, 66, 14
 END
 
-IDD_SETTINGS DIALOGEX 0, 0, 320, 340
+IDD_SETTINGS DIALOGEX 0, 0, 320, 422
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTK Browser Settings"
 FONT 9, "Segoe UI"
@@ -71,12 +71,32 @@ BEGIN
   LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", -1, 16, 198, 286, 28
   LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", -1, 16, 230, 286, 10
   LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 244, 286, 10
-  AUTOCHECKBOX "Check for signed MTK Browser updates automatically", IDC_SETTINGS_AUTO_UPDATE, 16, 262, 286, 10
-  LTEXT "Parent controls", -1, 16, 282, 140, 10
-  LTEXT "", IDC_SETTINGS_PIN_STATE, 16, 296, 190, 20
-  PUSHBUTTON "Parent PIN...", IDC_SETTINGS_PIN, 212, 294, 90, 14
-  DEFPUSHBUTTON "Save", IDOK, 162, 318, 66, 14
-  PUSHBUTTON "Cancel", IDCANCEL, 236, 318, 66, 14
+
+  LTEXT "Connection", -1, 16, 262, 140, 10
+  AUTOCHECKBOX "Block plain HTTP content on pages (HTTPS-only)", IDC_SETTINGS_HTTPS_ONLY, 16, 276, 286, 10
+  LTEXT "Encrypted DNS", -1, 16, 294, 270, 10
+  COMBOBOX IDC_SETTINGS_DOH, 16, 307, 286, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Encrypted DNS takes effect after you restart MTK Browser.", -1, 16, 326, 286, 10
+
+  AUTOCHECKBOX "Check for signed MTK Browser updates automatically", IDC_SETTINGS_AUTO_UPDATE, 16, 344, 286, 10
+  LTEXT "Parent controls", -1, 16, 364, 140, 10
+  LTEXT "", IDC_SETTINGS_PIN_STATE, 16, 378, 190, 20
+  PUSHBUTTON "Parent PIN...", IDC_SETTINGS_PIN, 212, 376, 90, 14
+  DEFPUSHBUTTON "Save", IDOK, 162, 400, 66, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 236, 400, 66, 14
+END
+
+IDD_USER_FILTERS DIALOGEX 0, 0, 380, 260
+STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Your filter rules — MTK Browser"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "One rule per line. A rule blocks any address that contains it.", -1, 14, 10, 352, 10
+  LTEXT "Start a line with @@ to allow instead of block, or with # for a note.", -1, 14, 24, 352, 10
+  EDITTEXT IDC_FILTERS_TEXT, 14, 40, 352, 168, ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
+  LTEXT "Your rules cannot switch off site safety, SafeSearch or adult-content blocking.", -1, 14, 214, 352, 10
+  DEFPUSHBUTTON "Save", IDOK, 232, 232, 62, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 302, 232, 64, 14
 END
 
 IDD_PASSWORDS DIALOGEX 0, 0, 430, 250

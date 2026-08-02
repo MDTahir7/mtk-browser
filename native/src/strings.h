@@ -33,6 +33,7 @@ namespace mtk::strings {
   V(kPrint, L"Print...", L"प्रिंट करें...")                                       \
   V(kKeyboardShortcuts, L"Keyboard shortcuts", L"कीबोर्ड शॉर्टकट")                \
   V(kSiteSettings, L"Settings for this site...", L"इस साइट की सेटिंग...")         \
+  V(kUserFilters, L"Your filter rules...", L"आपके फ़िल्टर नियम...")                \
   V(kClearBrowsingData, L"Clear browsing data...", L"ब्राउज़िंग डेटा हटाएँ...")    \
   V(kCheckForUpdates, L"Check for updates...", L"अपडेट देखें...")                 \
   V(kCheckingForUpdates, L"Checking for updates...", L"अपडेट देखे जा रहे हैं...")  \

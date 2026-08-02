@@ -4,6 +4,7 @@
 
 #include "browser_window.h"
 #include "password_bridge.h"
+#include "preferences.h"
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
 #include "include/cef_frame.h"
@@ -262,6 +263,36 @@ void ConfigureSpellcheck() {
   set_preference("spellcheck.dictionaries", languages);
 }
 
+// Encrypted DNS. Chromium resolves through the configured template, so lookups
+// stop travelling in the clear to whatever resolver the network handed out. The
+// default provider also refuses malware and adult domains, which is a second
+// line behind the browser's own rules.
+void ConfigureSecureDns() {
+  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+  if (!context) return;
+  const auto& values = mtk::preferences::Store::Get().values();
+  const std::string templates =
+      mtk::preferences::DohTemplate(values.doh_provider);
+
+  const auto set_preference = [&context](const char* name,
+                                         CefRefPtr<CefValue> value) {
+    if (!context->CanSetPreference(name)) return;
+    CefString error;
+    context->SetPreference(name, value, error);
+  };
+
+  CefRefPtr<CefValue> mode = CefValue::Create();
+  // "secure" would fail closed if the resolver is unreachable, which would look
+  // like a broken internet connection. "automatic" uses encrypted DNS when it
+  // works and falls back when it does not.
+  mode->SetString(templates.empty() ? "off" : "automatic");
+  set_preference("dns_over_https.mode", mode);
+
+  CefRefPtr<CefValue> uri = CefValue::Create();
+  uri->SetString(templates);
+  set_preference("dns_over_https.templates", uri);
+}
+
 }  // namespace
 
 MtkApp::MtkApp(HINSTANCE instance, int show_command)
@@ -314,6 +345,7 @@ void MtkApp::OnBeforeCommandLineProcessing(
 
 void MtkApp::OnContextInitialized() {
   ConfigureSpellcheck();
+  ConfigureSecureDns();
   // Windows own themselves and end the message loop when the last one closes,
   // so nothing is held here.
   if (!BrowserWindow::Open(instance_, show_command_, {})) {

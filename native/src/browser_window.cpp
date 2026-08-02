@@ -26,6 +26,7 @@
 #include "profile.h"
 #include "site_settings.h"
 #include "strings.h"
+#include "user_filters.h"
 #include "policy.h"
 #include "preferences.h"
 #include "resource.h"
@@ -118,6 +119,16 @@ const wchar_t* ButtonGlyph(UINT control_id) {
     default: return L"";
   }
 }
+
+// Encrypted DNS providers in the order the Settings list shows them, so the
+// selected index maps back to a stored value without a second table.
+constexpr mtk::preferences::DohProvider kDohOrder[] = {
+    mtk::preferences::DohProvider::kCloudflareFamily,
+    mtk::preferences::DohProvider::kCloudflare,
+    mtk::preferences::DohProvider::kQuad9,
+    mtk::preferences::DohProvider::kGoogle,
+    mtk::preferences::DohProvider::kSystem,
+};
 
 // Upper bound on profiles listed in the menu. The reserved command id range is
 // this large, so the list is truncated rather than colliding with other ids.
@@ -288,6 +299,67 @@ INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
         MessageBoxW(dialog, L"That PIN is not correct.", L"Parent PIN",
                     MB_OK | MB_ICONWARNING);
         SetFocus(GetDlgItem(dialog, IDC_PIN_PROMPT_VALUE));
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+INT_PTR CALLBACK UserFiltersDialogProc(HWND dialog, UINT message,
+                                      WPARAM w_param, LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      std::wstring text;
+      for (const std::wstring& line : mtk::user_filters::Lines()) {
+        text += line;
+        text += L"\r\n";
+      }
+      SetDlgItemTextW(dialog, IDC_FILTERS_TEXT, text.c_str());
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        HWND field = GetDlgItem(dialog, IDC_FILTERS_TEXT);
+        const int length = GetWindowTextLengthW(field);
+        // Bounded by the store's own limits; this is only the transfer buffer.
+        const int capacity = std::min(length, 256 * 1024);
+        std::wstring text(static_cast<size_t>(capacity) + 1, L'\0');
+        GetWindowTextW(field, text.data(), capacity + 1);
+        text.resize(static_cast<size_t>(capacity));
+
+        std::vector<std::wstring> lines;
+        size_t offset = 0;
+        while (offset <= text.size()) {
+          const size_t end = text.find(L'\n', offset);
+          std::wstring line = text.substr(
+              offset, (end == std::wstring::npos ? text.size() : end) - offset);
+          if (!line.empty() && line.back() == L'\r') line.pop_back();
+          // Trailing blank lines are dropped rather than stored as empty rules.
+          if (!line.empty() || end != std::wstring::npos) {
+            lines.push_back(std::move(line));
+          }
+          if (end == std::wstring::npos) break;
+          offset = end + 1;
+        }
+        while (!lines.empty() && lines.back().empty()) lines.pop_back();
+
+        std::wstring error;
+        if (!mtk::user_filters::Save(lines, &error)) {
+          MessageBoxW(dialog,
+                      error.empty() ? L"Those rules could not be saved."
+                                    : error.c_str(),
+                      L"Your filter rules", MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        EndDialog(dialog, IDOK);
         return TRUE;
       }
       if (LOWORD(w_param) == IDCANCEL) {
@@ -862,6 +934,26 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
       SetWindowTheme(downloads, L"Explorer", nullptr);
       CheckDlgButton(dialog, IDC_SETTINGS_AUTO_UPDATE,
                      values.auto_update ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_SETTINGS_HTTPS_ONLY,
+                     values.https_only ? BST_CHECKED : BST_UNCHECKED);
+      {
+        // Providers in a fixed order so the stored value maps to an index.
+        HWND doh = GetDlgItem(dialog, IDC_SETTINGS_DOH);
+        for (const auto provider : kDohOrder) {
+          SendMessageW(doh, CB_ADDSTRING, 0,
+                       reinterpret_cast<LPARAM>(
+                           mtk::preferences::DohLabel(provider)));
+        }
+        int selected = 0;
+        for (size_t index = 0; index < std::size(kDohOrder); ++index) {
+          if (kDohOrder[index] == values.doh_provider) {
+            selected = static_cast<int>(index);
+            break;
+          }
+        }
+        SendMessageW(doh, CB_SETCURSEL, static_cast<WPARAM>(selected), 0);
+        SetWindowTheme(doh, L"Explorer", nullptr);
+      }
       RefreshPinState(dialog);
       return TRUE;
     }
@@ -935,6 +1027,30 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
           return TRUE;
         }
         values.auto_update = auto_update;
+
+        const bool https_only =
+            IsDlgButtonChecked(dialog, IDC_SETTINGS_HTTPS_ONLY) == BST_CHECKED;
+        // Allowing plain HTTP content back in is a safety decision, so it is
+        // acknowledged rather than flipped quietly.
+        if (!https_only && values.https_only &&
+            MessageBoxW(dialog,
+                        L"Pages will be allowed to load content over plain "
+                        L"HTTP, which anyone on the network can read or "
+                        L"change.\n\nAllow it anyway?",
+                        L"Allow plain HTTP?",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          CheckDlgButton(dialog, IDC_SETTINGS_HTTPS_ONLY, BST_CHECKED);
+          return TRUE;
+        }
+        values.https_only = https_only;
+
+        const LRESULT doh_index =
+            SendMessageW(GetDlgItem(dialog, IDC_SETTINGS_DOH), CB_GETCURSEL, 0, 0);
+        if (doh_index >= 0 &&
+            static_cast<size_t>(doh_index) < std::size(kDohOrder)) {
+          values.doh_provider = kDohOrder[static_cast<size_t>(doh_index)];
+        }
+
         if (!mtk::preferences::Store::Get().Save(values)) {
           MessageBoxW(dialog, L"MTK Browser could not save these settings.",
                       L"MTK Browser Settings", MB_OK | MB_ICONERROR);
@@ -1718,6 +1834,8 @@ void BrowserWindow::ShowBrowserMenu() {
               label(Text::kKeyboardShortcuts, L"\tAlt+/").c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED),
               IDM_SITE_SETTINGS, label(Text::kSiteSettings, L"\tAlt+S").c_str());
+  AppendMenuW(popup, MF_STRING, IDM_USER_FILTERS,
+              label(Text::kUserFilters, L"\tAlt+Y").c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
 
   // Profiles. Each one is a separate process because the data stores and the
@@ -2394,6 +2512,9 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     case 'K':
       ShowPasswordsDialog();
       return true;
+    case 'Y':
+      ShowUserFiltersDialog();
+      return true;
     case VK_OEM_2:  // Alt+/
       ShowShortcutsPage();
       return true;
@@ -2663,6 +2784,7 @@ void BrowserWindow::ShowShortcutsPage() {
       {"Alt+J", "Downloads"},
       {"Alt+K", "Saved passwords"},
       {"Alt+S", "Settings for this site"},
+      {"Alt+Y", "Your filter rules"},
       {"Alt+/", "This page"},
       {"Esc", "Leave full screen, or close the find bar"},
   };
@@ -2774,6 +2896,25 @@ void BrowserWindow::ApplySiteZoom(Tab& tab) {
                           : mtk::sites::Store::Get().For(origin).zoom_percent;
   tab.client->browser()->GetHost()->SetZoomLevel(
       mtk::sites::ZoomLevelForPercent(percent));
+}
+
+void BrowserWindow::ShowUserFiltersDialog() {
+  // A rule can allow as well as block, so editing them is a parent action even
+  // though the safety rules stay in force either way.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Filter rules are protected. Enter the parent PIN to change them.")) {
+    return;
+  }
+  if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_USER_FILTERS), window_,
+                      UserFiltersDialogProc, 0) != IDOK) {
+    return;
+  }
+  // Rules apply to requests from now on, and a reload is what makes the change
+  // visible on the page in front of you.
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    tab->client->browser()->ReloadIgnoreCache();
+  }
 }
 
 void BrowserWindow::MakeDefaultBrowser() {
@@ -4040,12 +4181,24 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case kFindCloseId:
           HideFindBar();
           break;
-        case kShieldId:
+        case kShieldId: {
+          mtk::shields::SiteState state;
+          if (tab) {
+            state.site = mtk::sites::OriginOf(WideToUtf8(tab->url));
+            if (!state.site.empty()) {
+              state.site_blocked_count =
+                  BrowserClient::blocked_count_for_origin(state.site);
+              state.site_filtering =
+                  mtk::sites::Store::Get().For(state.site).ad_filtering;
+            }
+          }
+          state.custom_rule_count = mtk::user_filters::ActiveRuleCount();
           mtk::shields::ShowPanel(
               instance_, window_, shield_, BrowserClient::blocked_count(),
-              mtk::downloads::CurrentMode() ==
-                  mtk::downloads::Mode::kStandard);
+              mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard,
+              state);
           break;
+        }
         case kDownloadsId:
           // The toolbar button opens the popup; the full window stays on Alt+J
           // and in the menu.
@@ -4086,6 +4239,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_MAKE_DEFAULT:
           MakeDefaultBrowser();
+          break;
+        case IDM_USER_FILTERS:
+          ShowUserFiltersDialog();
           break;
         case IDM_NEW_WINDOW:
           OpenNewWindow({});

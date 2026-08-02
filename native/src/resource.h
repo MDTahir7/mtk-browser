@@ -11,6 +11,7 @@
 #define IDD_TEXT_PROMPT 207
 #define IDD_SITE_SETTINGS 208
 #define IDD_PASSWORDS 209
+#define IDD_USER_FILTERS 210
 #define IDC_SETTINGS_HOME_PAGE 1201
 #define IDC_SETTINGS_LANGUAGE 1202
 #define IDC_LIBRARY_LIST 1203
@@ -63,6 +64,9 @@
 #define IDC_PASSWORDS_REMOVE 1251
 #define IDC_PASSWORDS_CLEAR 1252
 #define IDC_PASSWORDS_NOTE 1253
+#define IDC_FILTERS_TEXT 1254
+#define IDC_SETTINGS_HTTPS_ONLY 1255
+#define IDC_SETTINGS_DOH 1256
 
 #define IDM_ADD_BOOKMARK 4001
 #define IDM_BOOKMARKS 4002
@@ -83,6 +87,7 @@
 #define IDM_SITE_SETTINGS 4017
 #define IDM_PASSWORDS 4018
 #define IDM_MAKE_DEFAULT 4019
+#define IDM_USER_FILTERS 4020
 // Profile entries take a small reserved block; the window keeps the matching
 // names in menu order.
 #define IDM_PROFILE_FIRST 4100

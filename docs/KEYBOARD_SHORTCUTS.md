@@ -60,6 +60,7 @@ page is generated from a single table in `BrowserWindow::ShowShortcutsPage()`.
 | `Alt+J` | Downloads |
 | `Alt+K` | Saved passwords |
 | `Alt+S` | Settings for this site |
+| `Alt+Y` | Your filter rules |
 | `Alt+/` | This list, in a tab |
 
 ## What is left alone, and why

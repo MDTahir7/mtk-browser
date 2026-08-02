@@ -81,7 +81,7 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 89-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 103-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
@@ -89,7 +89,8 @@ has been actually built and verified, and any limitation is written down.
     validation, and per-site settings including a test that "Shields off" cannot
     weaken a safety rule, UI string encoding, and the password store including a
     real DPAPI round trip and the https/exact-origin rules, and crash-history
-    trimming. Verified passing locally (89 passed, 0 failed).
+    trimming, the user's own filter rules, and HTTPS-only mode. Verified passing
+    locally (103 passed, 0 failed).
   - Done: `.github/workflows/tests.yml` runs the suite on every push to `main`,
     on pull requests and on demand. It uses a plain `windows-2022` runner because
     none of these tests need CEF, and it also checks the committed animation and
@@ -248,12 +249,41 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
 
 - [ ] **T3.1 Extension support** (largest single effort)
 - [ ] **T3.2 Sync** across devices, end-to-end encrypted
-- [~] **T3.3 Shields panel** — the toolbar panel exists (`native/src/shields_panel.cpp`,
-      dismissal and DPI issues fixed) and per-site ad/tracker filtering now
-      persists per origin through T2.10. Remaining: reaching that switch from the
-      panel itself, per-site blocked counts, and a custom filters UI.
+- [~] **T3.3 Per-site Shields panel + custom filters**
+  - Done: the panel now names the current site, shows what was blocked while that
+    page was showing, says when that site's own ad/tracker switch is off, and
+    counts the user's own rules. Per-site blocked counts are kept in a small
+    locked map in `browser_client.cpp` (a display counter, not part of any
+    decision).
+  - Done: `native/src/user_filters.cpp` holds rules a person writes themselves,
+    edited with `Alt+Y` behind the parent PIN. Deliberately smaller syntax than
+    Adblock Plus, because a typed rule has to be predictable: a line blocks any
+    address containing it, `@@` allows and wins, `#` is a note. They are kept
+    apart from the bundled engine, which is immutable after startup so it can be
+    read from CEF's IO thread without locking; these can change while running, so
+    they sit behind a shared lock instead of being merged into it.
+  - The panel stays presentation-only. The per-site switch lives in the site
+    settings dialog (`Alt+S`) and the panel says where it is, rather than adding
+    a script bridge to a surface that was deliberately built without one.
+  - A custom **allow** rule cannot open anything the safety policy refuses: the
+    policy is consulted first and independently, which a test pins down.
+  - Remaining: per-site rule counts in the panel, and a rule syntax check while
+    typing rather than only on save.
 - [ ] **T3.4 Fingerprinting protection**
-- [ ] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
+- [~] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
+  - Done: HTTPS-only refuses plain-HTTP **subresources** and is on by default,
+    with a Settings toggle that asks for confirmation before it is turned off.
+    Main-frame addresses are left alone on purpose, because the navigation path
+    already upgrades them to https; refusing them here would turn that upgrade
+    into a block page. A test pins that distinction down.
+  - Done: encrypted DNS with a provider list in Settings. The default is
+    Cloudflare for Families, which refuses malware and adult domains at the DNS
+    layer as well, and "Use the Windows DNS setting" switches it off. The mode is
+    `automatic`, not `secure`, so an unreachable resolver degrades instead of
+    looking like a broken internet connection.
+  - Remaining: on-screen confirmation that lookups really are encrypted (e.g.
+    against a resolver test page), and a per-site HTTP exception for the rare page
+    that has no https at all.
 - [ ] **T3.6 Managed, updatable filter and category feed** (signed, with fail-safe
       fallback to the bundled list)
 - [ ] **T3.7 Performance**: background tab freeze/discard, startup and memory work

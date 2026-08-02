@@ -74,7 +74,49 @@ std::string EscapeForDataUrl(const std::string& markup) {
   return escaped;
 }
 
-std::string PanelUrl(unsigned long blocked_count, bool standard_downloads) {
+// Escapes the few characters that could break out of text content. The site is
+// derived from the page's own address, so it is not arbitrary markup, but it is
+// still page-controlled text going into a document.
+std::string EscapeHtmlText(const std::string& value) {
+  std::string escaped;
+  escaped.reserve(value.size() + 8);
+  for (const char character : value) {
+    switch (character) {
+      case '&': escaped += "&amp;"; break;
+      case '<': escaped += "&lt;"; break;
+      case '>': escaped += "&gt;"; break;
+      case '"': escaped += "&quot;"; break;
+      default: escaped.push_back(character); break;
+    }
+  }
+  return escaped;
+}
+
+// One line naming the current site, what was blocked on it, and whether its own
+// filtering switch is off. The panel stays read-only: the switch itself lives in
+// the site settings dialog, and saying where it is beats a control this
+// presentation-only surface would need a script bridge to operate.
+std::string SiteLine(const SiteState& state) {
+  if (state.site.empty()) {
+    return "<div class=site>This page has no site settings of its own</div>";
+  }
+  std::string line = "<div class=site><b>" + EscapeHtmlText(state.site) + "</b> ";
+  if (!state.site_filtering) {
+    line += "&middot; <span class=off>ad and tracker filtering is off here</span>";
+  } else {
+    line += "&middot; " + std::to_string(state.site_blocked_count) +
+            " blocked on this page";
+  }
+  if (state.custom_rule_count > 0) {
+    line += " &middot; " + std::to_string(state.custom_rule_count) +
+            " of your own rules";
+  }
+  line += "</div>";
+  return line;
+}
+
+std::string PanelUrl(unsigned long blocked_count, bool standard_downloads,
+                     const SiteState& site_state) {
   const std::string& beacon = mtk::assets::WebmDataUrl(kBeaconFile);
   // The glyph stays in the markup as the fallback for a missing asset and for
   // readers who ask the platform to reduce motion.
@@ -129,10 +171,17 @@ std::string PanelUrl(unsigned long blocked_count, bool standard_downloads) {
       "li small{display:block;color:#96a2be;font-size:11px}"
       ".hint{flex:0 0 auto;padding:0 18px 11px;font-size:11px;color:#6d7ba0;"
       "text-align:center}"
+      ".site{flex:0 0 auto;padding:9px 18px;background:#131b31;"
+      "border-bottom:1px solid #2a3350;font-size:11px;color:#96a2be;"
+      "text-align:center;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap}"
+      ".site b{color:#f0f4ff;font-weight:600}"
+      ".site .off{color:#fbbf24}"
       "</style><div class=hero>" + art +
       "<h1>MTK Shields are active</h1><div class=pill>PROTECTING</div></div>"
       "<div class=count><b>" + std::to_string(blocked_count) +
-      "</b><span>requests blocked this session</span></div><ul>"
+      "</b><span>requests blocked this session</span></div>" +
+      SiteLine(site_state) + "<ul>"
       "<li><i>&#10003;</i><div>Ad, tracker and telemetry requests blocked"
       "</div></li>"
       "<li><i>&#10003;</i><div>Adult and piracy domains blocked</div></li>"
@@ -140,7 +189,8 @@ std::string PanelUrl(unsigned long blocked_count, bool standard_downloads) {
       "<li><i>&#10003;</i><div>SafeSearch and HTTPS upgrade enforced</div></li>" +
       downloads +
       "<li><i>&#10003;</i><div>Popups and risky permissions denied</div></li>"
-      "</ul><div class=hint>Press Esc or click outside to close</div>";
+      "</ul><div class=hint>Alt+S for this site &middot; Alt+Y for your own "
+      "filters &middot; Esc to close</div>";
 
   std::string url = "data:text/html," + EscapeForDataUrl(markup);
   // Restore the placeholder with the already-encoded asset URL.
@@ -381,7 +431,8 @@ void ClosePanel() {
 }
 
 void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
-               unsigned long blocked_count, bool standard_downloads) {
+               unsigned long blocked_count, bool standard_downloads,
+               const SiteState& site_state) {
   // A second click on the shield button should dismiss the open panel rather
   // than stack another one.
   if (g_panel) {
@@ -444,7 +495,8 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
   settings.background_color =
       CefColorSetARGB(255, kPanelRed, kPanelGreen, kPanelBlue);
   if (!CefBrowserHost::CreateBrowser(info, client,
-                                     PanelUrl(blocked_count, standard_downloads),
+                                     PanelUrl(blocked_count, standard_downloads,
+                                              site_state),
                                      settings, nullptr, nullptr)) {
     client->Detach();
     g_client = nullptr;

@@ -211,6 +211,9 @@ class BrowserClient final : public CefClient,
   // Number of ad/tracker/unsafe requests blocked since launch, shown in the
   // MTK Shields UI.
   static unsigned long blocked_count();
+  // Requests blocked while the given page origin was showing, for the Shields
+  // panel. A display counter only.
+  static unsigned long blocked_count_for_origin(const std::string& origin);
   static bool CanControlDownload(uint32_t id);
   static bool PauseDownload(uint32_t id);
   static bool ResumeDownload(uint32_t id);
@@ -220,6 +223,8 @@ class BrowserClient final : public CefClient,
   // True unless the page currently shown has ad and tracker filtering switched
   // off in its site settings.
   bool AdFilteringAllowedForCurrentPage() const;
+  // Records one blocked request, in the session total and per page origin.
+  void CountBlockedRequest() const;
 
   BrowserClientDelegate* delegate_ = nullptr;
   bool block_page_pending_ = false;

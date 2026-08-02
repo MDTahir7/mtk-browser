@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "filter_engine.h"
+#include "preferences.h"
 
 namespace mtk::policy {
 namespace {
@@ -542,6 +543,15 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
   if (IsSocialPlatformNsfw(url)) {
     return {false, L"Social platform adult/NSFW section blocked"};
   }
+  // HTTPS-only applies to what a page pulls in, not to what you type. A typed or
+  // linked address is upgraded to https by EnforceSafeSearch on the allowed
+  // path, so refusing http main frames here would turn an upgrade into a block
+  // page.
+  if (resource_type != ResourceType::kMainFrame && url.starts_with("http://") &&
+      mtk::preferences::Store::Get().values().https_only) {
+    return {false, L"Plain HTTP blocked by HTTPS-only mode"};
+  }
+
   if (apply_ad_filtering &&
       IsAdOrTracker(url, resource_type, request_initiator)) {
     return {false, L"Ad or tracker blocked"};

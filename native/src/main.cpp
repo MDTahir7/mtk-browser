@@ -20,6 +20,7 @@
 #include "session_store.h"
 #include "site_settings.h"
 #include "strings.h"
+#include "user_filters.h"
 
 namespace {
 
@@ -176,6 +177,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::downloads::Manager::Get().Load();
   mtk::sites::Store::Get().Load();
   mtk::passwords::Store::Get().Load();
+  mtk::user_filters::Load();
   // UI language follows the language preference, so it is read once the
   // preferences are loaded and before any window exists.
   mtk::strings::Refresh();

@@ -15,6 +15,8 @@ set(MTK_BROWSER_SOURCES
   src/strings.h
   src/password_store.cpp
   src/password_store.h
+  src/user_filters.cpp
+  src/user_filters.h
   src/crash_guard.cpp
   src/crash_guard.h
   src/default_browser.cpp

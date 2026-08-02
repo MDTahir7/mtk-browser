@@ -210,6 +210,8 @@ void ReadValues(const std::string& content, Values* values) {
     constexpr std::string_view kPinHash = "pin_hash=";
     constexpr std::string_view kAutoUpdate = "auto_update=";
     constexpr std::string_view kBookmarksBar = "bookmarks_bar=";
+    constexpr std::string_view kHttpsOnly = "https_only=";
+    constexpr std::string_view kDohProvider = "doh_provider=";
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
           std::string(line.substr(kHomePage.size())));
@@ -241,6 +243,16 @@ void ReadValues(const std::string& content, Values* values) {
     } else if (line.starts_with(kBookmarksBar)) {
       values->show_bookmarks_bar =
           std::string(line.substr(kBookmarksBar.size())) == "on";
+    } else if (line.starts_with(kHttpsOnly)) {
+      // Anything other than an explicit "off" keeps the protection on.
+      values->https_only = std::string(line.substr(kHttpsOnly.size())) != "off";
+    } else if (line.starts_with(kDohProvider)) {
+      const std::string name(line.substr(kDohProvider.size()));
+      if (name == "system") values->doh_provider = DohProvider::kSystem;
+      else if (name == "cloudflare") values->doh_provider = DohProvider::kCloudflare;
+      else if (name == "quad9") values->doh_provider = DohProvider::kQuad9;
+      else if (name == "google") values->doh_provider = DohProvider::kGoogle;
+      else values->doh_provider = DohProvider::kCloudflareFamily;
     }
     if (end == std::string::npos) break;
     offset = end + 1;
@@ -248,6 +260,40 @@ void ReadValues(const std::string& content, Values* values) {
 }
 
 }  // namespace
+
+const char* DohTemplate(DohProvider provider) {
+  switch (provider) {
+    // Cloudflare's family resolver refuses malware and adult domains at the DNS
+    // layer, which is a second line behind the browser's own rules.
+    case DohProvider::kCloudflareFamily:
+      return "https://family.cloudflare-dns.com/dns-query";
+    case DohProvider::kCloudflare:
+      return "https://cloudflare-dns.com/dns-query";
+    case DohProvider::kQuad9:
+      return "https://dns.quad9.net/dns-query";
+    case DohProvider::kGoogle:
+      return "https://dns.google/dns-query";
+    case DohProvider::kSystem:
+      break;
+  }
+  return "";
+}
+
+const wchar_t* DohLabel(DohProvider provider) {
+  switch (provider) {
+    case DohProvider::kCloudflareFamily:
+      return L"Cloudflare for Families (blocks malware and adult domains)";
+    case DohProvider::kCloudflare:
+      return L"Cloudflare (1.1.1.1)";
+    case DohProvider::kQuad9:
+      return L"Quad9 (blocks known malicious domains)";
+    case DohProvider::kGoogle:
+      return L"Google Public DNS";
+    case DohProvider::kSystem:
+      break;
+  }
+  return L"Use the Windows DNS setting";
+}
 
 std::wstring InstallationDataDirectory() { return LocalAppDataRoot(); }
 
@@ -310,6 +356,20 @@ bool Store::Save(const Values& values) {
              (values.auto_update ? "on" : "off") + "\r\n";
   content += std::string("bookmarks_bar=") +
              (values.show_bookmarks_bar ? "on" : "off") + "\r\n";
+  content += std::string("https_only=") + (values.https_only ? "on" : "off") +
+             "\r\n";
+  const auto doh_name = [](DohProvider provider) -> const char* {
+    switch (provider) {
+      case DohProvider::kSystem: return "system";
+      case DohProvider::kCloudflare: return "cloudflare";
+      case DohProvider::kQuad9: return "quad9";
+      case DohProvider::kGoogle: return "google";
+      case DohProvider::kCloudflareFamily: break;
+    }
+    return "cloudflare-family";
+  };
+  content += std::string("doh_provider=") + doh_name(values.doh_provider) +
+             "\r\n";
   if (!WriteFileAtomically(content)) return false;
   values_ = values;
   return true;

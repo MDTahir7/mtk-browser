@@ -16,14 +16,36 @@ enum class StartupMode {
   kContinueSession,
 };
 
+// DNS-over-HTTPS resolver. kSystem leaves DNS to Windows, which is the only
+// choice that can use a resolver configured for the whole machine.
+enum class DohProvider {
+  kSystem,
+  kCloudflareFamily,
+  kCloudflare,
+  kQuad9,
+  kGoogle,
+};
+
+// Resolver template for a provider, empty for kSystem.
+const char* DohTemplate(DohProvider provider);
+// Short label for the Settings list.
+const wchar_t* DohLabel(DohProvider provider);
+
 struct Values {
   std::wstring home_page;
   std::string accept_language;
   DownloadMode download_mode = DownloadMode::kSafe;
   StartupMode startup_mode = StartupMode::kHomePage;
   // Bookmarks strip under the toolbar. Off by default so the first run looks
-  // the same as before, and toggled with Ctrl+Shift+B.
+  // the same as before, and toggled with Alt+Shift+B.
   bool show_bookmarks_bar = false;
+  // HTTPS-only: refuse plain-HTTP subresources. Main-frame addresses are already
+  // upgraded to https before they are fetched, so this is about the resources a
+  // page then pulls in. On by default.
+  bool https_only = true;
+  // Encrypted DNS. The default resolves through Cloudflare's family resolver,
+  // which refuses malware and adult domains at the DNS layer as well.
+  DohProvider doh_provider = DohProvider::kCloudflareFamily;
   // Parent PIN, stored only as a PBKDF2-SHA256 verifier. Both fields are
   // lowercase hex, and both are empty when no PIN is set.
   std::string pin_salt;
