@@ -672,6 +672,8 @@ bool BrowserClient::OnPreKeyEvent(CefRefPtr<CefBrowser>,
       (event.modifiers & EVENTFLAG_SHIFT_DOWN) != 0);
 }
 
+void BrowserClient::ExpectInternalPage() { block_page_pending_ = true; }
+
 bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser>,
                                    CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefRequest> request, bool, bool) {

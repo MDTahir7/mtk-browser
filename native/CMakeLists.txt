@@ -5,6 +5,8 @@ set(MTK_BROWSER_SOURCES
   resources/mtk_browser.ico
   src/preferences.cpp
   src/preferences.h
+  src/profile.cpp
+  src/profile.h
   src/library_store.cpp
   src/library_store.h
   src/bookmark_import.cpp

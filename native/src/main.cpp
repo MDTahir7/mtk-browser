@@ -13,6 +13,7 @@
 #include "library_store.h"
 #include "mtk_app.h"
 #include "preferences.h"
+#include "profile.h"
 
 namespace {
 
@@ -57,11 +58,45 @@ std::wstring SingletonName(const std::wstring& profile_path) {
 
 // A second browser process cannot share the profile directory, which used to
 // look like "the app does not start". Focus the running window instead.
+//
+// Windows of other profiles run in other processes, so the search is restricted
+// to windows this process's own profile could own: FindWindow finds a window of
+// the class in any process, and focusing another profile's window would be
+// wrong. The mutex already told us a process for *this* profile is running, and
+// only that process has a window whose title matches this profile.
 bool FocusRunningInstance() {
-  HWND existing = FindWindowW(L"MTKBrowserWindow", nullptr);
-  if (!existing) return false;
-  if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
-  SetForegroundWindow(existing);
+  struct Search {
+    std::wstring title_suffix;
+    HWND found = nullptr;
+  };
+  Search search;
+  search.title_suffix = mtk::profile::ActiveIsDefault()
+                            ? std::wstring()
+                            : L" [" + mtk::profile::ActiveId() + L"]";
+  EnumWindows(
+      [](HWND window, LPARAM parameter) -> BOOL {
+        auto* state = reinterpret_cast<Search*>(parameter);
+        wchar_t class_name[64]{};
+        if (GetClassNameW(window, class_name, 64) == 0) return TRUE;
+        if (wcscmp(class_name, L"MTKBrowserWindow") != 0) return TRUE;
+        wchar_t title[256]{};
+        GetWindowTextW(window, title, 256);
+        const std::wstring text(title);
+        const bool matches =
+            state->title_suffix.empty()
+                ? text.find(L'[') == std::wstring::npos
+                : text.size() >= state->title_suffix.size() &&
+                      text.compare(text.size() - state->title_suffix.size(),
+                                   state->title_suffix.size(),
+                                   state->title_suffix) == 0;
+        if (!matches) return TRUE;
+        state->found = window;
+        return FALSE;
+      },
+      reinterpret_cast<LPARAM>(&search));
+  if (!search.found) return false;
+  if (IsIconic(search.found)) ShowWindow(search.found, SW_RESTORE);
+  SetForegroundWindow(search.found);
   return true;
 }
 
@@ -89,6 +124,20 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   if (exit_code >= 0) return exit_code;
 
   EnsurePerMonitorDpiAwareness();
+
+  // The profile decides where every store reads from, so it is selected before
+  // anything is loaded. An unusable id falls back to the default profile rather
+  // than starting with a half-configured one.
+  const std::wstring requested_profile =
+      mtk::profile::IdFromCommandLine(GetCommandLineW());
+  if (!mtk::profile::Initialize(requested_profile) &&
+      !requested_profile.empty()) {
+    MessageBoxW(nullptr,
+                L"That profile name could not be used, so MTK Browser opened "
+                L"the default profile instead.\n\nProfile names may contain "
+                L"letters, digits, '-' and '_' only.",
+                L"MTK Browser", MB_OK | MB_ICONWARNING);
+  }
 
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.

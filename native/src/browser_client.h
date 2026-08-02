@@ -177,6 +177,12 @@ class BrowserClient final : public CefClient,
 
   CefRefPtr<CefBrowser> browser() const { return browser_; }
 
+  // Allows exactly one upcoming `data:text/html` main-frame navigation, which is
+  // how the browser shows its own pages (the block page and the keyboard
+  // shortcut reference). The flag is consumed by that navigation, so it cannot
+  // be used to open a second page, and it is only ever set by this application.
+  void ExpectInternalPage();
+
   // Number of ad/tracker/unsafe requests blocked since launch, shown in the
   // MTK Shields UI.
   static unsigned long blocked_count();

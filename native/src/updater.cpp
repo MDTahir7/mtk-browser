@@ -344,7 +344,7 @@ bool IsLowerHex(const std::string& value, size_t length) {
 
 std::wstring DownloadDirectory() {
   const std::wstring directory =
-      mtk::preferences::ApplicationDataDirectory() + L"\\Updates";
+      mtk::preferences::InstallationDataDirectory() + L"\\Updates";
   CreateDirectoryW(directory.c_str(), nullptr);
   return directory;
 }

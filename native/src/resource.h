@@ -8,6 +8,7 @@
 #define IDD_PIN_PROMPT 204
 #define IDD_PIN_SETUP 205
 #define IDD_CLEAR_DATA 206
+#define IDD_TEXT_PROMPT 207
 #define IDC_SETTINGS_HOME_PAGE 1201
 #define IDC_SETTINGS_LANGUAGE 1202
 #define IDC_LIBRARY_LIST 1203
@@ -40,6 +41,8 @@
 #define IDC_CLEAR_SESSION 1230
 #define IDC_CLEAR_BOOKMARKS 1231
 #define IDC_LIBRARY_SEARCH 1233
+#define IDC_TEXT_PROMPT_LABEL 1234
+#define IDC_TEXT_PROMPT_VALUE 1235
 
 #define IDM_ADD_BOOKMARK 4001
 #define IDM_BOOKMARKS 4002
@@ -55,6 +58,11 @@
 #define IDM_IMPORT_BOOKMARKS 4012
 #define IDM_NEW_WINDOW 4013
 #define IDM_NEW_PRIVATE_WINDOW 4014
+#define IDM_SHORTCUTS 4015
+#define IDM_PROFILE_NEW 4016
+// Profile entries take a small reserved block; the window keeps the matching
+// names in menu order.
+#define IDM_PROFILE_FIRST 4100
 
 // Kept distinct from IDC_CLEAR_HISTORY; both dialogs share one id space in the
 // resource script, so a duplicate here silently aliases two controls.

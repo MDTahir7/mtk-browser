@@ -19,6 +19,7 @@
 #include "bookmark_import.h"
 #include "download_manager.h"
 #include "library_store.h"
+#include "profile.h"
 #include "policy.h"
 #include "preferences.h"
 #include "resource.h"
@@ -111,6 +112,10 @@ const wchar_t* ButtonGlyph(UINT control_id) {
     default: return L"";
   }
 }
+
+// Upper bound on profiles listed in the menu. The reserved command id range is
+// this large, so the list is truncated rather than colliding with other ids.
+constexpr size_t kMaxProfileMenuEntries = 20;
 
 // Tab context menu commands. These only ever reach TrackPopupMenuEx, so they
 // stay local to this file instead of taking resource ids.
@@ -289,6 +294,70 @@ INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
       return TRUE;
   }
   return FALSE;
+}
+
+struct TextPromptContext {
+  const wchar_t* caption = nullptr;
+  const wchar_t* message = nullptr;
+  std::wstring value;
+};
+
+INT_PTR CALLBACK TextPromptDialogProc(HWND dialog, UINT message,
+                                      WPARAM w_param, LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      auto* context = reinterpret_cast<TextPromptContext*>(l_param);
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
+      if (context) {
+        if (context->caption) SetWindowTextW(dialog, context->caption);
+        if (context->message) {
+          SetDlgItemTextW(dialog, IDC_TEXT_PROMPT_LABEL, context->message);
+        }
+      }
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        auto* context = reinterpret_cast<TextPromptContext*>(
+            GetWindowLongPtrW(dialog, GWLP_USERDATA));
+        if (context) {
+          HWND field = GetDlgItem(dialog, IDC_TEXT_PROMPT_VALUE);
+          const int length = GetWindowTextLengthW(field);
+          // Bounded because the value is used to build a path.
+          std::wstring value(static_cast<size_t>(std::min(length, 64)) + 1,
+                             L'\0');
+          GetWindowTextW(field, value.data(), std::min(length, 64) + 1);
+          value.resize(static_cast<size_t>(std::min(length, 64)));
+          context->value = std::move(value);
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+// One-line text prompt. Returns false when the dialog was cancelled or the
+// field was left empty.
+bool PromptForText(HINSTANCE instance, HWND owner, const wchar_t* caption,
+                   const wchar_t* message, std::wstring* value) {
+  TextPromptContext context{caption, message, {}};
+  if (DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_TEXT_PROMPT), owner,
+                      TextPromptDialogProc,
+                      reinterpret_cast<LPARAM>(&context)) != IDOK) {
+    return false;
+  }
+  if (context.value.empty()) return false;
+  *value = std::move(context.value);
+  return true;
 }
 
 // Asks for the parent PIN when one is set. Returns true when access is granted,
@@ -1306,33 +1375,59 @@ void BrowserWindow::ShowBrowserMenu() {
       mtk::library::Store::Get().IsBookmarked(decision.url);
   AppendMenuW(popup, MF_STRING | (can_bookmark ? MF_ENABLED : MF_GRAYED),
               IDM_ADD_BOOKMARK,
-              bookmarked ? L"Remove bookmark" : L"Add bookmark");
-  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks");
+              bookmarked ? L"Remove bookmark\tAlt+B" : L"Add bookmark\tAlt+B");
+  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks\tAlt+O");
   AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS_BAR,
               mtk::preferences::Store::Get().values().show_bookmarks_bar
-                  ? L"Hide bookmarks bar\tCtrl+Shift+B"
-                  : L"Show bookmarks bar\tCtrl+Shift+B");
+                  ? L"Hide bookmarks bar\tAlt+Shift+B"
+                  : L"Show bookmarks bar\tAlt+Shift+B");
   AppendMenuW(popup, MF_STRING, IDM_IMPORT_BOOKMARKS,
               L"Import bookmarks from another browser...");
-  AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History");
+  AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History\tAlt+H");
   const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
   const std::wstring downloads_label =
       active_downloads == 0
-          ? std::wstring(L"Downloads\tCtrl+J")
-          : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tCtrl+J";
+          ? std::wstring(L"Downloads\tAlt+J")
+          : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tAlt+J";
   AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW, L"New window\tCtrl+N");
+  AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW, L"New window\tAlt+W");
   AppendMenuW(popup, MF_STRING, IDM_NEW_PRIVATE_WINDOW,
-              L"New private window\tCtrl+Shift+N");
+              L"New private window\tAlt+Shift+W");
   AppendMenuW(popup,
               MF_STRING | (closed_tab_urls_.empty() ? MF_GRAYED : MF_ENABLED),
-              IDM_REOPEN_TAB, L"Reopen closed tab\tCtrl+Shift+T");
+              IDM_REOPEN_TAB, L"Reopen closed tab\tAlt+Shift+T");
   AppendMenuW(popup, MF_STRING, IDM_FULL_SCREEN,
-              full_screen_ ? L"Exit full screen\tF11" : L"Full screen\tF11");
+              full_screen_ ? L"Exit full screen\tAlt+Enter"
+                           : L"Full screen\tAlt+Enter");
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_PRINT,
-              L"Print...\tCtrl+P");
+              L"Print...\tAlt+P");
+  AppendMenuW(popup, MF_STRING, IDM_SHORTCUTS, L"Keyboard shortcuts\tAlt+/");
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+
+  // Profiles. Each one is a separate process because the data stores and the
+  // Chromium cache are per-process, so switching opens a window rather than
+  // swapping data underneath this one.
+  if (HMENU profiles = CreatePopupMenu()) {
+    const auto available = mtk::profile::List();
+    profile_menu_ids_.clear();
+    for (size_t index = 0; index < available.size() &&
+                           index < kMaxProfileMenuEntries;
+         ++index) {
+      const bool active = available[index] == mtk::profile::ActiveId();
+      AppendMenuW(profiles,
+                  MF_STRING | (active ? MF_CHECKED | MF_GRAYED : MF_ENABLED),
+                  static_cast<UINT_PTR>(IDM_PROFILE_FIRST + index),
+                  available[index].c_str());
+      profile_menu_ids_.push_back(available[index]);
+    }
+    AppendMenuW(profiles, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(profiles, MF_STRING, IDM_PROFILE_NEW, L"New profile...");
+    const std::wstring label =
+        L"Profile: " + mtk::profile::ActiveId();
+    AppendMenuW(popup, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles),
+                label.c_str());
+  }
   AppendMenuW(popup, MF_STRING, IDM_CLEAR_DATA, L"Clear browsing data...");
   AppendMenuW(popup,
               MF_STRING | (update_check_running_ ? MF_GRAYED : MF_ENABLED),
@@ -1529,9 +1624,14 @@ bool BrowserWindow::Create(int show_command) {
 
   // Extra windows are offset so a new one does not land exactly on its opener.
   const int offset = static_cast<int>(g_windows.size() % 6) * 28;
-  window_ = CreateWindowExW(0, kWindowClass,
-                            private_session_ ? L"Private — MTK Browser"
-                                             : L"MTK Browser",
+  // The profile is named in the title when it is not the default one. The
+  // single-instance check also uses that marker to tell one profile's windows
+  // from another's.
+  std::wstring title = private_session_ ? L"Private — MTK Browser" : L"MTK Browser";
+  if (!mtk::profile::ActiveIsDefault()) {
+    title += L" [" + mtk::profile::ActiveId() + L"]";
+  }
+  window_ = CreateWindowExW(0, kWindowClass, title.c_str(),
                             WS_OVERLAPPEDWINDOW,
                             offset == 0 ? CW_USEDEFAULT : 60 + offset,
                             offset == 0 ? CW_USEDEFAULT : 40 + offset,
@@ -1611,6 +1711,9 @@ LRESULT CALLBACK BrowserWindow::AddressProc(HWND window, UINT message,
       return 0;
     }
   }
+  // Same reason as in FindProc: an unmatched Alt+letter in an edit control
+  // would beep, and Alt is where every browser action lives.
+  if (message == WM_SYSCHAR) return 0;
   if (message == WM_NCDESTROY) RemoveWindowSubclass(window, AddressProc, 1);
   return DefSubclassProc(window, message, w_param, l_param);
 }
@@ -1668,6 +1771,9 @@ LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
       return 0;
     }
   }
+  // An edit control answers an unmatched Alt+letter with a beep, and every
+  // browser action lives on Alt, so it is swallowed here.
+  if (message == WM_SYSCHAR) return 0;
   if (message == WM_NCDESTROY) RemoveWindowSubclass(window, FindProc, 2);
   return DefSubclassProc(window, message, w_param, l_param);
 }
@@ -1783,116 +1889,146 @@ bool BrowserWindow::ReopenClosedTab() {
   return false;
 }
 
+// MTK Browser keeps every browser action on the Alt layer instead of reusing
+// Chrome's and Brave's Ctrl shortcuts. Two consequences are deliberate:
+//
+//  * Ctrl+C/X/V/A/Z and the other text-editing keys are untouched. Those belong
+//    to Windows and to web pages, and remapping them would break typing.
+//  * Esc still leaves full screen and closes the find bar, because Esc means
+//    "cancel" everywhere and has no browser-specific meaning to avoid.
+//
+// Alt+Tab, Alt+Space and Alt+F4 belong to Windows, so nothing is bound to them.
+// The full list is shown by Alt+/ and is documented in
+// docs/KEYBOARD_SHORTCUTS.md.
 bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
                                    bool shift) {
   auto* tab = ActiveTab();
-  if (!control && !alt && virtual_key == VK_F11) {
-    ToggleFullScreen();
-    return true;
+
+  if (!control && !alt && virtual_key == VK_ESCAPE) {
+    if (full_screen_) {
+      ToggleFullScreen();
+      return true;
+    }
+    if (find_visible_) {
+      HideFindBar();
+      return true;
+    }
+    return false;
   }
-  if (!control && !alt && virtual_key == VK_ESCAPE && full_screen_) {
-    ToggleFullScreen();
-    return true;
+
+  // Everything below is Alt-only. A Ctrl+Alt combination is left to the page,
+  // because AltGr on many keyboard layouts arrives as Ctrl+Alt.
+  if (!alt || control) return false;
+
+  switch (virtual_key) {
+    // Navigation
+    case VK_OEM_4:  // Alt+[
+      if (tab && tab->client->browser() && tab->can_go_back) {
+        tab->client->browser()->GoBack();
+      }
+      return true;
+    case VK_OEM_6:  // Alt+]
+      if (tab && tab->client->browser() && tab->can_go_forward) {
+        tab->client->browser()->GoForward();
+      }
+      return true;
+    case 'R':
+      if (tab && tab->client->browser()) {
+        if (tab->loading) tab->client->browser()->StopLoad();
+        else tab->client->browser()->Reload();
+      }
+      return true;
+
+    // Tabs
+    case 'T':
+      if (shift) ReopenClosedTab();
+      else CreateTab(kHomeUrl);
+      return true;
+    case 'X':
+      if (!tabs_.empty()) CloseTab(active_tab_);
+      return true;
+    case 'U':
+      if (!tabs_.empty()) DuplicateTab(active_tab_);
+      return true;
+    case 'M':
+      if (!tabs_.empty()) ToggleMute(active_tab_);
+      return true;
+    case 'P':
+      if (shift) {
+        if (!tabs_.empty()) TogglePin(active_tab_);
+      } else {
+        PrintActiveTab();
+      }
+      return true;
+    case VK_OEM_PERIOD:  // Alt+. next tab
+      if (!tabs_.empty()) SelectTab((active_tab_ + 1) % tabs_.size());
+      return true;
+    case VK_OEM_COMMA:  // Alt+, previous tab
+      if (!tabs_.empty()) {
+        SelectTab((active_tab_ + tabs_.size() - 1) % tabs_.size());
+      }
+      return true;
+
+    // Windows
+    case 'W':
+      OpenNewWindow({}, shift);
+      return true;
+
+    // Page
+    case 'F':
+      ShowFindBar();
+      return true;
+    case 'G':
+      if (find_visible_) RunFind(!shift, true);
+      else ShowFindBar();
+      return true;
+    case VK_RETURN:
+      ToggleFullScreen();
+      return true;
+    case VK_OEM_PLUS:
+    case VK_ADD:
+      ZoomActiveTab(CEF_ZOOM_COMMAND_IN);
+      return true;
+    case VK_OEM_MINUS:
+    case VK_SUBTRACT:
+      ZoomActiveTab(CEF_ZOOM_COMMAND_OUT);
+      return true;
+    case '0':
+      ZoomActiveTab(CEF_ZOOM_COMMAND_RESET);
+      return true;
+
+    // Omnibox and library
+    case 'A':
+      SetFocus(address_);
+      SendMessageW(address_, EM_SETSEL, 0, -1);
+      return true;
+    case 'B':
+      if (shift) ToggleBookmarksBar();
+      else ToggleBookmark();
+      return true;
+    case 'O':
+      ShowLibraryDialog(true);
+      return true;
+    case 'H':
+      ShowLibraryDialog(false);
+      return true;
+    case 'J':
+      ShowDownloadsDialog();
+      return true;
+    case VK_OEM_2:  // Alt+/
+      ShowShortcutsPage();
+      return true;
+    default:
+      break;
   }
-  if (!control && !alt && virtual_key == VK_ESCAPE && find_visible_) {
-    HideFindBar();
-    return true;
-  }
-  if (control && !alt && virtual_key == 'F') {
-    ShowFindBar();
-    return true;
-  }
-  if ((!control && !alt && virtual_key == VK_F3) ||
-      (control && !alt && virtual_key == 'G')) {
-    if (find_visible_) RunFind(!shift, true);
-    else ShowFindBar();
-    return true;
-  }
-  if (control && !alt &&
-      (virtual_key == VK_OEM_PLUS || virtual_key == VK_ADD)) {
-    ZoomActiveTab(CEF_ZOOM_COMMAND_IN);
-    return true;
-  }
-  if (control && !alt &&
-      (virtual_key == VK_OEM_MINUS || virtual_key == VK_SUBTRACT)) {
-    ZoomActiveTab(CEF_ZOOM_COMMAND_OUT);
-    return true;
-  }
-  if (control && !alt && virtual_key == '0') {
-    ZoomActiveTab(CEF_ZOOM_COMMAND_RESET);
-    return true;
-  }
-  if (control && !alt && virtual_key == 'L') {
-    SetFocus(address_);
-    SendMessageW(address_, EM_SETSEL, 0, -1);
-    return true;
-  }
-  if (control && !alt && virtual_key == 'T') {
-    if (shift) ReopenClosedTab();
-    else CreateTab(kHomeUrl);
-    return true;
-  }
-  if (control && !alt && virtual_key == 'N') {
-    OpenNewWindow({}, shift);
-    return true;
-  }
-  if (control && !alt && virtual_key == 'J') {
-    ShowDownloadsDialog();
-    return true;
-  }
-  if (control && !alt && virtual_key == 'W') {
-    CloseTab(active_tab_);
-    return true;
-  }
-  if (control && !alt && virtual_key == VK_TAB && !tabs_.empty()) {
-    const size_t offset = shift ? tabs_.size() - 1 : 1;
-    SelectTab((active_tab_ + offset) % tabs_.size());
-    return true;
-  }
-  // Ctrl+1..8 jump to that tab and Ctrl+9 to the last one, matching Chrome.
-  if (control && !alt && !shift && virtual_key >= '1' && virtual_key <= '9' &&
-      !tabs_.empty()) {
+
+  // Alt+1..8 select that tab, Alt+9 the last one.
+  if (!shift && virtual_key >= '1' && virtual_key <= '9' && !tabs_.empty()) {
     if (virtual_key == '9') {
       SelectTab(tabs_.size() - 1);
     } else {
       const size_t index = static_cast<size_t>(virtual_key - '1');
       if (index < tabs_.size()) SelectTab(index);
-    }
-    return true;
-  }
-  if (control && !alt && !shift && virtual_key == 'M' && !tabs_.empty()) {
-    ToggleMute(active_tab_);
-    return true;
-  }
-  if (control && !alt && !shift && virtual_key == 'P') {
-    PrintActiveTab();
-    return true;
-  }
-  if (control && !alt && shift && virtual_key == 'B') {
-    ToggleBookmarksBar();
-    return true;
-  }
-  if (control && !alt && !shift && virtual_key == 'D') {
-    ToggleBookmark();
-    return true;
-  }
-  if (alt && !control && virtual_key == VK_LEFT) {
-    if (tab && tab->client->browser() && tab->can_go_back) {
-      tab->client->browser()->GoBack();
-    }
-    return true;
-  }
-  if (alt && !control && virtual_key == VK_RIGHT) {
-    if (tab && tab->client->browser() && tab->can_go_forward) {
-      tab->client->browser()->GoForward();
-    }
-    return true;
-  }
-  if ((!control && !alt && virtual_key == VK_F5) ||
-      (control && !alt && virtual_key == 'R')) {
-    if (tab && tab->client->browser()) {
-      if (tab->loading) tab->client->browser()->StopLoad();
-      else tab->client->browser()->Reload();
     }
     return true;
   }
@@ -2012,7 +2148,8 @@ void BrowserWindow::CreateControls() {
   shield_strip_.Load(kShieldStripFile);
 }
 
-bool BrowserWindow::CreateTab(const std::string& initial_url) {
+bool BrowserWindow::CreateTab(const std::string& initial_url,
+                              bool internal_page) {
   if (!tabs_.empty()) {
     if (auto* active = ActiveTab(); active && active->client->browser()) {
       ShowWindow(active->client->browser()->GetHost()->GetWindowHandle(), SW_HIDE);
@@ -2020,6 +2157,9 @@ bool BrowserWindow::CreateTab(const std::string& initial_url) {
   }
   Tab tab;
   tab.client = new BrowserClient(this);
+  // One of the browser's own pages has to be announced before the browser is
+  // created, because the policy check runs on that first navigation.
+  if (internal_page) tab.client->ExpectInternalPage();
   // Keep the URL snapshot-safe before CEF delivers its asynchronous address
   // callback. Session restore can then survive an immediate window close.
   tab.url = Utf8ToWide(initial_url);
@@ -2104,6 +2244,83 @@ void BrowserWindow::RunFind(bool forward, bool find_next) {
   find_active_ = true;
   SetWindowTextW(find_status_, L"Searching…");
   tab->client->browser()->GetHost()->Find(query, forward, false, repeat);
+}
+
+void BrowserWindow::ShowShortcutsPage() {
+  // Rows are {keys, action}. Keeping them in one table means the page and this
+  // list cannot drift apart the way a hand-written page would.
+  static constexpr std::pair<const char*, const char*> kRows[] = {
+      {"Alt+[", "Back"},
+      {"Alt+]", "Forward"},
+      {"Alt+R", "Reload, or stop while loading"},
+      {"Alt+T", "New tab"},
+      {"Alt+Shift+T", "Reopen the tab you just closed"},
+      {"Alt+X", "Close tab"},
+      {"Alt+U", "Duplicate tab"},
+      {"Alt+, / Alt+.", "Previous / next tab"},
+      {"Alt+1 ... Alt+8", "Go to that tab"},
+      {"Alt+9", "Go to the last tab"},
+      {"Alt+Shift+P", "Pin or unpin tab"},
+      {"Alt+M", "Mute or unmute tab"},
+      {"Alt+W", "New window"},
+      {"Alt+Shift+W", "New private window"},
+      {"Alt+A", "Select the address bar"},
+      {"Alt+F", "Find on page"},
+      {"Alt+G / Alt+Shift+G", "Next / previous match"},
+      {"Alt+P", "Print"},
+      {"Alt+Enter", "Full screen"},
+      {"Alt+= / Alt+-", "Zoom in / out"},
+      {"Alt+0", "Reset zoom"},
+      {"Alt+B", "Save this page as a bookmark"},
+      {"Alt+Shift+B", "Show or hide the bookmarks bar"},
+      {"Alt+O", "Bookmarks"},
+      {"Alt+H", "History"},
+      {"Alt+J", "Downloads"},
+      {"Alt+/", "This page"},
+      {"Esc", "Leave full screen, or close the find bar"},
+  };
+
+  std::string rows;
+  for (const auto& [keys, action] : kRows) {
+    rows += "<tr><td class=k>";
+    rows += keys;
+    rows += "</td><td>";
+    rows += action;
+    rows += "</td></tr>";
+  }
+
+  const std::string html =
+      "<!doctype html><html lang=en><head><meta charset=utf-8>"
+      "<title>Keyboard shortcuts</title><style>"
+      ":root{color-scheme:dark}"
+      "body{margin:0;background:#090c16;color:#f0f4ff;"
+      "font:15px/1.5 'Segoe UI Variable','Segoe UI',system-ui,sans-serif;"
+      "display:flex;justify-content:center;padding:48px 20px}"
+      "main{width:100%;max-width:720px}"
+      "h1{font-size:24px;margin:0 0 6px}"
+      "p{color:#96a2be;margin:0 0 28px}"
+      "table{width:100%;border-collapse:collapse}"
+      "td{padding:9px 12px;border-bottom:1px solid #1b2136;vertical-align:top}"
+      "td.k{width:210px;color:#cdb8ff;font-family:Consolas,monospace;"
+      "white-space:nowrap}"
+      "</style></head><body><main>"
+      "<h1>Keyboard shortcuts</h1>"
+      "<p>MTK Browser puts its own actions on the Alt key, so they never "
+      "collide with what a web page or Windows already uses. Copy, paste, "
+      "select all and undo keep their usual keys.</p>"
+      "<table>" + rows + "</table></main></body></html>";
+
+  // A data: URL ends at the first '#', and a bare '%' would start an escape, so
+  // only those two characters need encoding; the rest of the markup is plain
+  // ASCII written here.
+  std::string escaped;
+  escaped.reserve(html.size() + 16);
+  for (const char character : html) {
+    if (character == '%') escaped += "%25";
+    else if (character == '#') escaped += "%23";
+    else escaped.push_back(character);
+  }
+  CreateTab("data:text/html;charset=utf-8," + escaped, true);
 }
 
 void BrowserWindow::PrintActiveTab() {
@@ -2333,13 +2550,13 @@ void BrowserWindow::ShowTabMenu(size_t index, POINT screen) {
   if (!popup) return;
   const bool pinned = tabs_[index].pinned;
   const bool muted = tabs_[index].muted;
-  AppendMenuW(popup, MF_STRING, kTabMenuDuplicate, L"Duplicate tab");
+  AppendMenuW(popup, MF_STRING, kTabMenuDuplicate, L"Duplicate tab\tAlt+U");
   AppendMenuW(popup, MF_STRING, kTabMenuPin,
-              pinned ? L"Unpin tab" : L"Pin tab");
+              pinned ? L"Unpin tab\tAlt+Shift+P" : L"Pin tab\tAlt+Shift+P");
   AppendMenuW(popup, MF_STRING, kTabMenuMute,
-              muted ? L"Unmute site" : L"Mute site");
+              muted ? L"Unmute site\tAlt+M" : L"Mute site\tAlt+M");
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(popup, MF_STRING, kTabMenuClose, L"Close tab");
+  AppendMenuW(popup, MF_STRING, kTabMenuClose, L"Close tab\tAlt+X");
   AppendMenuW(popup, MF_STRING | (tabs_.size() > 1 ? 0 : MF_GRAYED),
               kTabMenuCloseOthers, L"Close other tabs");
   AppendMenuW(popup,
@@ -2920,6 +3137,61 @@ void BrowserWindow::ToggleBookmarksBar() {
   InvalidateRect(window_, nullptr, TRUE);
 }
 
+void BrowserWindow::LaunchProfile(const std::wstring& profile_id) {
+  if (!mtk::profile::IsValidId(profile_id)) return;
+  wchar_t executable[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    MessageBoxW(window_, L"MTK Browser could not find its own program file.",
+                L"Profiles", MB_OK | MB_ICONERROR);
+    return;
+  }
+  // The id is validated above, so it cannot contain a quote or a space and the
+  // command line cannot be broken out of.
+  std::wstring command_line = L"\"" + std::wstring(executable) + L"\"";
+  if (profile_id != mtk::profile::kDefaultId) {
+    command_line += L" --profile=" + profile_id;
+  }
+  STARTUPINFOW startup{sizeof(STARTUPINFOW)};
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(executable, command_line.data(), nullptr, nullptr, FALSE,
+                      0, nullptr, nullptr, &startup, &process)) {
+    MessageBoxW(window_, L"That profile could not be opened.", L"Profiles",
+                MB_OK | MB_ICONERROR);
+    return;
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+}
+
+void BrowserWindow::CreateProfile() {
+  // Profiles hold separate browsing data, so creating one is a parent-level
+  // action and sits behind the PIN like the other safety settings.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Profiles are protected. Enter the parent PIN to add one.")) {
+    return;
+  }
+  std::wstring name;
+  if (!PromptForText(instance_, window_, L"New profile",
+                     L"Profile name (letters, digits, '-' and '_')", &name)) {
+    return;
+  }
+  if (!mtk::profile::IsValidId(name) || name == mtk::profile::kDefaultId) {
+    MessageBoxW(window_,
+                L"That name cannot be used. Use up to 32 letters, digits, '-' "
+                L"or '_', and not \"Default\".",
+                L"Profiles", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  if (!mtk::profile::Create(name)) {
+    MessageBoxW(window_, L"That profile could not be created.", L"Profiles",
+                MB_OK | MB_ICONERROR);
+    return;
+  }
+  LaunchProfile(name);
+}
+
 void BrowserWindow::ImportBookmarksFromBrowser() {
   const auto sources = mtk::bookmark_import::AvailableSources();
   if (sources.empty()) {
@@ -3042,6 +3314,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       EndPaint(window_, &paint);
       return 0;
     }
+    case WM_SYSCHAR:
+      // Every browser action is on the Alt layer and this window has no menu
+      // bar, so Alt+letter must not fall through to the default menu handling,
+      // which answers an unmatched mnemonic with a beep.
+      return 0;
     case WM_MOUSEMOVE: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
       if (drag_candidate_ != kNoTab && (w_param & MK_LBUTTON)) {
@@ -3266,6 +3543,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_PRINT:
           PrintActiveTab();
           break;
+        case IDM_SHORTCUTS:
+          ShowShortcutsPage();
+          break;
+        case IDM_PROFILE_NEW:
+          CreateProfile();
+          break;
         case IDM_NEW_WINDOW:
           OpenNewWindow({});
           break;
@@ -3290,6 +3573,19 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_SETTINGS:
           ShowSettingsDialog();
           break;
+        default: {
+          // Profile entries occupy a reserved id range; the name comes from the
+          // list captured when the menu was built.
+          const WORD command = LOWORD(w_param);
+          if (command >= IDM_PROFILE_FIRST &&
+              command < IDM_PROFILE_FIRST + kMaxProfileMenuEntries) {
+            const size_t index = static_cast<size_t>(command - IDM_PROFILE_FIRST);
+            if (index < profile_menu_ids_.size()) {
+              LaunchProfile(profile_menu_ids_[index]);
+            }
+          }
+          break;
+        }
       }
       return 0;
     }

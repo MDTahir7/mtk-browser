@@ -50,12 +50,12 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 54-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 62-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
-    tested against malformed, deeply nested and policy-refused input). Verified
-    passing locally (54 passed, 0 failed).
+    tested against malformed, deeply nested and policy-refused input) and profile
+    id validation. Verified passing locally (62 passed, 0 failed).
   - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
     Needs a CI workflow that builds Release and runs the suite, plus coverage
     for CEF-dependent paths that need a live browser.
@@ -76,9 +76,20 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
   - Remaining: on-screen confirmation, an explanation page on first use, and a
     decision on whether downloads started there should appear in the shared
     download history (today they do).
-- [ ] **T2.2 Multiple profiles** with a profile picker. Needs preferences, the
-      library and the session store to become per-profile first; all three are
-      currently singletons bound to one directory.
+- [~] **T2.2 Multiple profiles**
+  - Done: `native/src/profile.cpp` selects a profile from `--profile=<id>`, and
+    every store built on `preferences::ApplicationDataDirectory()` follows it at
+    once: preferences, bookmarks and history, download history, saved session and
+    Chromium's cache. The default profile deliberately keeps the original
+    directory, so an existing installation needs no migration. Update installers
+    moved to `InstallationDataDirectory()` so they are not downloaded once per
+    profile. The menu has a Profile submenu with a picker and "New profile...",
+    creating one is behind the parent PIN, and each profile runs in its own
+    process because the stores and the cache lock are process-wide. Ids are
+    restricted to letters, digits, `-` and `_` since they build a path; that
+    validation and the command-line parsing are covered by tests.
+  - Remaining: profile avatars/display names separate from the id, deleting a
+    profile from the UI, and a first-run picker.
 - [ ] **T2.3 Password manager + autofill** (OS-encrypted storage, never
       plaintext). Not started; this is the largest Tier 2 item and needs a
       threat model written down before any code.
@@ -151,6 +162,13 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
 - [ ] **T4.2 Release channels (stable/beta) + automated release notes**
 - [ ] **T4.3 Automated third-party license/notice generation**
 - [ ] **T4.4 MTK Browser Pro feature plan** (security features stay free)
+
+## Keyboard shortcuts are deliberately not Chrome's
+
+Every browser action is on the Alt layer, so nothing collides with the Ctrl keys
+web pages and Windows already own. The reference is `Alt+/` in the product and
+`docs/KEYBOARD_SHORTCUTS.md` in the repository. The cost is recorded there too:
+anyone arriving from Chrome or Brave will press `Ctrl+T` and get nothing.
 
 ## Recommended order
 

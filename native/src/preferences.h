@@ -46,7 +46,11 @@ bool VerifyPin(const std::wstring& pin);
 constexpr size_t kMinPinLength = 4;
 
 // MTK-owned data is kept separate from CEF's User Data directory.
+// ApplicationDataDirectory() is per-profile; InstallationDataDirectory() is the
+// one shared root and is for data that must not be duplicated per profile, such
+// as downloaded update installers.
 std::wstring ApplicationDataDirectory();
+std::wstring InstallationDataDirectory();
 std::wstring UserDataDirectory();
 
 class Store final {

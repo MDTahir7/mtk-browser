@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "profile.h"
+
 namespace mtk::preferences {
 namespace {
 
@@ -247,7 +249,13 @@ void ReadValues(const std::string& content, Values* values) {
 
 }  // namespace
 
-std::wstring ApplicationDataDirectory() { return LocalAppDataRoot(); }
+std::wstring InstallationDataDirectory() { return LocalAppDataRoot(); }
+
+// Every store built on this path becomes per-profile at once: preferences, the
+// library, the session snapshot, the download history and Chromium's cache.
+std::wstring ApplicationDataDirectory() {
+  return mtk::profile::ActiveDirectory();
+}
 
 std::wstring UserDataDirectory() {
   return ApplicationDataDirectory() + L"\\User Data";

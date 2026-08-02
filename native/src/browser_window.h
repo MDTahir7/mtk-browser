@@ -83,13 +83,19 @@ class BrowserWindow final : public BrowserClientDelegate {
   void CreateControls();
   void CreateFonts();
   void ApplyDpi(UINT dpi);
-  bool CreateTab(const std::string& initial_url);
+  // `internal_page` marks a tab that opens one of the browser's own
+  // `data:text/html` pages, which the navigation policy would otherwise refuse.
+  bool CreateTab(const std::string& initial_url, bool internal_page = false);
   void ShowFindBar();
   void HideFindBar();
   void RunFind(bool forward, bool find_next);
   void ZoomActiveTab(cef_zoom_command_t command);
   // Opens Chromium's print preview, which also provides Save as PDF.
   void PrintActiveTab();
+  // Opens the keyboard shortcut reference in a new tab. The shortcuts are not
+  // the ones other browsers use, so they have to be discoverable in the product
+  // rather than only in the repository.
+  void ShowShortcutsPage();
   void ShowBrowserMenu();
   void ShowSettingsDialog();
   void ShowClearDataDialog();
@@ -158,6 +164,11 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ToggleBookmarksBar();
   // Imports bookmarks from an installed Chromium-family browser.
   void ImportBookmarksFromBrowser();
+  // Starts another process for `profile_id`. Profiles cannot share one process,
+  // because the stores and the Chromium cache directory are process-wide.
+  void LaunchProfile(const std::wstring& profile_id);
+  // Asks for a name, creates the profile and opens it.
+  void CreateProfile();
   void PaintOmniboxFrame(HDC dc);
   void PaintProgress(HDC dc, const RECT& client);
   void DrawButton(const DRAWITEMSTRUCT& item);
@@ -223,6 +234,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   };
   std::vector<BookmarkHit> bookmark_bar_hits_;
   size_t hovered_bookmark_ = static_cast<size_t>(-1);
+  // Profile names behind the profile submenu entries, in menu order.
+  std::vector<std::wstring> profile_menu_ids_;
   bool full_screen_ = false;
   // Window placement and style captured before entering full screen.
   WINDOWPLACEMENT saved_placement_{};
