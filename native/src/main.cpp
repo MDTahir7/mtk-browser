@@ -15,6 +15,7 @@
 #include "preferences.h"
 #include "profile.h"
 #include "site_settings.h"
+#include "strings.h"
 
 namespace {
 
@@ -170,6 +171,9 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::library::Store::Get().Load();
   mtk::downloads::Manager::Get().Load();
   mtk::sites::Store::Get().Load();
+  // UI language follows the language preference, so it is read once the
+  // preferences are loaded and before any window exists.
+  mtk::strings::Refresh();
 
   // Load MTK Shields rules before any browser exists so every request is
   // filtered from the first navigation onward.

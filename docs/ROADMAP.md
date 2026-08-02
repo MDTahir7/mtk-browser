@@ -50,13 +50,14 @@ has been actually built and verified, and any limitation is written down.
   - Remaining: per-window size/position persistence, dragging a tab out into a
     new window, and a session format that can hold more than one window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 71-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 76-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
     session-restore persistence, the toolbar icon strip loader, and the Chromium
     bookmarks importer (which parses a file written by another program, so it is
     tested against malformed, deeply nested and policy-refused input), profile id
     validation, and per-site settings including a test that "Shields off" cannot
-    weaken a safety rule. Verified passing locally (71 passed, 0 failed).
+    weaken a safety rule, and UI string encoding. Verified passing locally
+    (76 passed, 0 failed).
   - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
     Needs a CI workflow that builds Release and runs the suite, plus coverage
     for CEF-dependent paths that need a live browser.
@@ -166,9 +167,24 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
       accessibility tree is forced on so page content reaches assistive
       technology. Remaining: verification with an actual screen reader, high
       contrast handling, and focus order through the tab strip and bookmarks bar.
-- [ ] **T2.16 Localization**: complete Hindi + English UI strings. Not started;
-      every string is currently inline in the source, so this needs a string
-      table first.
+- [~] **T2.16 Localization (Hindi + English)**
+  - Done: `native/src/strings.cpp` holds one table where each entry carries both
+    translations on the same line, so a string cannot be added to one language
+    and forgotten in the other; the enum and both arrays are generated from it
+    and checked with `static_assert`. The UI language follows the language choice
+    already in Settings rather than adding a second question about the same
+    thing. Translated so far: the browser menu, the tab context menu, the
+    downloads popup, and the toolbar and find-bar accessible names.
+  - Found while doing this: the sources are UTF-8 without a byte order mark and
+    the build had no `/utf-8`, so MSVC was reading them in code page 1252 and
+    every non-ASCII literal was already mojibake (an em dash became `â€”`). The
+    flag is now set for the browser and for the test build, and a test asserts
+    the Hindi strings really are Devanagari, since this class of bug compiles
+    cleanly either way.
+  - Remaining: the resource-defined dialogs (Settings, Library, Downloads, Site
+    settings, PIN prompts) are still English, as are the block page, the
+    shortcut page, the Shields panel and the message boxes. Those need either
+    per-language resource sets or runtime text assignment.
 
 ## Tier 3 — Brave-level differentiators
 

@@ -35,6 +35,8 @@ $sources = @(
     (Join-Path $testDir 'import_tests.cpp'),
     (Join-Path $testDir 'profile_tests.cpp'),
     (Join-Path $testDir 'site_settings_tests.cpp'),
+    (Join-Path $testDir 'strings_tests.cpp'),
+    (Join-Path $sourceDir 'strings.cpp'),
     (Join-Path $sourceDir 'policy.cpp'),
     (Join-Path $sourceDir 'bookmark_import.cpp'),
     (Join-Path $sourceDir 'profile.cpp'),
@@ -56,7 +58,9 @@ $exe = Join-Path $outputDir 'mtk_tests.exe'
 Copy-Item (Join-Path $repoRoot 'native\resources\mtk_shield_hover.png') `
     (Join-Path $outputDir 'mtk_shield_hover.png') -Force
 $quoted = ($sources | ForEach-Object { '"' + $_ + '"' }) -join ' '
-$command = "cl /nologo /std:c++20 /EHsc /W3 /permissive- /DNOMINMAX /I`"$sourceDir`" " +
+# /utf-8 matches the browser target: the sources are UTF-8 without a BOM, and
+# without this MSVC would read them in the system ANSI code page.
+$command = "cl /nologo /std:c++20 /utf-8 /EHsc /W3 /permissive- /DNOMINMAX /I`"$sourceDir`" " +
            "/I`"$testDir`" $quoted /Fo`"$outputDir\\`" /Fe`"$exe`" " +
            "shell32.lib ole32.lib bcrypt.lib windowscodecs.lib msimg32.lib gdi32.lib user32.lib"
 

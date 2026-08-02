@@ -22,6 +22,7 @@
 #include "library_store.h"
 #include "profile.h"
 #include "site_settings.h"
+#include "strings.h"
 #include "policy.h"
 #include "preferences.h"
 #include "resource.h"
@@ -1490,38 +1491,64 @@ void BrowserWindow::ShowBrowserMenu() {
   const bool can_bookmark = decision.allow && !tab->url.starts_with(L"data:");
   const bool bookmarked = can_bookmark &&
       mtk::library::Store::Get().IsBookmarked(decision.url);
+  using Text = mtk::strings::Id;
+  // Menu labels are translated; the accelerator hint after the tab is not, since
+  // key names are the same in both languages.
+  const auto label = [](Text id, const wchar_t* accelerator = nullptr) {
+    std::wstring text = mtk::strings::Get(id);
+    if (accelerator) text += accelerator;
+    return text;
+  };
+
   AppendMenuW(popup, MF_STRING | (can_bookmark ? MF_ENABLED : MF_GRAYED),
               IDM_ADD_BOOKMARK,
-              bookmarked ? L"Remove bookmark\tAlt+B" : L"Add bookmark\tAlt+B");
-  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks\tAlt+O");
+              label(bookmarked ? Text::kRemoveBookmark : Text::kAddBookmark,
+                    L"\tAlt+B")
+                  .c_str());
+  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS,
+              label(Text::kBookmarks, L"\tAlt+O").c_str());
   AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS_BAR,
-              mtk::preferences::Store::Get().values().show_bookmarks_bar
-                  ? L"Hide bookmarks bar\tAlt+Shift+B"
-                  : L"Show bookmarks bar\tAlt+Shift+B");
+              label(mtk::preferences::Store::Get().values().show_bookmarks_bar
+                        ? Text::kHideBookmarksBar
+                        : Text::kShowBookmarksBar,
+                    L"\tAlt+Shift+B")
+                  .c_str());
   AppendMenuW(popup, MF_STRING, IDM_IMPORT_BOOKMARKS,
-              L"Import bookmarks from another browser...");
-  AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History\tAlt+H");
+              label(Text::kImportBookmarks).c_str());
+  AppendMenuW(popup, MF_STRING, IDM_HISTORY,
+              label(Text::kHistory, L"\tAlt+H").c_str());
   const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
-  const std::wstring downloads_label =
-      active_downloads == 0
-          ? std::wstring(L"Downloads\tAlt+J")
-          : L"Downloads (" + std::to_wstring(active_downloads) + L" active)\tAlt+J";
+  std::wstring downloads_label = label(Text::kDownloads, L"\tAlt+J");
+  if (active_downloads > 0) {
+    // The count is spliced into the translated pattern, so each language keeps
+    // the number where it belongs in the sentence.
+    std::wstring pattern = mtk::strings::Get(Text::kDownloadsActive);
+    if (const size_t placeholder = pattern.find(L"%d");
+        placeholder != std::wstring::npos) {
+      pattern.replace(placeholder, 2, std::to_wstring(active_downloads));
+    }
+    downloads_label = pattern + L"\tAlt+J";
+  }
   AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW, L"New window\tAlt+W");
+  AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW,
+              label(Text::kNewWindow, L"\tAlt+W").c_str());
   AppendMenuW(popup, MF_STRING, IDM_NEW_PRIVATE_WINDOW,
-              L"New private window\tAlt+Shift+W");
+              label(Text::kNewPrivateWindow, L"\tAlt+Shift+W").c_str());
   AppendMenuW(popup,
               MF_STRING | (closed_tab_urls_.empty() ? MF_GRAYED : MF_ENABLED),
-              IDM_REOPEN_TAB, L"Reopen closed tab\tAlt+Shift+T");
+              IDM_REOPEN_TAB,
+              label(Text::kReopenClosedTab, L"\tAlt+Shift+T").c_str());
   AppendMenuW(popup, MF_STRING, IDM_FULL_SCREEN,
-              full_screen_ ? L"Exit full screen\tAlt+Enter"
-                           : L"Full screen\tAlt+Enter");
+              label(full_screen_ ? Text::kExitFullScreen : Text::kFullScreen,
+                    L"\tAlt+Enter")
+                  .c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_PRINT,
-              L"Print...\tAlt+P");
-  AppendMenuW(popup, MF_STRING, IDM_SHORTCUTS, L"Keyboard shortcuts\tAlt+/");
+              label(Text::kPrint, L"\tAlt+P").c_str());
+  AppendMenuW(popup, MF_STRING, IDM_SHORTCUTS,
+              label(Text::kKeyboardShortcuts, L"\tAlt+/").c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED),
-              IDM_SITE_SETTINGS, L"Settings for this site...\tAlt+S");
+              IDM_SITE_SETTINGS, label(Text::kSiteSettings, L"\tAlt+S").c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
 
   // Profiles. Each one is a separate process because the data stores and the
@@ -1541,19 +1568,23 @@ void BrowserWindow::ShowBrowserMenu() {
       profile_menu_ids_.push_back(available[index]);
     }
     AppendMenuW(profiles, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(profiles, MF_STRING, IDM_PROFILE_NEW, L"New profile...");
-    const std::wstring label =
-        L"Profile: " + mtk::profile::ActiveId();
+    AppendMenuW(profiles, MF_STRING, IDM_PROFILE_NEW,
+                label(Text::kNewProfile).c_str());
+    const std::wstring profile_label =
+        std::wstring(mtk::strings::Get(Text::kProfilePrefix)) +
+        mtk::profile::ActiveId();
     AppendMenuW(popup, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles),
-                label.c_str());
+                profile_label.c_str());
   }
-  AppendMenuW(popup, MF_STRING, IDM_CLEAR_DATA, L"Clear browsing data...");
+  AppendMenuW(popup, MF_STRING, IDM_CLEAR_DATA,
+              label(Text::kClearBrowsingData).c_str());
   AppendMenuW(popup,
               MF_STRING | (update_check_running_ ? MF_GRAYED : MF_ENABLED),
               IDM_CHECK_UPDATES,
-              update_check_running_ ? L"Checking for updates..."
-                                    : L"Check for updates...");
-  AppendMenuW(popup, MF_STRING, IDM_SETTINGS, L"Settings");
+              label(update_check_running_ ? Text::kCheckingForUpdates
+                                          : Text::kCheckForUpdates)
+                  .c_str());
+  AppendMenuW(popup, MF_STRING, IDM_SETTINGS, label(Text::kSettings).c_str());
   POINT point{};
   GetCursorPos(&point);
   const UINT command = TrackPopupMenu(
@@ -2231,24 +2262,30 @@ void BrowserWindow::CreateControls() {
   // Button text is the accessible name, not the drawn glyph: an owner-draw
   // button is announced by its window text, and "←" or "⋮" tells a screen
   // reader user nothing. ButtonGlyph() supplies what is painted instead.
-  back_ = CreateWindowW(L"BUTTON", L"Back", button_style, 0, 0, 0, 0, window_,
+  using Text = mtk::strings::Id;
+  back_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kBack), button_style,
+                        0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kBackId), instance_, nullptr);
-  forward_ = CreateWindowW(L"BUTTON", L"Forward", button_style, 0, 0, 0, 0, window_,
+  forward_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kForward),
+                           button_style, 0, 0, 0, 0, window_,
                            reinterpret_cast<HMENU>(kForwardId), instance_, nullptr);
-  reload_ = CreateWindowW(L"BUTTON", L"Reload", button_style, 0, 0, 0, 0, window_,
+  reload_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kReload),
+                          button_style, 0, 0, 0, 0, window_,
                           reinterpret_cast<HMENU>(kReloadId), instance_, nullptr);
-  home_ = CreateWindowW(L"BUTTON", L"Home page", button_style, 0, 0, 0, 0, window_,
+  home_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kHomePage),
+                        button_style, 0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kHomeId), instance_, nullptr);
-  shield_ = CreateWindowW(L"BUTTON", L"MTK Shields", button_style, 0, 0, 0, 0,
-                          window_, reinterpret_cast<HMENU>(kShieldId), instance_,
-                          nullptr);
-  downloads_ = CreateWindowW(L"BUTTON", L"Downloads", button_style, 0, 0, 0, 0,
-                             window_, reinterpret_cast<HMENU>(kDownloadsId),
-                             instance_, nullptr);
-  menu_ = CreateWindowW(L"BUTTON", L"Browser menu", button_style, 0, 0, 0, 0,
-                        window_, reinterpret_cast<HMENU>(kMenuId), instance_,
-                        nullptr);
-  address_ = CreateWindowW(L"EDIT", L"Search or enter address",
+  shield_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kShields),
+                          button_style, 0, 0, 0, 0, window_,
+                          reinterpret_cast<HMENU>(kShieldId), instance_, nullptr);
+  downloads_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kDownloads),
+                             button_style, 0, 0, 0, 0, window_,
+                             reinterpret_cast<HMENU>(kDownloadsId), instance_,
+                             nullptr);
+  menu_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kBrowserMenu),
+                        button_style, 0, 0, 0, 0, window_,
+                        reinterpret_cast<HMENU>(kMenuId), instance_, nullptr);
+  address_ = CreateWindowW(L"EDIT", mtk::strings::Get(Text::kAddressPlaceholder),
                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                            0, 0, 0, 0, window_,
                            reinterpret_cast<HMENU>(kAddressId), instance_, nullptr);
@@ -2264,15 +2301,15 @@ void BrowserWindow::CreateControls() {
                         reinterpret_cast<HMENU>(kFindId), instance_, nullptr);
   find_status_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_RIGHT,
                                0, 0, 0, 0, window_, nullptr, instance_, nullptr);
-  find_previous_ = CreateWindowW(L"BUTTON", L"Find previous",
+  find_previous_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kFindPrevious),
                                  button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
                                  reinterpret_cast<HMENU>(kFindPreviousId),
                                  instance_, nullptr);
-  find_next_ = CreateWindowW(L"BUTTON", L"Find next",
+  find_next_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kFindNext),
                              button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
                              reinterpret_cast<HMENU>(kFindNextId), instance_,
                              nullptr);
-  find_close_ = CreateWindowW(L"BUTTON", L"Close find bar",
+  find_close_ = CreateWindowW(L"BUTTON", mtk::strings::Get(Text::kCloseFindBar),
                               button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
                               reinterpret_cast<HMENU>(kFindCloseId), instance_,
                               nullptr);
@@ -2790,18 +2827,29 @@ void BrowserWindow::ShowTabMenu(size_t index, POINT screen) {
   if (!popup) return;
   const bool pinned = tabs_[index].pinned;
   const bool muted = tabs_[index].muted;
-  AppendMenuW(popup, MF_STRING, kTabMenuDuplicate, L"Duplicate tab\tAlt+U");
+  using Text = mtk::strings::Id;
+  const auto label = [](Text id, const wchar_t* accelerator = nullptr) {
+    std::wstring text = mtk::strings::Get(id);
+    if (accelerator) text += accelerator;
+    return text;
+  };
+  AppendMenuW(popup, MF_STRING, kTabMenuDuplicate,
+              label(Text::kDuplicateTab, L"\tAlt+U").c_str());
   AppendMenuW(popup, MF_STRING, kTabMenuPin,
-              pinned ? L"Unpin tab\tAlt+Shift+P" : L"Pin tab\tAlt+Shift+P");
+              label(pinned ? Text::kUnpinTab : Text::kPinTab,
+                    L"\tAlt+Shift+P")
+                  .c_str());
   AppendMenuW(popup, MF_STRING, kTabMenuMute,
-              muted ? L"Unmute site\tAlt+M" : L"Mute site\tAlt+M");
+              label(muted ? Text::kUnmuteSite : Text::kMuteSite, L"\tAlt+M")
+                  .c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(popup, MF_STRING, kTabMenuClose, L"Close tab\tAlt+X");
+  AppendMenuW(popup, MF_STRING, kTabMenuClose,
+              label(Text::kCloseTab, L"\tAlt+X").c_str());
   AppendMenuW(popup, MF_STRING | (tabs_.size() > 1 ? 0 : MF_GRAYED),
-              kTabMenuCloseOthers, L"Close other tabs");
+              kTabMenuCloseOthers, label(Text::kCloseOtherTabs).c_str());
   AppendMenuW(popup,
               MF_STRING | (index + 1 < tabs_.size() ? 0 : MF_GRAYED),
-              kTabMenuCloseRight, L"Close tabs to the right");
+              kTabMenuCloseRight, label(Text::kCloseTabsToRight).c_str());
   const int choice = static_cast<int>(TrackPopupMenuEx(
       popup, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
       screen.x, screen.y, window_, nullptr));

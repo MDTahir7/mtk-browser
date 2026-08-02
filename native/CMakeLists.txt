@@ -11,6 +11,8 @@ set(MTK_BROWSER_SOURCES
   src/site_settings.h
   src/downloads_panel.cpp
   src/downloads_panel.h
+  src/strings.cpp
+  src/strings.h
   src/library_store.cpp
   src/library_store.h
   src/bookmark_import.cpp
@@ -59,6 +61,15 @@ endif()
 target_include_directories(mtk_browser PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
+
+# The sources are UTF-8 without a byte order mark. Without this, MSVC reads them
+# in the system ANSI code page, which silently turns every non-ASCII literal
+# into mojibake: an em dash became "â€”" and the Hindi UI strings would be
+# unreadable. It compiles either way, so the flag is the only thing that makes
+# the text correct.
+if(MSVC)
+  target_compile_options(mtk_browser PRIVATE /utf-8)
+endif()
 
 target_link_libraries(mtk_browser PRIVATE
   libcef_lib

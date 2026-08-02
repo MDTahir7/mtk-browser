@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "download_manager.h"
+#include "strings.h"
 
 namespace mtk::downloads_panel {
 namespace {
@@ -209,22 +210,24 @@ void PaintRowActions(HDC dc, const mtk::downloads::Item& item, const RECT& row) 
     const wchar_t* label;
     Action action;
   };
+  using Text = mtk::strings::Id;
   std::vector<Entry> entries;
   if (active) {
     const bool controllable =
         g_callbacks.controllable && g_callbacks.controllable(item.id);
     if (controllable) {
-      entries.push_back(item.state == mtk::downloads::State::kPaused
-                            ? Entry{L"Resume", Action::kResume}
-                            : Entry{L"Pause", Action::kPause});
-      entries.push_back(Entry{L"Cancel", Action::kCancel});
+      entries.push_back(
+          item.state == mtk::downloads::State::kPaused
+              ? Entry{mtk::strings::Get(Text::kResume), Action::kResume}
+              : Entry{mtk::strings::Get(Text::kPause), Action::kPause});
+      entries.push_back(Entry{mtk::strings::Get(Text::kCancel), Action::kCancel});
     }
   } else if (item.state == mtk::downloads::State::kComplete) {
-    entries.push_back(Entry{L"Open", Action::kOpen});
-    entries.push_back(Entry{L"Folder", Action::kFolder});
-    entries.push_back(Entry{L"Copy", Action::kCopy});
+    entries.push_back(Entry{mtk::strings::Get(Text::kOpen), Action::kOpen});
+    entries.push_back(Entry{mtk::strings::Get(Text::kFolder), Action::kFolder});
+    entries.push_back(Entry{mtk::strings::Get(Text::kCopy), Action::kCopy});
   } else {
-    entries.push_back(Entry{L"Remove", Action::kRemove});
+    entries.push_back(Entry{mtk::strings::Get(Text::kRemove), Action::kRemove});
   }
 
   SelectObject(dc, g_body_font);
@@ -263,7 +266,8 @@ void Paint(HDC dc, const RECT& client) {
               client.top + Scaled(kBaseHeaderHeight)};
   SelectObject(dc, g_title_font);
   SetTextColor(dc, kText);
-  DrawTextW(dc, L"Downloads", -1, &header, DT_SINGLELINE | DT_VCENTER);
+  DrawTextW(dc, mtk::strings::Get(mtk::strings::Id::kDownloads), -1, &header,
+            DT_SINGLELINE | DT_VCENTER);
 
   const auto rows = VisibleItems();
   int y = client.top + Scaled(kBaseHeaderHeight);
@@ -272,8 +276,8 @@ void Paint(HDC dc, const RECT& client) {
                y + Scaled(kBaseRowHeight)};
     SelectObject(dc, g_body_font);
     SetTextColor(dc, kMuted);
-    DrawTextW(dc, L"Nothing downloaded yet.", -1, &empty,
-              DT_SINGLELINE | DT_VCENTER);
+    DrawTextW(dc, mtk::strings::Get(mtk::strings::Id::kNothingDownloaded), -1,
+              &empty, DT_SINGLELINE | DT_VCENTER);
     y = empty.bottom;
   }
 
@@ -319,8 +323,9 @@ void Paint(HDC dc, const RECT& client) {
     Action action;
   };
   const FooterEntry footer_entries[] = {
-      {L"All downloads", Action::kShowAll},
-      {L"Clear finished", Action::kClearFinished},
+      {mtk::strings::Get(mtk::strings::Id::kAllDownloads), Action::kShowAll},
+      {mtk::strings::Get(mtk::strings::Id::kClearFinished),
+       Action::kClearFinished},
   };
   int footer_x = footer.left + Scaled(12);
   for (const FooterEntry& entry : footer_entries) {
