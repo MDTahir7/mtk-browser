@@ -44,6 +44,10 @@ class BrowserWindow final : public BrowserClientDelegate {
     bool loading = false;
     bool can_go_back = false;
     bool can_go_forward = false;
+    // Pinned tabs are kept at the front of the strip in a narrow slot and have
+    // no close button.
+    bool pinned = false;
+    bool muted = false;
   };
 
   void RememberClosedTab(const Tab& tab);
@@ -74,6 +78,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   void HideFindBar();
   void RunFind(bool forward, bool find_next);
   void ZoomActiveTab(cef_zoom_command_t command);
+  // Opens Chromium's print preview, which also provides Save as PDF.
+  void PrintActiveTab();
   void ShowBrowserMenu();
   void ShowSettingsDialog();
   void ShowClearDataDialog();
@@ -109,10 +115,31 @@ class BrowserWindow final : public BrowserClientDelegate {
   void CreateStartupTabs();
   void SelectTab(size_t index);
   void CloseTab(size_t index);
+  // Tab management. Pinned tabs are always the leading run of the strip, so
+  // pinning and reordering both keep that invariant.
+  size_t PinnedCount() const;
+  void MoveTab(size_t from, size_t to);
+  void TogglePin(size_t index);
+  void ToggleMute(size_t index);
+  void DuplicateTab(size_t index);
+  void CloseOtherTabs(size_t index);
+  void CloseTabsToTheRight(size_t index);
+  void ShowTabMenu(size_t index, POINT screen);
+  // Drag-reorder. A press only becomes a drag after the mouse leaves a small
+  // dead zone, so an ordinary click still selects.
+  void BeginTabDrag(size_t index, POINT point);
+  void UpdateTabDrag(POINT point);
+  void EndTabDrag();
   void NavigateFromOmnibox();
   void Layout();
   void Paint(HDC dc);
   void PaintTabStrip(HDC dc, const RECT& client);
+  // Bookmarks strip under the toolbar. Painted, not built from child windows,
+  // so it scales with DPI the same way the rest of the chrome does.
+  void PaintBookmarksBar(HDC dc, const RECT& client);
+  void ToggleBookmarksBar();
+  // Imports bookmarks from an installed Chromium-family browser.
+  void ImportBookmarksFromBrowser();
   void PaintOmniboxFrame(HDC dc);
   void PaintProgress(HDC dc, const RECT& client);
   void DrawButton(const DRAWITEMSTRUCT& item);
@@ -151,6 +178,19 @@ class BrowserWindow final : public BrowserClientDelegate {
   std::vector<std::string> closed_tab_urls_;
   // Horizontal scroll offset of the tab strip, in pixels.
   int tab_scroll_ = 0;
+  // Tab being dragged, its press position, and whether the dead zone has been
+  // left. `drag_candidate_` is set on press; `dragging_` only once it moves.
+  size_t drag_candidate_ = static_cast<size_t>(-1);
+  POINT drag_origin_{};
+  bool dragging_ = false;
+  // Clickable areas of the bookmarks bar, rebuilt on every paint so hit
+  // testing can never disagree with what is on screen.
+  struct BookmarkHit {
+    RECT bounds;
+    size_t index;
+  };
+  std::vector<BookmarkHit> bookmark_bar_hits_;
+  size_t hovered_bookmark_ = static_cast<size_t>(-1);
   bool full_screen_ = false;
   // Window placement and style captured before entering full screen.
   WINDOWPLACEMENT saved_placement_{};

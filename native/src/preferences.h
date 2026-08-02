@@ -21,6 +21,9 @@ struct Values {
   std::string accept_language;
   DownloadMode download_mode = DownloadMode::kSafe;
   StartupMode startup_mode = StartupMode::kHomePage;
+  // Bookmarks strip under the toolbar. Off by default so the first run looks
+  // the same as before, and toggled with Ctrl+Shift+B.
+  bool show_bookmarks_bar = false;
   // Parent PIN, stored only as a PBKDF2-SHA256 verifier. Both fields are
   // lowercase hex, and both are empty when no PIN is set.
   std::string pin_salt;

@@ -39,6 +39,7 @@
 #define IDC_CLEAR_CACHE 1229
 #define IDC_CLEAR_SESSION 1230
 #define IDC_CLEAR_BOOKMARKS 1231
+#define IDC_LIBRARY_SEARCH 1233
 
 #define IDM_ADD_BOOKMARK 4001
 #define IDM_BOOKMARKS 4002
@@ -49,4 +50,10 @@
 #define IDM_FULL_SCREEN 4007
 #define IDM_REOPEN_TAB 4008
 #define IDM_CHECK_UPDATES 4009
-#define IDC_SETTINGS_AUTO_UPDATE 1226
+#define IDM_PRINT 4010
+#define IDM_BOOKMARKS_BAR 4011
+#define IDM_IMPORT_BOOKMARKS 4012
+
+// Kept distinct from IDC_CLEAR_HISTORY; both dialogs share one id space in the
+// resource script, so a duplicate here silently aliases two controls.
+#define IDC_SETTINGS_AUTO_UPDATE 1232

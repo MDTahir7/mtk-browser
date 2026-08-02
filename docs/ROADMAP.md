@@ -7,12 +7,15 @@ has been actually built and verified, and any limitation is written down.
 
 ## Tier 1 — Release blockers
 
-- [ ] **T1.1 Chromium sandbox enabled**
-  - CEF 150 requires `bootstrap.exe` + application DLL packaging instead of a
-    single EXE. Today `main.cpp` sets `no_sandbox=true` and root `CMakeLists.txt`
-    force-disables `USE_SANDBOX`.
-  - Work: new app-DLL target, exported entry points, staging + installer updates,
-    then re-verify renderer/GPU/utility processes.
+- [~] **T1.1 Chromium sandbox enabled**
+  - Done: `MTK_ENABLE_CEF_SANDBOX` is `ON` by default and forces `USE_SANDBOX`,
+    the app builds as `MTKBrowser.dll` loaded by CEF's renamed `bootstrap.exe`,
+    `main.cpp` derives `no_sandbox` from the real `sandbox_info` handle, and
+    staging refuses a payload missing the DLL or with mismatched signing state.
+    The 0.3.0 payload ships both files (EXE 3.1 MB, DLL 1.0 MB).
+  - Remaining: confirm at runtime that renderer, GPU and utility processes are
+    actually running inside the sandbox (e.g. Process Explorer integrity level /
+    mitigation policies), and record the result here.
   - Touches: `CMakeLists.txt`, `native/CMakeLists.txt`, `native/src/main.cpp`,
     `scripts/stage_release.ps1`, `installer/MTKBrowser.iss`.
 - [ ] **T1.2 Code signing for release artifacts**
@@ -20,11 +23,14 @@ has been actually built and verified, and any limitation is written down.
     (`MTK_SIGN_CERT_SHA1`, `MTK_SIGNTOOL`, `MTK_REQUIRE_SIGNING`).
   - Remaining: obtain an OV/EV certificate, sign EXE + installer, verify with
     `signtool verify /pa /all`. External purchase required.
-- [ ] **T1.3 Secure auto-update**
-  - In progress in the working tree (`native/src/updater.*`,
-    `native/src/update_public_key.h`, `scripts/publish_update.ps1`).
-  - Must have: signed manifest, key rotation plan, atomic install, rollback,
-    and no silent downgrade.
+- [~] **T1.3 Secure auto-update**
+  - Done: `native/src/updater.*` fetches a manifest plus a detached signature
+    over HTTPS, verifies the signature against the pinned key in
+    `update_public_key.h`, compares versions, downloads the installer and checks
+    its SHA-256 before anything is executed. A failed or unsigned manifest is
+    treated as hostile. `scripts/publish_update.ps1` signs a release manifest.
+  - Remaining: key rotation plan, rollback path, and an end-to-end test of a
+    real published update (needs T1.2 signing to be meaningful).
 - [ ] **T1.4 Crash handling and recovery**
   - Detect unclean shutdown, offer tab restore, and capture a local crash record.
   - Session file already exists (`native/src/session_store.cpp`); needs a
@@ -37,39 +43,84 @@ has been actually built and verified, and any limitation is written down.
   - One `BrowserWindow` per top-level window, per-window tab list, window state
     persistence, and a profile-scoped singleton that focuses the right window.
 - [~] **T1.7 Automated tests + CI**
-  - Done: 41-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
+  - Done: 54-case logic suite under `tests/`, run by `scripts/run_tests.ps1`,
     covering navigation/request policy, download rules and file-name hardening,
-    and session-restore persistence. Verified passing locally.
-  - Remaining: a CI workflow that builds Release and runs the suite on every
-    push, plus coverage for CEF-dependent paths that need a live browser.
+    session-restore persistence, the toolbar icon strip loader, and the Chromium
+    bookmarks importer (which parses a file written by another program, so it is
+    tested against malformed, deeply nested and policy-refused input). Verified
+    passing locally (54 passed, 0 failed).
+  - Remaining: there is no `.github/workflows` yet, so nothing runs on push.
+    Needs a CI workflow that builds Release and runs the suite, plus coverage
+    for CEF-dependent paths that need a live browser.
 
 ## Tier 2 — Daily-use parity
 
-- [ ] **T2.1 Private/Incognito window** (separate in-memory CEF request context)
-- [ ] **T2.2 Multiple profiles** with a profile picker
-- [ ] **T2.3 Password manager + autofill** (OS-encrypted storage, never plaintext)
-- [ ] **T2.4 Bookmarks bar, folders, and Chrome import**
-- [ ] **T2.5 Full History page with search and date grouping**
-- [ ] **T2.6 Tab UX**: drag-reorder, pin, mute, duplicate, middle-click close,
-      `Ctrl+1..9`, `Ctrl+Shift+T`, overflow scrolling
-- [ ] **T2.7 Printing**: print, print preview, Save as PDF
-- [ ] **T2.8 Built-in PDF viewer** (PDFs currently download instead of opening)
-- [ ] **T2.9 Spellcheck** with dictionary suggestions in editable fields
-- [ ] **T2.10 Per-site settings**: permissions, cookies, remembered zoom
-- [ ] **T2.11 Clear browsing data dialog** (history, cookies, cache, downloads)
-- [ ] **T2.12 Media**: picture-in-picture, media keys, autoplay policy
-- [ ] **T2.13 Downloads polish**: toolbar popup panel, drag-out, cross-restart resume
-      (cross-restart resume needs an own resumable HTTP path; CEF callbacks only
-      cover the live process)
-- [ ] **T2.14 Full-screen mode (F11)**
-- [ ] **T2.15 Accessibility**: UI Automation/screen reader, high contrast, focus order
-- [ ] **T2.16 Localization**: complete Hindi + English UI strings
+`[~]` here means the code is written and the Release build plus the logic suite
+pass, but the behaviour has not been checked on screen yet. UI work is not marked
+`[x]` on a compile alone.
+
+- [ ] **T2.1 Private/Incognito window** (separate in-memory CEF request context).
+      Blocked on T1.6: a private session needs its own top-level window.
+- [ ] **T2.2 Multiple profiles** with a profile picker. Also wants T1.6 first.
+- [ ] **T2.3 Password manager + autofill** (OS-encrypted storage, never
+      plaintext). Not started; this is the largest Tier 2 item and needs a
+      threat model written down before any code.
+- [~] **T2.4 Bookmarks bar, folders, and Chrome import**
+  - Done: bookmarks bar under the toolbar (painted, DPI-scaled, `Ctrl+Shift+B`,
+    remembered in preferences), `Ctrl+D` to save a page, and an importer for
+    Chrome, Edge and Brave (`native/src/bookmark_import.cpp`). Imported
+    bookmarks pass through `EvaluateNavigation`, so an import cannot introduce an
+    address the browser refuses to open, and the refused count is reported.
+  - Remaining: folders. `library_store` has a flat list, so folders need a
+    format change, drag-and-drop, and a bar overflow menu.
+- [~] **T2.5 History with search and date grouping**
+  - Done: live search box, and history grouped by Today / Yesterday / long date
+    using the new per-entry timestamp. Group rows are not selectable.
+  - Remaining: this is still a dialog, not a browsable page, and there is no
+    "remove all from this day".
+- [~] **T2.6 Tab UX**: drag-reorder, pin, mute, duplicate, middle-click close,
+      right-click tab menu, `Ctrl+1..8`/`Ctrl+9`, `Ctrl+M`, `Ctrl+Shift+T`,
+      overflow scrolling. Pinned tabs are the leading run of the strip, get a
+      narrow slot and no close button. Not yet checked on screen; pinned state is
+      not written to the session file.
+- [~] **T2.7 Printing**: `Ctrl+P`, a menu entry and a page context-menu entry all
+      open Chromium's print preview, which is also where Save as PDF lives.
+- [~] **T2.8 Built-in PDF viewer**: the request policy already allows exactly the
+      bundled PDF viewer extension origin (`IsTrustedPdfViewerUrl`), so inline
+      viewing should work. Needs a real PDF opened in the app to confirm it
+      renders instead of downloading.
+- [~] **T2.9 Spellcheck**: local Hunspell spellcheck enabled with en-US, and
+      suggestions plus "Add to dictionary" in the context menu. Google's
+      server-backed enhanced spellcheck is explicitly turned off, because it
+      uploads typed text. Chromium has no Hunspell dictionary for Hindi.
+- [ ] **T2.10 Per-site settings**: permissions, cookies, remembered zoom. Not
+      started; needs a per-origin store and Shields integration.
+- [x] **T2.11 Clear browsing data dialog** (history, downloads, cookies, cache,
+      saved session, bookmarks)
+- [~] **T2.12 Media**: autoplay now requires a user gesture, and picture-in-picture,
+      the media session service and hardware media keys are enabled through
+      `OnBeforeCommandLineProcessing`. Needs a real page to confirm.
+- [ ] **T2.13 Downloads polish**: toolbar popup panel, drag-out, cross-restart
+      resume. Today there is a Downloads dialog with pause/resume/cancel within
+      the running process. Cross-restart resume needs an own resumable HTTP
+      path; CEF callbacks only cover the live process.
+- [x] **T2.14 Full-screen mode (F11)** — chrome hidden, not destroyed; Esc exits
+- [~] **T2.15 Accessibility**: toolbar buttons now carry real accessible names
+      instead of the drawn glyph ("Back" rather than "←"), and the renderer
+      accessibility tree is forced on so page content reaches assistive
+      technology. Remaining: verification with an actual screen reader, high
+      contrast handling, and focus order through the tab strip and bookmarks bar.
+- [ ] **T2.16 Localization**: complete Hindi + English UI strings. Not started;
+      every string is currently inline in the source, so this needs a string
+      table first.
 
 ## Tier 3 — Brave-level differentiators
 
 - [ ] **T3.1 Extension support** (largest single effort)
 - [ ] **T3.2 Sync** across devices, end-to-end encrypted
-- [ ] **T3.3 Per-site Shields panel** (in progress in the working tree) + custom filters UI
+- [~] **T3.3 Shields panel** — the toolbar panel exists (`native/src/shields_panel.cpp`,
+      dismissal and DPI issues fixed). Remaining: true per-site rules that persist
+      per origin, and a custom filters UI.
 - [ ] **T3.4 Fingerprinting protection**
 - [ ] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
 - [ ] **T3.6 Managed, updatable filter and category feed** (signed, with fail-safe
@@ -86,14 +137,17 @@ has been actually built and verified, and any limitation is written down.
 
 ## Recommended order
 
-1. T1.3 auto-update (already in progress)
-2. T1.1 sandbox
-3. T1.2 code signing
+1. T1.1 verify the sandbox at runtime (code is in, proof is missing)
+2. T1.7 CI workflow (cheap, and it protects everything after it)
+3. T1.4 crash recovery, then T1.5 default browser
 4. T1.6 multi-window + T2.6 tab UX
 5. T2.1 private window, T2.8 PDF viewer, T2.7 printing
+6. T1.2 code signing when a certificate is purchased, which also unblocks the
+   remaining T1.3 auto-update work
 
 ## Coordination note
 
-Large parts of the UI live in `native/src/browser_window.cpp`. While that file has
-uncommitted changes in the working tree, new work should prefer new files or
-low-conflict areas (installer, scripts, tests) to avoid clobbering work in progress.
+Large parts of the UI live in `native/src/browser_window.cpp`, and more than one
+session works in this repository. Check `git status` before starting: while that
+file has uncommitted changes, prefer new files or low-conflict areas (installer,
+scripts, tests) to avoid clobbering work in progress.

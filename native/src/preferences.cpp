@@ -207,6 +207,7 @@ void ReadValues(const std::string& content, Values* values) {
     constexpr std::string_view kPinSalt = "pin_salt=";
     constexpr std::string_view kPinHash = "pin_hash=";
     constexpr std::string_view kAutoUpdate = "auto_update=";
+    constexpr std::string_view kBookmarksBar = "bookmarks_bar=";
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
           std::string(line.substr(kHomePage.size())));
@@ -235,6 +236,9 @@ void ReadValues(const std::string& content, Values* values) {
     } else if (line.starts_with(kAutoUpdate)) {
       // Anything other than an explicit "off" keeps checks enabled.
       values->auto_update = std::string(line.substr(kAutoUpdate.size())) != "off";
+    } else if (line.starts_with(kBookmarksBar)) {
+      values->show_bookmarks_bar =
+          std::string(line.substr(kBookmarksBar.size())) == "on";
     }
     if (end == std::string::npos) break;
     offset = end + 1;
@@ -255,8 +259,10 @@ Store& Store::Get() {
 }
 
 void Store::Load() {
-  values_ = {kDefaultHomePage, kDefaultAcceptLanguage, DownloadMode::kSafe,
-             StartupMode::kHomePage, {}, {}, true};
+  // Named fields, so adding a preference cannot silently shift the defaults.
+  values_ = Values{};
+  values_.home_page = kDefaultHomePage;
+  values_.accept_language = kDefaultAcceptLanguage;
   std::string content;
   if (ReadFile(PreferencesPath(), &content)) ReadValues(content, &values_);
   // Half a verifier is unusable, so treat it as no PIN at all.
@@ -294,6 +300,8 @@ bool Store::Save(const Values& values) {
   }
   content += std::string("auto_update=") +
              (values.auto_update ? "on" : "off") + "\r\n";
+  content += std::string("bookmarks_bar=") +
+             (values.show_bookmarks_bar ? "on" : "off") + "\r\n";
   if (!WriteFileAtomically(content)) return false;
   values_ = values;
   return true;

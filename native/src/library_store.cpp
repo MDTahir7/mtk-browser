@@ -147,21 +147,53 @@ void AddLoadedEntry(std::vector<Entry>* entries, const Entry& entry,
   entries->push_back(entry);
 }
 
+// Current Unix time in seconds, UTC. FILETIME counts 100 ns ticks from 1601.
+long long UnixTime() {
+  FILETIME now{};
+  GetSystemTimeAsFileTime(&now);
+  ULARGE_INTEGER ticks{};
+  ticks.LowPart = now.dwLowDateTime;
+  ticks.HighPart = now.dwHighDateTime;
+  constexpr unsigned long long kTicksToUnixEpoch = 116444736000000000ULL;
+  if (ticks.QuadPart <= kTicksToUnixEpoch) return 0;
+  return static_cast<long long>((ticks.QuadPart - kTicksToUnixEpoch) / 10000000ULL);
+}
+
+// Optional trailing timestamp field. Anything that is not a bounded run of
+// digits is treated as "no timestamp" rather than as a parse failure, so a file
+// written by an older build still loads.
+long long ParseTimestamp(std::string_view value) {
+  if (value.empty() || value.size() > 12) return 0;
+  long long parsed = 0;
+  for (const char character : value) {
+    if (character < '0' || character > '9') return 0;
+    parsed = parsed * 10 + (character - '0');
+  }
+  return parsed;
+}
+
 void ParseLine(std::string_view line, std::vector<Entry>* history,
                std::vector<Entry>* bookmarks) {
   if (line.size() < 5 || (line.front() != 'H' && line.front() != 'B') ||
       line[1] != '\t') return;
   const size_t tab = line.find('\t', 2);
   if (tab == std::string_view::npos) return;
+  std::string_view title_field = line.substr(tab + 1);
+  long long visited = 0;
+  if (const size_t second = title_field.find('\t');
+      second != std::string_view::npos) {
+    visited = ParseTimestamp(title_field.substr(second + 1));
+    title_field = title_field.substr(0, second);
+  }
   std::string url;
   std::string title;
   if (!HexDecode(line.substr(2, tab - 2), &url) ||
-      !HexDecode(line.substr(tab + 1), &title) || url.size() > kMaxUrlBytes) {
+      !HexDecode(title_field, &title) || url.size() > kMaxUrlBytes) {
     return;
   }
   const std::wstring wide_title = Utf8ToWide(title);
   if (!title.empty() && wide_title.empty()) return;
-  const Entry entry{std::move(url), wide_title};
+  const Entry entry{std::move(url), wide_title, visited};
   if (line.front() == 'H') AddLoadedEntry(history, entry, kMaxHistoryEntries);
   else AddLoadedEntry(bookmarks, entry, kMaxBookmarkEntries);
 }
@@ -175,6 +207,8 @@ std::string Serialize(const std::vector<Entry>& history,
     content += HexEncode(entry.url);
     content.push_back('\t');
     content += HexEncode(WideToUtf8(entry.title));
+    content.push_back('\t');
+    content += std::to_string(entry.visited < 0 ? 0 : entry.visited);
     content += "\r\n";
   };
   for (const Entry& entry : history) append('H', entry);
@@ -221,12 +255,13 @@ bool Store::Flush() {
 }
 
 bool Store::RecordVisit(const std::string& url, const std::wstring& title) {
-  const Entry entry{url, title.empty() ? Utf8ToWide(url) : title};
+  const Entry entry{url, title.empty() ? Utf8ToWide(url) : title, UnixTime()};
   if (!IsUsableEntry(entry)) return false;
   if (!history_.empty() && history_.front().url == url) {
+    history_.front().visited = entry.visited;
+    dirty_ = true;
     if (history_.front().title != entry.title) {
       history_.front().title = entry.title;
-      dirty_ = true;
     }
     return true;
   }
@@ -246,8 +281,26 @@ bool Store::UpdateHistoryTitle(const std::string& url, const std::wstring& title
   return true;
 }
 
+size_t Store::ImportBookmarks(const std::vector<Entry>& entries) {
+  size_t added = 0;
+  for (const Entry& candidate : entries) {
+    if (bookmarks_.size() >= kMaxBookmarkEntries) break;
+    if (!IsUsableEntry(candidate)) continue;
+    if (IsBookmarked(candidate.url)) continue;
+    Entry entry = candidate;
+    if (entry.title.empty()) entry.title = Utf8ToWide(entry.url);
+    if (entry.visited <= 0) entry.visited = UnixTime();
+    // Imported bookmarks go after the existing ones, so a large import cannot
+    // bury what the user saved here themselves.
+    bookmarks_.push_back(std::move(entry));
+    dirty_ = true;
+    ++added;
+  }
+  return added;
+}
+
 bool Store::AddBookmark(const std::string& url, const std::wstring& title) {
-  const Entry entry{url, title.empty() ? Utf8ToWide(url) : title};
+  const Entry entry{url, title.empty() ? Utf8ToWide(url) : title, UnixTime()};
   if (!IsUsableEntry(entry)) return false;
   const auto match = std::find_if(bookmarks_.begin(), bookmarks_.end(),
       [&url](const Entry& saved) { return saved.url == url; });

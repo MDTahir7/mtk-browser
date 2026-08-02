@@ -4,8 +4,11 @@
 
 #include "browser_window.h"
 #include "include/cef_app.h"
+#include "include/cef_command_line.h"
 #include "include/cef_frame.h"
+#include "include/cef_request_context.h"
 #include "include/cef_v8.h"
+#include "include/cef_values.h"
 
 namespace {
 
@@ -227,6 +230,37 @@ constexpr char kInstagramGuardScript[] = R"JS(
 })();
 )JS";
 
+// Turns on Chromium's local spellchecker and, just as importantly, keeps the
+// server-backed "enhanced" spellcheck off. Enhanced spellcheck uploads what the
+// user types to Google, which this browser must never do silently.
+void ConfigureSpellcheck() {
+  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+  if (!context) return;
+
+  const auto set_preference = [&context](const char* name,
+                                         CefRefPtr<CefValue> value) {
+    if (!context->CanSetPreference(name)) return;
+    CefString error;
+    context->SetPreference(name, value, error);
+  };
+
+  CefRefPtr<CefValue> enabled = CefValue::Create();
+  enabled->SetBool(true);
+  set_preference("browser.enable_spellchecking", enabled);
+
+  CefRefPtr<CefValue> disabled = CefValue::Create();
+  disabled->SetBool(false);
+  set_preference("spellcheck.use_spelling_service", disabled);
+
+  // Hunspell dictionaries Chromium ships support for. Hindi has no Hunspell
+  // dictionary in Chromium, so requesting it would only fail quietly.
+  CefRefPtr<CefListValue> dictionaries = CefListValue::Create();
+  dictionaries->SetString(0, "en-US");
+  CefRefPtr<CefValue> languages = CefValue::Create();
+  languages->SetList(dictionaries);
+  set_preference("spellcheck.dictionaries", languages);
+}
+
 }  // namespace
 
 MtkApp::MtkApp(HINSTANCE instance, int show_command)
@@ -242,7 +276,43 @@ CefRefPtr<CefRenderProcessHandler> MtkApp::GetRenderProcessHandler() {
   return this;
 }
 
+void MtkApp::OnBeforeCommandLineProcessing(
+    const CefString& process_type, CefRefPtr<CefCommandLine> command_line) {
+  // Only the browser process line carries these; renderers inherit what they
+  // need from it.
+  if (!command_line || !process_type.empty()) return;
+
+  // Media that starts playing on its own, with sound, is the single most
+  // disruptive default on the web. Requiring a gesture matches what Chrome does
+  // for sound and is stricter for muted video.
+  if (!command_line->HasSwitch("autoplay-policy")) {
+    command_line->AppendSwitchWithValue("autoplay-policy",
+                                        "user-gesture-required");
+  }
+
+  // Picture-in-picture and the hardware media keys are Chromium features that
+  // are compiled in but not enabled by default in this runtime.
+  const char* features =
+      "MediaSessionService,HardwareMediaKeyHandling,PictureInPictureWindow";
+  if (command_line->HasSwitch("enable-features")) {
+    const std::string existing = command_line->GetSwitchValue("enable-features");
+    command_line->AppendSwitchWithValue("enable-features",
+                                        existing + "," + features);
+  } else {
+    command_line->AppendSwitchWithValue("enable-features", features);
+  }
+
+  // Screen readers need the renderer's accessibility tree. "complete" is the
+  // documented value; it costs a little memory per tab and is what makes the
+  // page content reachable by assistive technology at all.
+  if (!command_line->HasSwitch("force-renderer-accessibility")) {
+    command_line->AppendSwitchWithValue("force-renderer-accessibility",
+                                        "complete");
+  }
+}
+
 void MtkApp::OnContextInitialized() {
+  ConfigureSpellcheck();
   browser_window_ = std::make_unique<BrowserWindow>(instance_);
   if (!browser_window_->Create(show_command_)) {
     browser_window_.reset();

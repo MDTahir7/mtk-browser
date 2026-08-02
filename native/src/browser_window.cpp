@@ -16,6 +16,7 @@
 #include "include/cef_cookie.h"
 #include "include/cef_frame.h"
 #include "include/wrapper/cef_closure_task.h"
+#include "bookmark_import.h"
 #include "download_manager.h"
 #include "library_store.h"
 #include "policy.h"
@@ -35,13 +36,22 @@ std::string kHomeUrl = kDefaultHomeUrl;
 constexpr int kBaseTabBarHeight = 44;
 constexpr int kBaseToolbarHeight = 60;
 constexpr int kBaseProgressHeight = 3;
+constexpr int kBaseBookmarksBarHeight = 32;
 int g_dpi = 96;
+// Bookmarks bar visibility, mirrored from preferences. The height helpers are
+// free functions shared with painting and hit testing, so the flag sits here.
+bool g_bookmarks_bar = false;
 
 int Scaled(int value) { return MulDiv(value, g_dpi, 96); }
 int TabBarHeight() { return Scaled(kBaseTabBarHeight); }
 int ToolbarHeight() { return Scaled(kBaseToolbarHeight); }
 int ProgressHeight() { return Scaled(kBaseProgressHeight); }
-int ChromeHeight() { return TabBarHeight() + ToolbarHeight(); }
+int BookmarksBarHeight() {
+  return g_bookmarks_bar ? Scaled(kBaseBookmarksBarHeight) : 0;
+}
+int ChromeHeight() {
+  return TabBarHeight() + ToolbarHeight() + BookmarksBarHeight();
+}
 constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kLibrarySaveTimer = 2;
 constexpr UINT_PTR kDownloadSaveTimer = 3;
@@ -79,6 +89,33 @@ constexpr INT_PTR kFindPreviousId = 1010;
 constexpr INT_PTR kFindNextId = 1011;
 constexpr INT_PTR kFindCloseId = 1012;
 constexpr INT_PTR kDownloadsId = 1013;
+
+// What an owner-draw toolbar button paints. Kept apart from the window text,
+// which is the button's accessible name.
+const wchar_t* ButtonGlyph(UINT control_id) {
+  switch (control_id) {
+    case kBackId: return L"\u2190";
+    case kForwardId: return L"\u2192";
+    case kReloadId: return L"\u21BB";
+    case kHomeId: return L"\u2302";
+    case kShieldId: return L"\u25C6";
+    case kDownloadsId: return L"\u2193";
+    case kMenuId: return L"\u22EE";
+    case kFindPreviousId: return L"\u2039";
+    case kFindNextId: return L"\u203A";
+    case kFindCloseId: return L"\u00D7";
+    default: return L"";
+  }
+}
+
+// Tab context menu commands. These only ever reach TrackPopupMenuEx, so they
+// stay local to this file instead of taking resource ids.
+constexpr int kTabMenuDuplicate = 1401;
+constexpr int kTabMenuPin = 1402;
+constexpr int kTabMenuMute = 1403;
+constexpr int kTabMenuClose = 1404;
+constexpr int kTabMenuCloseOthers = 1405;
+constexpr int kTabMenuCloseRight = 1406;
 constexpr size_t kNoTab = static_cast<size_t>(-1);
 
 constexpr COLORREF kWindowColor = RGB(9, 12, 22);
@@ -592,19 +629,137 @@ std::wstring LibraryDisplayText(const mtk::library::Entry& entry) {
   return text;
 }
 
+// Local calendar day number for a Unix timestamp, used only to decide which
+// group a history row belongs to.
+long long LocalDayNumber(long long unix_seconds) {
+  if (unix_seconds <= 0) return -1;
+  ULARGE_INTEGER ticks{};
+  ticks.QuadPart = static_cast<unsigned long long>(unix_seconds) * 10000000ULL +
+                   116444736000000000ULL;
+  FILETIME utc{ticks.LowPart, ticks.HighPart};
+  FILETIME local{};
+  if (!FileTimeToLocalFileTime(&utc, &local)) return -1;
+  SYSTEMTIME parts{};
+  if (!FileTimeToSystemTime(&local, &parts)) return -1;
+  // A plain year/month/day key is enough: groups only need to compare equal for
+  // the same calendar day and to order downwards.
+  return static_cast<long long>(parts.wYear) * 10000 +
+         static_cast<long long>(parts.wMonth) * 100 + parts.wDay;
+}
+
+std::wstring HistoryGroupLabel(long long day) {
+  if (day < 0) return L"Earlier";
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  const long long today = static_cast<long long>(now.wYear) * 10000 +
+                          static_cast<long long>(now.wMonth) * 100 + now.wDay;
+  if (day == today) return L"Today";
+
+  // Yesterday is computed from a real timestamp rather than by subtracting one
+  // from the day key, so month and year boundaries are correct.
+  FILETIME now_file{};
+  SystemTimeToFileTime(&now, &now_file);
+  ULARGE_INTEGER ticks{now_file.dwLowDateTime, now_file.dwHighDateTime};
+  ticks.QuadPart -= 24ULL * 60ULL * 60ULL * 10000000ULL;
+  FILETIME previous{ticks.LowPart, ticks.HighPart};
+  SYSTEMTIME yesterday{};
+  if (FileTimeToSystemTime(&previous, &yesterday)) {
+    const long long key = static_cast<long long>(yesterday.wYear) * 10000 +
+                          static_cast<long long>(yesterday.wMonth) * 100 +
+                          yesterday.wDay;
+    if (day == key) return L"Yesterday";
+  }
+
+  SYSTEMTIME date{};
+  date.wYear = static_cast<WORD>(day / 10000);
+  date.wMonth = static_cast<WORD>((day / 100) % 100);
+  date.wDay = static_cast<WORD>(day % 100);
+  wchar_t formatted[128]{};
+  if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_LONGDATE, &date, nullptr,
+                      formatted, 128, nullptr) > 0) {
+    return formatted;
+  }
+  return L"Earlier";
+}
+
+bool MatchesLibraryQuery(const mtk::library::Entry& entry,
+                         const std::wstring& lowered_query) {
+  if (lowered_query.empty()) return true;
+  std::wstring haystack = entry.title + L" " + Utf8ToWide(entry.url);
+  std::transform(haystack.begin(), haystack.end(), haystack.begin(), towlower);
+  return haystack.find(lowered_query) != std::wstring::npos;
+}
+
+// Item data is entry index + 1, so a group header can use 0 and never be
+// mistaken for a row that can be opened or removed.
+constexpr LRESULT kLibraryHeaderData = 0;
+
 void PopulateLibraryList(HWND dialog, bool bookmarks) {
   HWND list = GetDlgItem(dialog, IDC_LIBRARY_LIST);
+  HWND search = GetDlgItem(dialog, IDC_LIBRARY_SEARCH);
+  std::wstring query;
+  if (search) {
+    const int length = GetWindowTextLengthW(search);
+    query.resize(static_cast<size_t>(length) + 1, L'\0');
+    GetWindowTextW(search, query.data(), length + 1);
+    query.resize(static_cast<size_t>(length));
+    std::transform(query.begin(), query.end(), query.begin(), towlower);
+  }
+
+  SendMessageW(list, WM_SETREDRAW, FALSE, 0);
   SendMessageW(list, LB_RESETCONTENT, 0, 0);
   const auto& entries = LibraryEntries(bookmarks);
+  long long current_day = std::numeric_limits<long long>::min();
+  size_t shown = 0;
   for (size_t index = 0; index < entries.size(); ++index) {
+    if (!MatchesLibraryQuery(entries[index], query)) continue;
+    // History is stored newest first, so the groups come out in order without
+    // sorting anything.
+    if (!bookmarks) {
+      const long long day = LocalDayNumber(entries[index].visited);
+      if (day != current_day) {
+        current_day = day;
+        const std::wstring header = L"— " + HistoryGroupLabel(day) + L" —";
+        const LRESULT header_row = SendMessageW(
+            list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(header.c_str()));
+        if (header_row != LB_ERR && header_row != LB_ERRSPACE) {
+          SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(header_row),
+                       kLibraryHeaderData);
+        }
+      }
+    }
     const LRESULT row = SendMessageW(
         list, LB_ADDSTRING, 0,
         reinterpret_cast<LPARAM>(LibraryDisplayText(entries[index]).c_str()));
     if (row != LB_ERR && row != LB_ERRSPACE) {
-      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(row), index);
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(row),
+                   static_cast<LPARAM>(index + 1));
+      if (shown == 0) SendMessageW(list, LB_SETCURSEL, static_cast<WPARAM>(row), 0);
+      ++shown;
     }
   }
-  if (!entries.empty()) SendMessageW(list, LB_SETCURSEL, 0, 0);
+  if (shown == 0 && !query.empty()) {
+    const LRESULT row = SendMessageW(
+        list, LB_ADDSTRING, 0,
+        reinterpret_cast<LPARAM>(L"Nothing matches that search."));
+    if (row != LB_ERR && row != LB_ERRSPACE) {
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(row),
+                   kLibraryHeaderData);
+    }
+  }
+  SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(list, nullptr, TRUE);
+}
+
+// Entry index behind the selected row, or -1 when a header row is selected.
+ptrdiff_t SelectedLibraryIndex(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_LIBRARY_LIST);
+  const LRESULT row = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  if (row == LB_ERR) return -1;
+  const LRESULT data =
+      SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+  if (data == LB_ERR || data == kLibraryHeaderData) return -1;
+  return static_cast<ptrdiff_t>(data) - 1;
 }
 
 INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
@@ -630,22 +785,22 @@ INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
         SendMessageW(dialog, WM_COMMAND, IDC_LIBRARY_OPEN, 0);
         return TRUE;
       }
-      const LRESULT row = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
-                                       LB_GETCURSEL, 0, 0);
+      if (command == IDC_LIBRARY_SEARCH && notification == EN_CHANGE) {
+        PopulateLibraryList(dialog, bookmarks);
+        return TRUE;
+      }
+      const ptrdiff_t selected = SelectedLibraryIndex(dialog);
       if (command == IDC_LIBRARY_OPEN) {
-        if (row == LB_ERR) return TRUE;
-        const LRESULT index = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
-            LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
-        if (index != LB_ERR) EndDialog(dialog, index + 1);
+        if (selected < 0) return TRUE;
+        EndDialog(dialog, selected + 1);
         return TRUE;
       }
       if (command == IDC_LIBRARY_REMOVE) {
-        if (row == LB_ERR) return TRUE;
-        const LRESULT index = SendMessageW(GetDlgItem(dialog, IDC_LIBRARY_LIST),
-            LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
-        const bool removed = index != LB_ERR &&
-            (bookmarks ? mtk::library::Store::Get().RemoveBookmarkAt(index)
-                       : mtk::library::Store::Get().RemoveHistoryAt(index));
+        if (selected < 0) return TRUE;
+        const size_t index = static_cast<size_t>(selected);
+        const bool removed =
+            bookmarks ? mtk::library::Store::Get().RemoveBookmarkAt(index)
+                      : mtk::library::Store::Get().RemoveHistoryAt(index);
         if (removed && !mtk::library::Store::Get().Flush()) {
           MessageBoxW(dialog, L"MTK Browser could not save the library change.",
                       L"MTK Browser", MB_OK | MB_ICONERROR);
@@ -911,42 +1066,78 @@ constexpr int kBaseTabGap = 6;
 constexpr int kBaseTabStripInset = 10;
 constexpr int kBaseNewTabWidth = 38;
 
+// Pinned tabs keep a fixed narrow slot, wide enough for the state dot only.
+constexpr int kBasePinnedTabWidth = 54;
+
 // Width reserved at the right of the strip for the new-tab button.
 int TabStripReserve() { return Scaled(96); }
 
-// Per-tab slot width. Tabs stop shrinking at a readable minimum, after which
-// the strip scrolls instead.
-int TabSlotWidth(int width, size_t count) {
+int PinnedSlotWidth() { return Scaled(kBasePinnedTabWidth); }
+
+// Slot width for the tabs that are not pinned. They stop shrinking at a
+// readable minimum, after which the strip scrolls instead.
+int TabSlotWidth(int width, size_t count, size_t pinned) {
+  const size_t unpinned = count > pinned ? count - pinned : 0;
   const int available =
-      std::max(Scaled(200), width - TabStripReserve() - Scaled(kBaseTabStripInset));
-  return std::clamp(available / static_cast<int>(std::max<size_t>(count, 1)),
+      std::max(Scaled(200),
+               width - TabStripReserve() - Scaled(kBaseTabStripInset) -
+                   static_cast<int>(pinned) * PinnedSlotWidth());
+  return std::clamp(available / static_cast<int>(std::max<size_t>(unpinned, 1)),
                     Scaled(150), Scaled(256));
 }
 
-RECT TabRect(size_t index, int width, size_t count, int scroll = 0) {
-  const int inset = Scaled(kBaseTabStripInset);
-  const int slot = TabSlotWidth(width, count);
-  const int left = inset + static_cast<int>(index) * slot - scroll;
-  return {left, Scaled(6), left + slot - Scaled(kBaseTabGap), TabBarHeight()};
+// Left edge of slot `index`. `index == count` is the position just past the
+// last tab, which is where the new-tab button sits.
+int TabSlotLeft(size_t index, int width, size_t count, size_t pinned,
+                int scroll) {
+  const int slot = TabSlotWidth(width, count, pinned);
+  const size_t leading = std::min(index, pinned);
+  const size_t trailing = index > pinned ? index - pinned : 0;
+  return Scaled(kBaseTabStripInset) +
+         static_cast<int>(leading) * PinnedSlotWidth() +
+         static_cast<int>(trailing) * slot - scroll;
 }
 
-RECT NewTabRect(int width, size_t count, int scroll = 0) {
-  const RECT last = TabRect(count, width, count, scroll);
-  return {last.left + Scaled(2), Scaled(8),
-          last.left + Scaled(kBaseNewTabWidth), TabBarHeight() - Scaled(4)};
+RECT TabRect(size_t index, int width, size_t count, size_t pinned,
+             int scroll = 0) {
+  const int left = TabSlotLeft(index, width, count, pinned, scroll);
+  const int right =
+      TabSlotLeft(index + 1, width, count, pinned, scroll) - Scaled(kBaseTabGap);
+  return {left, Scaled(6), right, TabBarHeight()};
 }
 
-RECT TabCloseRect(const RECT& tab) {
+RECT NewTabRect(int width, size_t count, size_t pinned, int scroll = 0) {
+  const int left = TabSlotLeft(count, width, count, pinned, scroll);
+  return {left + Scaled(2), Scaled(8), left + Scaled(kBaseNewTabWidth),
+          TabBarHeight() - Scaled(4)};
+}
+
+// Pinned tabs deliberately have no close button, so an accidental click cannot
+// discard a tab the user chose to keep. They close from the tab menu instead.
+RECT TabCloseRect(const RECT& tab, bool pinned) {
+  if (pinned) return RECT{0, 0, 0, 0};
   const int center_y = (tab.top + tab.bottom) / 2;
   const int half = Scaled(12);
   return {tab.right - Scaled(34), center_y - half, tab.right - Scaled(10),
           center_y + half};
 }
 
+// The audio indicator is only shown while a tab is muted, and clicking it
+// unmutes. CEF gives no reliable "is playing audio" signal in this runtime, so
+// an always-visible speaker would be guesswork.
+RECT TabMuteRect(const RECT& tab, bool pinned) {
+  const int center_y = (tab.top + tab.bottom) / 2;
+  const int half = Scaled(11);
+  const int right = pinned ? tab.right - Scaled(6) : tab.right - Scaled(38);
+  return {right - Scaled(22), center_y - half, right, center_y + half};
+}
+
 }  // namespace
 
 BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {
   RefreshHomeUrl();
+  g_bookmarks_bar =
+      mtk::preferences::Store::Get().values().show_bookmarks_bar;
 }
 
 void BrowserWindow::StartUpdateCheck(bool user_initiated) {
@@ -1109,6 +1300,12 @@ void BrowserWindow::ShowBrowserMenu() {
               IDM_ADD_BOOKMARK,
               bookmarked ? L"Remove bookmark" : L"Add bookmark");
   AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS, L"Bookmarks");
+  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS_BAR,
+              mtk::preferences::Store::Get().values().show_bookmarks_bar
+                  ? L"Hide bookmarks bar\tCtrl+Shift+B"
+                  : L"Show bookmarks bar\tCtrl+Shift+B");
+  AppendMenuW(popup, MF_STRING, IDM_IMPORT_BOOKMARKS,
+              L"Import bookmarks from another browser...");
   AppendMenuW(popup, MF_STRING, IDM_HISTORY, L"History");
   const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
   const std::wstring downloads_label =
@@ -1122,6 +1319,8 @@ void BrowserWindow::ShowBrowserMenu() {
               IDM_REOPEN_TAB, L"Reopen closed tab\tCtrl+Shift+T");
   AppendMenuW(popup, MF_STRING, IDM_FULL_SCREEN,
               full_screen_ ? L"Exit full screen\tF11" : L"Full screen\tF11");
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_PRINT,
+              L"Print...\tCtrl+P");
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(popup, MF_STRING, IDM_CLEAR_DATA, L"Clear browsing data...");
   AppendMenuW(popup,
@@ -1379,12 +1578,17 @@ LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
 
 int BrowserWindow::PageTop() const { return full_screen_ ? 0 : ChromeHeight(); }
 
+size_t BrowserWindow::PinnedCount() const {
+  size_t count = 0;
+  while (count < tabs_.size() && tabs_[count].pinned) ++count;
+  return count;
+}
+
 int BrowserWindow::MaxTabScroll(int width) const {
   if (tabs_.empty()) return 0;
-  const int slot = TabSlotWidth(width, tabs_.size());
-  const int content = Scaled(kBaseTabStripInset) +
-                      static_cast<int>(tabs_.size()) * slot +
-                      Scaled(kBaseNewTabWidth);
+  const int content =
+      TabSlotLeft(tabs_.size(), width, tabs_.size(), PinnedCount(), 0) +
+      Scaled(kBaseNewTabWidth);
   return std::max(0, content - (width - TabStripReserve()));
 }
 
@@ -1409,14 +1613,14 @@ void BrowserWindow::EnsureActiveTabVisible() {
     if (tab_scroll_ != 0) ScrollTabs(-tab_scroll_);
     return;
   }
-  const int slot = TabSlotWidth(width, tabs_.size());
-  const int left = Scaled(kBaseTabStripInset) +
-                   static_cast<int>(active_tab_) * slot;
+  const size_t pinned = PinnedCount();
+  const int left = TabSlotLeft(active_tab_, width, tabs_.size(), pinned, 0);
+  const int right = TabSlotLeft(active_tab_ + 1, width, tabs_.size(), pinned, 0);
   const int visible_right = width - TabStripReserve();
   if (left - tab_scroll_ < Scaled(kBaseTabStripInset)) {
     ScrollTabs(left - tab_scroll_ - Scaled(kBaseTabStripInset));
-  } else if (left + slot - tab_scroll_ > visible_right) {
-    ScrollTabs(left + slot - tab_scroll_ - visible_right);
+  } else if (right - tab_scroll_ > visible_right) {
+    ScrollTabs(right - tab_scroll_ - visible_right);
   }
 }
 
@@ -1545,6 +1749,33 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
     SelectTab((active_tab_ + offset) % tabs_.size());
     return true;
   }
+  // Ctrl+1..8 jump to that tab and Ctrl+9 to the last one, matching Chrome.
+  if (control && !alt && !shift && virtual_key >= '1' && virtual_key <= '9' &&
+      !tabs_.empty()) {
+    if (virtual_key == '9') {
+      SelectTab(tabs_.size() - 1);
+    } else {
+      const size_t index = static_cast<size_t>(virtual_key - '1');
+      if (index < tabs_.size()) SelectTab(index);
+    }
+    return true;
+  }
+  if (control && !alt && !shift && virtual_key == 'M' && !tabs_.empty()) {
+    ToggleMute(active_tab_);
+    return true;
+  }
+  if (control && !alt && !shift && virtual_key == 'P') {
+    PrintActiveTab();
+    return true;
+  }
+  if (control && !alt && shift && virtual_key == 'B') {
+    ToggleBookmarksBar();
+    return true;
+  }
+  if (control && !alt && !shift && virtual_key == 'D') {
+    ToggleBookmark();
+    return true;
+  }
   if (alt && !control && virtual_key == VK_LEFT) {
     if (tab && tab->client->browser() && tab->can_go_back) {
       tab->client->browser()->GoBack();
@@ -1611,20 +1842,26 @@ void BrowserWindow::CreateControls() {
   CreateFonts();
   edit_brush_ = CreateSolidBrush(kControlColor);
   const DWORD button_style = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
-  back_ = CreateWindowW(L"BUTTON", L"←", button_style, 0, 0, 0, 0, window_,
+  // Button text is the accessible name, not the drawn glyph: an owner-draw
+  // button is announced by its window text, and "←" or "⋮" tells a screen
+  // reader user nothing. ButtonGlyph() supplies what is painted instead.
+  back_ = CreateWindowW(L"BUTTON", L"Back", button_style, 0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kBackId), instance_, nullptr);
-  forward_ = CreateWindowW(L"BUTTON", L"→", button_style, 0, 0, 0, 0, window_,
+  forward_ = CreateWindowW(L"BUTTON", L"Forward", button_style, 0, 0, 0, 0, window_,
                            reinterpret_cast<HMENU>(kForwardId), instance_, nullptr);
-  reload_ = CreateWindowW(L"BUTTON", L"↻", button_style, 0, 0, 0, 0, window_,
+  reload_ = CreateWindowW(L"BUTTON", L"Reload", button_style, 0, 0, 0, 0, window_,
                           reinterpret_cast<HMENU>(kReloadId), instance_, nullptr);
-  home_ = CreateWindowW(L"BUTTON", L"⌂", button_style, 0, 0, 0, 0, window_,
+  home_ = CreateWindowW(L"BUTTON", L"Home page", button_style, 0, 0, 0, 0, window_,
                         reinterpret_cast<HMENU>(kHomeId), instance_, nullptr);
-  shield_ = CreateWindowW(L"BUTTON", L"◆", button_style, 0, 0, 0, 0, window_,
-                          reinterpret_cast<HMENU>(kShieldId), instance_, nullptr);
-  downloads_ = CreateWindowW(L"BUTTON", L"↓", button_style, 0, 0, 0, 0, window_,
-                             reinterpret_cast<HMENU>(kDownloadsId), instance_, nullptr);
-  menu_ = CreateWindowW(L"BUTTON", L"⋮", button_style, 0, 0, 0, 0, window_,
-                        reinterpret_cast<HMENU>(kMenuId), instance_, nullptr);
+  shield_ = CreateWindowW(L"BUTTON", L"MTK Shields", button_style, 0, 0, 0, 0,
+                          window_, reinterpret_cast<HMENU>(kShieldId), instance_,
+                          nullptr);
+  downloads_ = CreateWindowW(L"BUTTON", L"Downloads", button_style, 0, 0, 0, 0,
+                             window_, reinterpret_cast<HMENU>(kDownloadsId),
+                             instance_, nullptr);
+  menu_ = CreateWindowW(L"BUTTON", L"Browser menu", button_style, 0, 0, 0, 0,
+                        window_, reinterpret_cast<HMENU>(kMenuId), instance_,
+                        nullptr);
   address_ = CreateWindowW(L"EDIT", L"Search or enter address",
                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                            0, 0, 0, 0, window_,
@@ -1641,15 +1878,18 @@ void BrowserWindow::CreateControls() {
                         reinterpret_cast<HMENU>(kFindId), instance_, nullptr);
   find_status_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_RIGHT,
                                0, 0, 0, 0, window_, nullptr, instance_, nullptr);
-  find_previous_ = CreateWindowW(L"BUTTON", L"‹", button_style & ~WS_VISIBLE,
-                                 0, 0, 0, 0, window_,
-                                 reinterpret_cast<HMENU>(kFindPreviousId), instance_, nullptr);
-  find_next_ = CreateWindowW(L"BUTTON", L"›", button_style & ~WS_VISIBLE,
-                             0, 0, 0, 0, window_,
-                             reinterpret_cast<HMENU>(kFindNextId), instance_, nullptr);
-  find_close_ = CreateWindowW(L"BUTTON", L"×", button_style & ~WS_VISIBLE,
-                              0, 0, 0, 0, window_,
-                              reinterpret_cast<HMENU>(kFindCloseId), instance_, nullptr);
+  find_previous_ = CreateWindowW(L"BUTTON", L"Find previous",
+                                 button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
+                                 reinterpret_cast<HMENU>(kFindPreviousId),
+                                 instance_, nullptr);
+  find_next_ = CreateWindowW(L"BUTTON", L"Find next",
+                             button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
+                             reinterpret_cast<HMENU>(kFindNextId), instance_,
+                             nullptr);
+  find_close_ = CreateWindowW(L"BUTTON", L"Close find bar",
+                              button_style & ~WS_VISIBLE, 0, 0, 0, 0, window_,
+                              reinterpret_cast<HMENU>(kFindCloseId), instance_,
+                              nullptr);
   for (HWND control : {back_, forward_, reload_, home_, shield_, downloads_,
                        menu_, address_, suggestions_,
                        find_, find_status_, find_previous_, find_next_, find_close_}) {
@@ -1762,6 +2002,14 @@ void BrowserWindow::RunFind(bool forward, bool find_next) {
   tab->client->browser()->GetHost()->Find(query, forward, false, repeat);
 }
 
+void BrowserWindow::PrintActiveTab() {
+  // Chromium's own print preview is used, which is also where "Save as PDF"
+  // lives, so there is no separate export path to keep in sync.
+  if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
+    tab->client->browser()->GetHost()->Print();
+  }
+}
+
 void BrowserWindow::ZoomActiveTab(cef_zoom_command_t command) {
   if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
     auto host = tab->client->browser()->GetHost();
@@ -1826,6 +2074,186 @@ void BrowserWindow::CloseTab(size_t index) {
   UpdateControls();
   InvalidateRect(window_, nullptr, FALSE);
   ScheduleSessionSave();
+}
+
+void BrowserWindow::MoveTab(size_t from, size_t to) {
+  if (from >= tabs_.size() || to >= tabs_.size() || from == to) return;
+  // Pinned tabs are the leading run of the strip, so a tab may only move
+  // inside its own group. Dragging across the boundary clamps to it.
+  const size_t pinned = PinnedCount();
+  if (tabs_[from].pinned) {
+    if (pinned == 0) return;
+    to = std::min(to, pinned - 1);
+  } else {
+    to = std::max(to, pinned);
+  }
+  if (from == to) return;
+
+  Tab moved = std::move(tabs_[from]);
+  tabs_.erase(tabs_.begin() + static_cast<ptrdiff_t>(from));
+  tabs_.insert(tabs_.begin() + static_cast<ptrdiff_t>(to), std::move(moved));
+
+  // The active tab is tracked by index, so it follows the same shift.
+  if (active_tab_ == from) {
+    active_tab_ = to;
+  } else if (from < active_tab_ && to >= active_tab_) {
+    --active_tab_;
+  } else if (from > active_tab_ && to <= active_tab_) {
+    ++active_tab_;
+  }
+  InvalidateRect(window_, nullptr, FALSE);
+  ScheduleSessionSave();
+}
+
+void BrowserWindow::TogglePin(size_t index) {
+  if (index >= tabs_.size()) return;
+  const size_t pinned = PinnedCount();
+  const bool was_pinned = tabs_[index].pinned;
+  tabs_[index].pinned = !was_pinned;
+  // Pinning moves the tab to the end of the pinned run; unpinning moves it to
+  // the start of the rest, which is what every mainstream browser does.
+  const size_t destination = was_pinned ? pinned - 1 : pinned;
+  if (index != destination) {
+    Tab moved = std::move(tabs_[index]);
+    tabs_.erase(tabs_.begin() + static_cast<ptrdiff_t>(index));
+    tabs_.insert(tabs_.begin() + static_cast<ptrdiff_t>(destination),
+                 std::move(moved));
+    if (active_tab_ == index) {
+      active_tab_ = destination;
+    } else if (index < active_tab_ && destination >= active_tab_) {
+      --active_tab_;
+    } else if (index > active_tab_ && destination <= active_tab_) {
+      ++active_tab_;
+    }
+  }
+  Layout();
+  EnsureActiveTabVisible();
+  InvalidateRect(window_, nullptr, FALSE);
+  ScheduleSessionSave();
+}
+
+void BrowserWindow::ToggleMute(size_t index) {
+  if (index >= tabs_.size()) return;
+  auto browser = tabs_[index].client ? tabs_[index].client->browser() : nullptr;
+  if (!browser) return;
+  const bool muted = !tabs_[index].muted;
+  browser->GetHost()->SetAudioMuted(muted);
+  tabs_[index].muted = muted;
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+void BrowserWindow::DuplicateTab(size_t index) {
+  if (index >= tabs_.size()) return;
+  // The duplicate goes through the same policy check as any other navigation,
+  // so a tab showing a blocked page cannot be cloned into an allowed one.
+  const std::string url = WideToUtf8(tabs_[index].url);
+  const auto decision = mtk::policy::EvaluateNavigation(url);
+  if (!decision.allow || (!decision.url.starts_with("https://") &&
+                          !decision.url.starts_with("http://"))) {
+    CreateTab(kHomeUrl);
+    return;
+  }
+  CreateTab(decision.url);
+}
+
+void BrowserWindow::CloseOtherTabs(size_t index) {
+  if (index >= tabs_.size()) return;
+  // Walk from the end so each removal cannot shift an index still to come.
+  for (size_t position = tabs_.size(); position-- > 0;) {
+    if (position == index || tabs_[position].pinned) continue;
+    CloseTab(position);
+    if (index > position) --index;
+  }
+}
+
+void BrowserWindow::CloseTabsToTheRight(size_t index) {
+  if (index >= tabs_.size()) return;
+  for (size_t position = tabs_.size(); position-- > index + 1;) {
+    if (tabs_[position].pinned) continue;
+    CloseTab(position);
+  }
+}
+
+void BrowserWindow::BeginTabDrag(size_t index, POINT point) {
+  if (index >= tabs_.size()) return;
+  drag_candidate_ = index;
+  drag_origin_ = point;
+  dragging_ = false;
+  SetCapture(window_);
+}
+
+void BrowserWindow::UpdateTabDrag(POINT point) {
+  if (drag_candidate_ >= tabs_.size()) return;
+  if (!dragging_) {
+    if (std::abs(point.x - drag_origin_.x) < GetSystemMetrics(SM_CXDRAG) &&
+        std::abs(point.y - drag_origin_.y) < GetSystemMetrics(SM_CYDRAG)) {
+      return;
+    }
+    dragging_ = true;
+  }
+  RECT client{};
+  GetClientRect(window_, &client);
+  const size_t pinned = PinnedCount();
+  for (size_t index = 0; index < tabs_.size(); ++index) {
+    const RECT rect =
+        TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+    // Only swap once the pointer is past a slot's midpoint, so a tab does not
+    // oscillate between two positions.
+    const int middle = (rect.left + rect.right) / 2;
+    if (index < drag_candidate_ && point.x < middle) {
+      MoveTab(drag_candidate_, index);
+      drag_candidate_ = index;
+      return;
+    }
+    if (index > drag_candidate_ && point.x > middle) {
+      MoveTab(drag_candidate_, index);
+      drag_candidate_ = index;
+      return;
+    }
+  }
+}
+
+void BrowserWindow::EndTabDrag() {
+  const bool was_dragging = dragging_;
+  const size_t candidate = drag_candidate_;
+  drag_candidate_ = static_cast<size_t>(-1);
+  dragging_ = false;
+  if (GetCapture() == window_) ReleaseCapture();
+  // A press that never left the dead zone is an ordinary click, so it selects.
+  if (!was_dragging && candidate < tabs_.size()) SelectTab(candidate);
+}
+
+void BrowserWindow::ShowTabMenu(size_t index, POINT screen) {
+  if (index >= tabs_.size()) return;
+  HMENU popup = CreatePopupMenu();
+  if (!popup) return;
+  const bool pinned = tabs_[index].pinned;
+  const bool muted = tabs_[index].muted;
+  AppendMenuW(popup, MF_STRING, kTabMenuDuplicate, L"Duplicate tab");
+  AppendMenuW(popup, MF_STRING, kTabMenuPin,
+              pinned ? L"Unpin tab" : L"Pin tab");
+  AppendMenuW(popup, MF_STRING, kTabMenuMute,
+              muted ? L"Unmute site" : L"Mute site");
+  AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(popup, MF_STRING, kTabMenuClose, L"Close tab");
+  AppendMenuW(popup, MF_STRING | (tabs_.size() > 1 ? 0 : MF_GRAYED),
+              kTabMenuCloseOthers, L"Close other tabs");
+  AppendMenuW(popup,
+              MF_STRING | (index + 1 < tabs_.size() ? 0 : MF_GRAYED),
+              kTabMenuCloseRight, L"Close tabs to the right");
+  const int choice = static_cast<int>(TrackPopupMenuEx(
+      popup, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
+      screen.x, screen.y, window_, nullptr));
+  DestroyMenu(popup);
+  switch (choice) {
+    case kTabMenuDuplicate: DuplicateTab(index); break;
+    case kTabMenuPin: TogglePin(index); break;
+    case kTabMenuMute: ToggleMute(index); break;
+    case kTabMenuClose: CloseTab(index); break;
+    case kTabMenuCloseOthers: CloseOtherTabs(index); break;
+    case kTabMenuCloseRight: CloseTabsToTheRight(index); break;
+    default: break;
+  }
 }
 
 void BrowserWindow::LayoutSuggestions() {
@@ -2062,10 +2490,13 @@ void BrowserWindow::UpdateControls() {
 
 void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
   SetBkMode(dc, TRANSPARENT);
+  const size_t pinned_count = PinnedCount();
   for (size_t index = 0; index < tabs_.size(); ++index) {
-    const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
+    const RECT rect =
+        TabRect(index, client.right, tabs_.size(), pinned_count, tab_scroll_);
     const bool active = index == active_tab_;
     const bool hovered = index == hovered_tab_;
+    const bool pinned = tabs_[index].pinned;
 
     const int radius = Scaled(14);
     if (active) {
@@ -2085,32 +2516,48 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
       FillRounded(dc, rect, radius, kHoverTabColor);
     }
 
-    const int dot_x = rect.left + Scaled(18);
+    // A pinned tab has no room for a title, so its dot is centred and acts as
+    // the whole tab, the way a favicon-only pinned tab reads elsewhere.
+    const int dot_x = pinned ? (rect.left + rect.right) / 2 - Scaled(6)
+                             : rect.left + Scaled(18);
     const int dot_y = (rect.top + rect.bottom) / 2;
-    FillCircle(dc, dot_x, dot_y, Scaled(4),
+    FillCircle(dc, dot_x, dot_y, pinned ? Scaled(5) : Scaled(4),
                tabs_[index].loading ? kAccentSoftColor
                                     : (active ? kAccentColor : kDisabledColor));
 
-    SelectObject(dc, tab_font_);
-    SetTextColor(dc, active ? kTextColor : kMutedColor);
-    RECT text = rect;
-    text.left = dot_x + Scaled(12);
-    text.right = rect.right - Scaled(38);
-    DrawTextW(dc, tabs_[index].title.c_str(), -1, &text,
-              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-    const RECT close = TabCloseRect(rect);
-    if (hovered && hovered_tab_close_) {
-      FillRounded(dc, close, (close.bottom - close.top) / 2,
-                  kControlHoverColor);
+    if (!pinned) {
+      SelectObject(dc, tab_font_);
+      SetTextColor(dc, active ? kTextColor : kMutedColor);
+      RECT text = rect;
+      text.left = dot_x + Scaled(12);
+      text.right = rect.right - (tabs_[index].muted ? Scaled(62) : Scaled(38));
+      DrawTextW(dc, tabs_[index].title.c_str(), -1, &text,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
-    SelectObject(dc, glyph_font_);
-    SetTextColor(dc, hovered || active ? kTextColor : kDisabledColor);
-    DrawTextW(dc, L"\u00D7", -1, const_cast<RECT*>(&close),
-              DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    if (tabs_[index].muted) {
+      RECT mute = TabMuteRect(rect, pinned);
+      SelectObject(dc, glyph_font_);
+      SetTextColor(dc, active ? kTextColor : kMutedColor);
+      DrawTextW(dc, L"\U0001F507", -1, &mute,
+                DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    }
+
+    if (!pinned) {
+      const RECT close = TabCloseRect(rect, pinned);
+      if (hovered && hovered_tab_close_) {
+        FillRounded(dc, close, (close.bottom - close.top) / 2,
+                    kControlHoverColor);
+      }
+      SelectObject(dc, glyph_font_);
+      SetTextColor(dc, hovered || active ? kTextColor : kDisabledColor);
+      DrawTextW(dc, L"\u00D7", -1, const_cast<RECT*>(&close),
+                DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    }
   }
 
-  RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
+  RECT plus =
+      NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_);
   if (hovered_new_tab_) FillRounded(dc, plus, Scaled(10), kControlHoverColor);
   SelectObject(dc, glyph_font_);
   SetTextColor(dc, hovered_new_tab_ ? kTextColor : kMutedColor);
@@ -2168,13 +2615,61 @@ void BrowserWindow::Paint(HDC dc) {
   RECT client{};
   GetClientRect(window_, &client);
   RECT tab_bar{0, 0, client.right, TabBarHeight()};
-  RECT toolbar{0, TabBarHeight(), client.right, ChromeHeight()};
+  RECT toolbar{0, TabBarHeight(), client.right,
+               TabBarHeight() + ToolbarHeight()};
   FillGradient(dc, tab_bar, kTabBarTop, kTabBarBottom);
   FillGradient(dc, toolbar, kToolbarTop, kToolbarBottom);
 
   PaintTabStrip(dc, client);
+  PaintBookmarksBar(dc, client);
   PaintOmniboxFrame(dc);
   PaintProgress(dc, client);
+}
+
+void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
+  const int height = BookmarksBarHeight();
+  if (height == 0) return;
+  const int top = TabBarHeight() + ToolbarHeight();
+  RECT bar{0, top, client.right, top + height};
+  FillGradient(dc, bar, kToolbarBottom, kToolbarBottom);
+
+  bookmark_bar_hits_.clear();
+  const auto& bookmarks = mtk::library::Store::Get().bookmarks();
+  SetBkMode(dc, TRANSPARENT);
+  SelectObject(dc, tab_font_);
+
+  if (bookmarks.empty()) {
+    RECT label{Scaled(14), top, client.right, top + height};
+    SetTextColor(dc, kDisabledColor);
+    DrawTextW(dc, L"No bookmarks yet. Ctrl+D saves the page you are on.", -1,
+              &label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    return;
+  }
+
+  int x = Scaled(10);
+  for (size_t index = 0; index < bookmarks.size(); ++index) {
+    const std::wstring& title = bookmarks[index].title;
+    // Each button is only as wide as its label needs, capped so one long title
+    // cannot take the whole bar.
+    RECT measure{0, 0, Scaled(160), height};
+    DrawTextW(dc, title.c_str(), -1, &measure,
+              DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+    const int width =
+        std::clamp<int>(measure.right + Scaled(20), Scaled(48), Scaled(180));
+    if (x + width > client.right - Scaled(10)) break;
+
+    RECT button{x, top + Scaled(4), x + width, top + height - Scaled(4)};
+    const bool hovered = index == hovered_bookmark_;
+    if (hovered) FillRounded(dc, button, Scaled(8), kControlHoverColor);
+    RECT text = button;
+    text.left += Scaled(10);
+    text.right -= Scaled(10);
+    SetTextColor(dc, hovered ? kTextColor : kMutedColor);
+    DrawTextW(dc, title.c_str(), -1, &text,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    bookmark_bar_hits_.push_back(BookmarkHit{button, index});
+    x += width + Scaled(6);
+  }
 }
 
 void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
@@ -2208,8 +2703,7 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
   }
 
   if (!painted_icon) {
-    wchar_t text[16]{};
-    GetWindowTextW(item.hwndItem, text, 16);
+    const wchar_t* text = ButtonGlyph(item.CtlID);
     SelectObject(item.hDC, glyph_font_);
     SetTextColor(item.hDC, disabled ? kDisabledColor
                                     : (item.CtlID == kShieldId ? kShieldColor
@@ -2257,19 +2751,38 @@ void BrowserWindow::TrackHover(POINT point) {
   hovered_new_tab_ = false;
 
   if (point.y < TabBarHeight()) {
+    const size_t pinned = PinnedCount();
     for (size_t index = 0; index < tabs_.size(); ++index) {
-      const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
+      const RECT rect =
+          TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
       if (PtInRect(&rect, point)) {
         hovered_tab_ = index;
-        const RECT close = TabCloseRect(rect);
+        const RECT close = TabCloseRect(rect, tabs_[index].pinned);
         hovered_tab_close_ = PtInRect(&close, point) != FALSE;
         break;
       }
     }
     if (hovered_tab_ == static_cast<size_t>(-1)) {
-      RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
+      RECT plus =
+          NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_);
       hovered_new_tab_ = PtInRect(&plus, point) != FALSE;
     }
+  }
+
+  const size_t previous_bookmark = hovered_bookmark_;
+  hovered_bookmark_ = static_cast<size_t>(-1);
+  if (BookmarksBarHeight() > 0) {
+    for (const BookmarkHit& hit : bookmark_bar_hits_) {
+      if (PtInRect(&hit.bounds, point)) {
+        hovered_bookmark_ = hit.index;
+        break;
+      }
+    }
+  }
+  if (previous_bookmark != hovered_bookmark_) {
+    const int top = TabBarHeight() + ToolbarHeight();
+    RECT bar{0, top, client.right, top + BookmarksBarHeight()};
+    InvalidateRect(window_, &bar, FALSE);
   }
 
   if (previous_tab != hovered_tab_ || previous_close != hovered_tab_close_ ||
@@ -2277,6 +2790,91 @@ void BrowserWindow::TrackHover(POINT point) {
     RECT strip{0, 0, client.right, TabBarHeight()};
     InvalidateRect(window_, &strip, FALSE);
   }
+}
+
+void BrowserWindow::ToggleBookmarksBar() {
+  mtk::preferences::Values values = mtk::preferences::Store::Get().values();
+  values.show_bookmarks_bar = !values.show_bookmarks_bar;
+  if (!mtk::preferences::Store::Get().Save(values)) {
+    MessageBoxW(window_, L"MTK Browser could not save that preference.",
+                L"MTK Browser", MB_OK | MB_ICONERROR);
+    return;
+  }
+  g_bookmarks_bar = values.show_bookmarks_bar;
+  bookmark_bar_hits_.clear();
+  hovered_bookmark_ = static_cast<size_t>(-1);
+  // The page area starts below the chrome, so every tab has to be resized.
+  Layout();
+  for (Tab& tab : tabs_) ResizeBrowser(tab);
+  InvalidateRect(window_, nullptr, TRUE);
+}
+
+void BrowserWindow::ImportBookmarksFromBrowser() {
+  const auto sources = mtk::bookmark_import::AvailableSources();
+  if (sources.empty()) {
+    MessageBoxW(window_,
+                L"No Chrome, Edge or Brave bookmarks file was found for this "
+                L"Windows user account.",
+                L"Import bookmarks", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+
+  // With more than one browser installed the user picks; with one, importing
+  // still asks first, because it writes to their bookmarks.
+  size_t chosen = 0;
+  if (sources.size() > 1) {
+    HMENU popup = CreatePopupMenu();
+    if (!popup) return;
+    for (size_t index = 0; index < sources.size(); ++index) {
+      AppendMenuW(popup, MF_STRING, static_cast<UINT_PTR>(index + 1),
+                  sources[index].browser.c_str());
+    }
+    POINT point{};
+    GetCursorPos(&point);
+    const int choice = static_cast<int>(TrackPopupMenuEx(
+        popup, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, window_,
+        nullptr));
+    DestroyMenu(popup);
+    if (choice <= 0) return;
+    chosen = static_cast<size_t>(choice - 1);
+  } else {
+    const std::wstring question =
+        L"Import bookmarks from " + sources[0].browser + L"?";
+    if (MessageBoxW(window_, question.c_str(), L"Import bookmarks",
+                    MB_OKCANCEL | MB_ICONQUESTION) != IDOK) {
+      return;
+    }
+  }
+
+  size_t refused = 0;
+  const auto entries = mtk::bookmark_import::Read(sources[chosen].path, &refused);
+  if (entries.empty() && refused == 0) {
+    MessageBoxW(window_,
+                L"That bookmarks file could not be read, or it contained no "
+                L"bookmarks.",
+                L"Import bookmarks", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  auto& store = mtk::library::Store::Get();
+  const size_t added = store.ImportBookmarks(entries);
+  if (added > 0 && !store.Flush()) {
+    MessageBoxW(window_, L"MTK Browser could not save the imported bookmarks.",
+                L"Import bookmarks", MB_OK | MB_ICONERROR);
+    return;
+  }
+  std::wstring report = L"Imported " + std::to_wstring(added) +
+                        L" bookmarks from " + sources[chosen].browser + L".";
+  if (const size_t duplicates = entries.size() - added; duplicates > 0) {
+    report += L"\n" + std::to_wstring(duplicates) +
+              L" were already saved here and were skipped.";
+  }
+  if (refused > 0) {
+    report += L"\n" + std::to_wstring(refused) +
+              L" were not imported because MTK Browser will not open them.";
+  }
+  MessageBoxW(window_, report.c_str(), L"Import bookmarks",
+              MB_OK | MB_ICONINFORMATION);
+  InvalidateRect(window_, nullptr, FALSE);
 }
 
 void BrowserWindow::ClearHover() {
@@ -2335,6 +2933,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     }
     case WM_MOUSEMOVE: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      if (drag_candidate_ != kNoTab && (w_param & MK_LBUTTON)) {
+        UpdateTabDrag(point);
+        return 0;
+      }
       TrackHover(point);
       return 0;
     }
@@ -2407,21 +3009,83 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       break;
     case WM_LBUTTONDOWN: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
-      if (point.y < TabBarHeight()) {
-        RECT client{};
-        GetClientRect(window_, &client);
-        for (size_t index = 0; index < tabs_.size(); ++index) {
-          const RECT rect = TabRect(index, client.right, tabs_.size(), tab_scroll_);
-          if (PtInRect(&rect, point)) {
-            const RECT close = TabCloseRect(rect);
-            if (PtInRect(&close, point)) CloseTab(index);
-            else SelectTab(index);
+      if (BookmarksBarHeight() > 0) {
+        for (const BookmarkHit& hit : bookmark_bar_hits_) {
+          if (PtInRect(&hit.bounds, point)) {
+            OpenLibraryEntry(true, hit.index);
             return 0;
           }
         }
-        RECT plus = NewTabRect(client.right, tabs_.size(), tab_scroll_);
+      }
+      if (point.y < TabBarHeight()) {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const size_t pinned = PinnedCount();
+        for (size_t index = 0; index < tabs_.size(); ++index) {
+          const RECT rect =
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+          if (PtInRect(&rect, point)) {
+            const RECT close = TabCloseRect(rect, tabs_[index].pinned);
+            const RECT mute = TabMuteRect(rect, tabs_[index].pinned);
+            if (PtInRect(&close, point)) CloseTab(index);
+            else if (tabs_[index].muted && PtInRect(&mute, point)) ToggleMute(index);
+            // Selection is deferred to button-up so the press can start a drag.
+            else BeginTabDrag(index, point);
+            return 0;
+          }
+        }
+        RECT plus = NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_);
         InflateRect(&plus, Scaled(3), Scaled(8));
         if (PtInRect(&plus, point)) CreateTab(kHomeUrl);
+      }
+      return 0;
+    }
+    case WM_LBUTTONUP:
+      if (drag_candidate_ != kNoTab) {
+        EndTabDrag();
+        return 0;
+      }
+      break;
+    case WM_CAPTURECHANGED:
+      // Losing capture for any other reason must not leave a drag armed.
+      if (drag_candidate_ != kNoTab) {
+        drag_candidate_ = kNoTab;
+        dragging_ = false;
+      }
+      return 0;
+    case WM_MBUTTONUP: {
+      const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      if (!full_screen_ && point.y >= 0 && point.y < TabBarHeight()) {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const size_t pinned = PinnedCount();
+        for (size_t index = 0; index < tabs_.size(); ++index) {
+          const RECT rect =
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+          if (PtInRect(&rect, point)) {
+            CloseTab(index);
+            break;
+          }
+        }
+      }
+      return 0;
+    }
+    case WM_RBUTTONUP: {
+      const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      if (!full_screen_ && point.y >= 0 && point.y < TabBarHeight()) {
+        RECT client{};
+        GetClientRect(window_, &client);
+        const size_t pinned = PinnedCount();
+        for (size_t index = 0; index < tabs_.size(); ++index) {
+          const RECT rect =
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+          if (PtInRect(&rect, point)) {
+            POINT screen = point;
+            ClientToScreen(window_, &screen);
+            ShowTabMenu(index, screen);
+            break;
+          }
+        }
       }
       return 0;
     }
@@ -2487,6 +3151,15 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_FULL_SCREEN:
           ToggleFullScreen();
+          break;
+        case IDM_PRINT:
+          PrintActiveTab();
+          break;
+        case IDM_BOOKMARKS_BAR:
+          ToggleBookmarksBar();
+          break;
+        case IDM_IMPORT_BOOKMARKS:
+          ImportBookmarksFromBrowser();
           break;
         case IDM_REOPEN_TAB:
           ReopenClosedTab();

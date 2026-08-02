@@ -25,6 +25,10 @@ namespace {
 constexpr int kOpenLinkInNewTabId = MENU_ID_USER_FIRST;
 constexpr int kCopyLinkAddressId = MENU_ID_USER_FIRST + 1;
 constexpr int kSaveImageId = MENU_ID_USER_FIRST + 2;
+constexpr int kPrintPageId = MENU_ID_USER_FIRST + 3;
+
+// Chromium exposes at most five spelling suggestions per word.
+constexpr size_t kMaxSpellSuggestions = 5;
 
 std::atomic<unsigned long> g_blocked_count{0};
 std::unordered_map<uint32_t, CefRefPtr<CefDownloadItemCallback>>
@@ -331,6 +335,24 @@ void BrowserClient::OnBeforeContextMenu(
         mtk::policy::EvaluateNavigation(params->GetSourceUrl().ToString()).allow);
   }
 
+  // Spellcheck suggestions for the misspelled word under the cursor. Chromium
+  // reserves MENU_ID_SPELLCHECK_SUGGESTION_0..4 for exactly this, and handles
+  // the replacement itself, so nothing here touches page content.
+  if (params->IsEditable() && !params->GetMisspelledWord().empty()) {
+    std::vector<CefString> suggestions;
+    params->GetDictionarySuggestions(suggestions);
+    if (!suggestions.empty()) {
+      model->AddSeparator();
+      const size_t limit =
+          std::min<size_t>(suggestions.size(), kMaxSpellSuggestions);
+      for (size_t index = 0; index < limit; ++index) {
+        model->AddItem(MENU_ID_SPELLCHECK_SUGGESTION_0 + static_cast<int>(index),
+                       suggestions[index]);
+      }
+      model->AddItem(MENU_ID_ADD_TO_DICTIONARY, L"Add to dictionary");
+    }
+  }
+
   const auto edit_flags = params->GetEditStateFlags();
   const bool can_copy = (edit_flags & CM_EDITFLAG_CAN_COPY) != 0;
   const bool can_paste = (edit_flags & CM_EDITFLAG_CAN_PASTE) != 0;
@@ -340,6 +362,13 @@ void BrowserClient::OnBeforeContextMenu(
     if (can_copy) model->AddItem(MENU_ID_COPY, L"Copy");
     if (can_paste && params->IsEditable()) model->AddItem(MENU_ID_PASTE, L"Paste");
     if (can_select_all) model->AddItem(MENU_ID_SELECT_ALL, L"Select all");
+  }
+
+  // Printing is offered on ordinary pages only. It opens Chromium's own print
+  // dialog, which is also where "Save as PDF" lives.
+  if (browser && link.empty() && !params->IsEditable()) {
+    model->AddSeparator();
+    model->AddItem(kPrintPageId, L"Print…");
   }
 }
 
@@ -380,6 +409,10 @@ bool BrowserClient::OnContextMenuCommand(
     const auto decision =
         mtk::policy::EvaluateNavigation(params->GetSourceUrl().ToString());
     if (decision.allow && browser) browser->GetHost()->StartDownload(decision.url);
+    return true;
+  }
+  if (command_id == kPrintPageId) {
+    if (browser) browser->GetHost()->Print();
     return true;
   }
   return false;

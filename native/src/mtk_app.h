@@ -21,6 +21,11 @@ class MtkApp final : public CefApp,
   CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override;
   void OnContextInitialized() override;
 
+  // Media and accessibility switches are applied here, before Chromium reads
+  // its command line.
+  void OnBeforeCommandLineProcessing(const CefString& process_type,
+                                     CefRefPtr<CefCommandLine> command_line) override;
+
   // Runs MTK Shields as soon as CEF creates the page V8 context. This avoids
   // the renderer-stalling V8-extension registration path.
   void OnContextCreated(CefRefPtr<CefBrowser> browser,
