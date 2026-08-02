@@ -5,9 +5,13 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$running = Get-CimInstance Win32_Process -Filter "Name='MTKBrowser.exe'"
+# Only a browser running out of this repository can lock the build or staging
+# output. An installed copy under %LOCALAPPDATA% holds no file here, so it must
+# not block packaging.
+$running = Get-CimInstance Win32_Process -Filter "Name='MTKBrowser.exe'" |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($repoRoot, [System.StringComparison]::OrdinalIgnoreCase) }
 if ($running) {
-    throw 'Close all MTK Browser windows before building the installer.'
+    throw "Close the MTK Browser started from this repository before building the installer: $(($running | Select-Object -ExpandProperty ExecutablePath -Unique) -join ', ')"
 }
 
 $icon = Join-Path $repoRoot 'native\resources\mtk_browser.ico'
