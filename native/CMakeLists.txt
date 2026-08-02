@@ -9,6 +9,8 @@ set(MTK_BROWSER_SOURCES
   src/profile.h
   src/site_settings.cpp
   src/site_settings.h
+  src/downloads_panel.cpp
+  src/downloads_panel.h
   src/library_store.cpp
   src/library_store.h
   src/bookmark_import.cpp

@@ -128,6 +128,8 @@ class BrowserWindow final : public BrowserClientDelegate {
   void ToggleBookmark();
   void ShowLibraryDialog(bool bookmarks);
   void ShowDownloadsDialog();
+  // Toolbar popup with the most recent downloads and inline actions.
+  void ShowDownloadsPanel();
   void OpenLibraryEntry(bool bookmarks, size_t index);
   void ScheduleLibrarySave();
   void ScheduleSessionSave();

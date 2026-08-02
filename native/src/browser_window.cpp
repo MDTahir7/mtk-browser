@@ -18,6 +18,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "bookmark_import.h"
 #include "download_manager.h"
+#include "downloads_panel.h"
 #include "library_store.h"
 #include "profile.h"
 #include "site_settings.h"
@@ -1611,10 +1612,36 @@ void BrowserWindow::ShowDownloadsDialog() {
                   DownloadsDialogProc, 0);
 }
 
+void BrowserWindow::ShowDownloadsPanel() {
+  mtk::downloads_panel::Callbacks callbacks;
+  // The CEF download callbacks live behind BrowserClient, so they are handed to
+  // the panel rather than reached from it.
+  callbacks.pause = [](uint64_t id) {
+    return id <= UINT32_MAX &&
+           BrowserClient::PauseDownload(static_cast<uint32_t>(id));
+  };
+  callbacks.resume = [](uint64_t id) {
+    return id <= UINT32_MAX &&
+           BrowserClient::ResumeDownload(static_cast<uint32_t>(id));
+  };
+  callbacks.cancel = [](uint64_t id) {
+    return id <= UINT32_MAX &&
+           BrowserClient::CancelDownload(static_cast<uint32_t>(id));
+  };
+  callbacks.controllable = [](uint64_t id) {
+    return id <= UINT32_MAX &&
+           BrowserClient::CanControlDownload(static_cast<uint32_t>(id));
+  };
+  callbacks.show_all = [this]() { ShowDownloadsDialog(); };
+  mtk::downloads_panel::TogglePanel(instance_, window_, downloads_,
+                                    std::move(callbacks));
+}
+
 void BrowserWindow::OnBrowserDownloadsChanged(BrowserClient*) {
   // The download handler runs on this same UI thread, so the open dialog can be
   // refreshed directly.
   if (g_downloads_dialog) PopulateDownloadList(g_downloads_dialog);
+  mtk::downloads_panel::Refresh();
   if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
   if (window_) SetTimer(window_, kDownloadSaveTimer, 1500, nullptr);
 }
@@ -3733,7 +3760,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
                   mtk::downloads::Mode::kStandard);
           break;
         case kDownloadsId:
-          ShowDownloadsDialog();
+          // The toolbar button opens the popup; the full window stays on Alt+J
+          // and in the menu.
+          ShowDownloadsPanel();
           break;
         case kMenuId:
           ShowBrowserMenu();
@@ -3810,6 +3839,8 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       // The Shields panel hosts its own browser, so it has to unwind with the
       // tabs rather than be torn down implicitly with its owner.
       mtk::shields::ClosePanel();
+      // The downloads popup is owned by this window and would outlive it.
+      mtk::downloads_panel::ClosePanel();
       // Freeze session updates before taking the final snapshot. Otherwise a
       // deferred timer can run while CEF tabs are closing and overwrite it.
       closing_ = true;

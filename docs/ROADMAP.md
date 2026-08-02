@@ -146,10 +146,20 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
 - [~] **T2.12 Media**: autoplay now requires a user gesture, and picture-in-picture,
       the media session service and hardware media keys are enabled through
       `OnBeforeCommandLineProcessing`. Needs a real page to confirm.
-- [ ] **T2.13 Downloads polish**: toolbar popup panel, drag-out, cross-restart
-      resume. Today there is a Downloads dialog with pause/resume/cancel within
-      the running process. Cross-restart resume needs an own resumable HTTP
-      path; CEF callbacks only cover the live process.
+- [~] **T2.13 Downloads polish**
+  - Done: the toolbar button now opens a popup panel
+    (`native/src/downloads_panel.cpp`) showing the five most recent downloads
+    with a progress bar and inline actions: pause, resume, cancel for live
+    downloads, and open, show in folder, copy for finished ones. It dismisses on
+    focus loss, on Esc and on a second press of the button, and the full window
+    stays on `Alt+J`. The panel holds no CEF headers; pause, resume and cancel
+    are handed in as callbacks.
+  - "Copy" puts the file on the clipboard as a shell file drop, which Explorer
+    pastes as the file. That stands in for dragging the file out: a drag loop
+    needs an OLE-initialised thread, which the browser UI thread does not
+    guarantee, and a drag that silently fails would be worse than none.
+  - Remaining: real drag-out, and cross-restart resume, which needs an own
+    resumable HTTP path because CEF's callbacks only cover the live process.
 - [x] **T2.14 Full-screen mode (F11)** — chrome hidden, not destroyed; Esc exits
 - [~] **T2.15 Accessibility**: toolbar buttons now carry real accessible names
       instead of the drawn glyph ("Back" rather than "←"), and the renderer
