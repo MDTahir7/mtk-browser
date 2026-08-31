@@ -3,6 +3,7 @@
 #include <string>
 
 #include "browser_window.h"
+#include "home_scheme.h"
 #include "password_bridge.h"
 #include "preferences.h"
 #include "include/cef_app.h"
@@ -308,6 +309,11 @@ CefRefPtr<CefRenderProcessHandler> MtkApp::GetRenderProcessHandler() {
   return this;
 }
 
+void MtkApp::OnRegisterCustomSchemes(
+    CefRawPtr<CefSchemeRegistrar> registrar) {
+  mtk::home::RegisterCustomScheme(registrar);
+}
+
 void MtkApp::OnBeforeCommandLineProcessing(
     const CefString& process_type, CefRefPtr<CefCommandLine> command_line) {
   // Only the browser process line carries these; renderers inherit what they
@@ -346,6 +352,10 @@ void MtkApp::OnBeforeCommandLineProcessing(
 void MtkApp::OnContextInitialized() {
   ConfigureSpellcheck();
   ConfigureSecureDns();
+  if (!mtk::home::RegisterSchemeHandler()) {
+    CefQuitMessageLoop();
+    return;
+  }
   // Windows own themselves and end the message loop when the last one closes,
   // so nothing is held here.
   if (!BrowserWindow::Open(instance_, show_command_, {})) {

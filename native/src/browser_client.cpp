@@ -18,6 +18,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
 #include "filter_engine.h"
+#include "home_page.h"
 #include "inline_asset.h"
 #include "password_bridge.h"
 #include "policy.h"
@@ -700,11 +701,41 @@ bool BrowserClient::OnPreKeyEvent(CefRefPtr<CefBrowser>,
 
 void BrowserClient::ExpectInternalPage() { block_page_pending_ = true; }
 
-bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser>,
+bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefRequest> request, bool, bool) {
   if (!frame || !frame->IsMain() || !request) return false;
   const std::string requested_url = request->GetURL();
+
+  // The built-in home document is served by this application from a registered
+  // scheme, so it is allowed past the http(s)-only navigation gate. Only the
+  // exact document URL qualifies; every other mtk: address still fails closed.
+  if (mtk::home::IsHomeUrl(requested_url)) return false;
+
+  // Internal action URLs are commands, never documents, and they are only obeyed
+  // when the page issuing them is the matching built-in document. Anything else
+  // is swallowed without opening a scheme resource.
+  const std::string current_url =
+      browser && browser->GetMainFrame()
+          ? browser->GetMainFrame()->GetURL().ToString()
+          : std::string();
+
+  if (const auto action = mtk::home::ParseActionUrl(requested_url);
+      action != mtk::home::Action::kNone) {
+    if (delegate_ && mtk::home::IsHomeUrl(current_url)) {
+      delegate_->OnBrowserHomeAction(this, action);
+    }
+    return true;
+  }
+
+  if (const auto action = mtk::history::ParseActionUrl(requested_url);
+      action.kind != mtk::history::ActionKind::kNone) {
+    if (delegate_ && mtk::history::IsHistoryUrl(current_url)) {
+      delegate_->OnBrowserHistoryAction(this, action);
+    }
+    return true;
+  }
+
   if (block_page_pending_ && requested_url.starts_with("data:text/html")) {
     block_page_pending_ = false;
     return false;
@@ -750,7 +781,7 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
   if (!request) return this;
   const std::string url = request->GetURL();
   if (request->GetResourceType() == RT_MAIN_FRAME &&
-      url.starts_with("data:text/html")) {
+      (url.starts_with("data:text/html") || mtk::home::IsHomeUrl(url))) {
     return this;
   }
   // The Chromium PDF renderer is packaged as one internal extension. Permit

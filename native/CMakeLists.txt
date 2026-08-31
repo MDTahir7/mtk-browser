@@ -13,6 +13,8 @@ set(MTK_BROWSER_SOURCES
   src/downloads_panel.h
   src/strings.cpp
   src/strings.h
+  src/dialog_text.cpp
+  src/dialog_text.h
   src/password_store.cpp
   src/password_store.h
   src/user_filters.cpp
@@ -29,6 +31,12 @@ set(MTK_BROWSER_SOURCES
   src/bookmark_import.h
   src/download_manager.cpp
   src/download_manager.h
+  src/home_page.cpp
+  src/home_page.h
+  src/history_page.cpp
+  src/history_page.h
+  src/home_scheme.cpp
+  src/home_scheme.h
   src/session_store.cpp
   src/session_store.h
   src/icon_strip.cpp

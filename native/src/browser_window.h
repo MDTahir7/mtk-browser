@@ -7,6 +7,7 @@
 
 #include "include/cef_browser.h"
 #include "browser_client.h"
+#include "home_page.h"
 #include "icon_strip.h"
 
 class BrowserWindow final : public BrowserClientDelegate {
@@ -43,6 +44,10 @@ class BrowserWindow final : public BrowserClientDelegate {
   void OnBrowserPopupRequested(BrowserClient* client,
                                const std::string& url) override;
   void OnBrowserDownloadsChanged(BrowserClient* client) override;
+  void OnBrowserHomeAction(BrowserClient* client,
+                           mtk::home::Action action) override;
+  void OnBrowserHistoryAction(BrowserClient* client,
+                              const mtk::history::Action& action) override;
   bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
                          bool control, bool alt, bool shift) override;
 
@@ -58,6 +63,16 @@ class BrowserWindow final : public BrowserClientDelegate {
     // no close button.
     bool pinned = false;
     bool muted = false;
+  };
+
+  // Clickable areas of the bookmarks bar, rebuilt on every paint so hit testing
+  // can never disagree with what is on screen.
+  struct BookmarkHit {
+    RECT bounds;
+    // Index into the store's bookmark list, or into its folder list when
+    // `folder` is set.
+    size_t index;
+    bool folder = false;
   };
 
   void RememberClosedTab(const Tab& tab);
@@ -134,11 +149,15 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool AcceptSuggestion();
   void LayoutSuggestions();
   void ToggleBookmark();
-  void ShowLibraryDialog(bool bookmarks);
+  // Saved bookmarks. History is not shown here; it has its own document.
+  void ShowLibraryDialog();
+  // Browsable history document. It replaces the history list dialog, so the
+  // search, the day grouping and the delete actions all live on one page.
+  void OpenHistoryPage();
   void ShowDownloadsDialog();
   // Toolbar popup with the most recent downloads and inline actions.
   void ShowDownloadsPanel();
-  void OpenLibraryEntry(bool bookmarks, size_t index);
+  void OpenLibraryEntry(size_t index);
   void ScheduleLibrarySave();
   void ScheduleSessionSave();
   void SetShieldHover(bool hovering);
@@ -176,6 +195,15 @@ class BrowserWindow final : public BrowserClientDelegate {
   // Bookmarks strip under the toolbar. Painted, not built from child windows,
   // so it scales with DPI the same way the rest of the chrome does.
   void PaintBookmarksBar(HDC dc, const RECT& client);
+  // Popup listing one folder's bookmarks. Folders are a shallow grouping, so the
+  // menu never nests.
+  void ShowBookmarkFolderMenu(size_t folder_index, POINT screen);
+  // Right-click menu of the bar: folder management, and moving or removing the
+  // bookmark that was clicked.
+  void ShowBookmarksBarMenu(const BookmarkHit* hit, POINT screen);
+  // Returns false when the name was rejected, after telling the user why.
+  bool PromptForFolderName(const wchar_t* caption, const wchar_t* message,
+                           std::wstring* name);
   void ToggleBookmarksBar();
   // Imports bookmarks from an installed Chromium-family browser.
   void ImportBookmarksFromBrowser();
@@ -241,14 +269,15 @@ class BrowserWindow final : public BrowserClientDelegate {
   size_t drag_candidate_ = static_cast<size_t>(-1);
   POINT drag_origin_{};
   bool dragging_ = false;
-  // Clickable areas of the bookmarks bar, rebuilt on every paint so hit
-  // testing can never disagree with what is on screen.
-  struct BookmarkHit {
-    RECT bounds;
-    size_t index;
-  };
   std::vector<BookmarkHit> bookmark_bar_hits_;
   size_t hovered_bookmark_ = static_cast<size_t>(-1);
+  // Bookmarks listed in the folder popup currently on screen, in menu order.
+  std::vector<std::string> folder_menu_urls_;
+  // Bookmark the bar context menu was opened on, empty when it was opened on
+  // blank space or on a folder.
+  std::string context_bookmark_url_;
+  // Folder the bar context menu was opened on, empty when it was not a folder.
+  std::wstring context_folder_name_;
   // Profile names behind the profile submenu entries, in menu order.
   std::vector<std::wstring> profile_menu_ids_;
   bool full_screen_ = false;

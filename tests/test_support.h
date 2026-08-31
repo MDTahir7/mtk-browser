@@ -26,6 +26,14 @@ void Fail(const char* file, int line, const std::string& message);
 // Narrow rendering of a wide string for failure messages only.
 std::string Describe(const std::wstring& value);
 
+// Throwaway profile directory the whole suite is redirected to while it runs.
+// Cases that touch profile files build their paths from this.
+const std::wstring& SuiteProfileRoot();
+
+// False when the redirection is not in effect. A case that writes profile files
+// must check this and do nothing rather than reach the real profile.
+bool WritingToSuiteProfile();
+
 int RunAll();
 
 }  // namespace mtk::test

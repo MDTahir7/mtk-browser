@@ -19,6 +19,10 @@
 #include "bookmark_import.h"
 #include "download_manager.h"
 #include "downloads_panel.h"
+#include "dialog_text.h"
+#include "history_page.h"
+#include "home_page.h"
+#include "home_scheme.h"
 #include "library_store.h"
 #include "crash_guard.h"
 #include "default_browser.h"
@@ -36,8 +40,14 @@
 
 namespace {
 
+// Short name for the string table, used by the dialog text tables below as well
+// as by the menus further down.
+using Text = mtk::strings::Id;
+
 constexpr wchar_t kWindowClass[] = L"MTKBrowserWindow";
-constexpr char kDefaultHomeUrl[] = "https://www.google.com/?safe=active";
+// Must stay byte-identical to mtk::home::kUrl, because the navigation gate and
+// the scheme handler both accept only that exact document URL.
+constexpr char kDefaultHomeUrl[] = "mtk://home/";
 std::string kHomeUrl = kDefaultHomeUrl;
 // Design metrics are authored at 96 DPI and scaled through Scaled() so the
 // chrome stays crisp and correctly sized on 125%, 150% and 200% displays.
@@ -133,6 +143,9 @@ constexpr mtk::preferences::DohProvider kDohOrder[] = {
 // Upper bound on profiles listed in the menu. The reserved command id range is
 // this large, so the list is truncated rather than colliding with other ids.
 constexpr size_t kMaxProfileMenuEntries = 20;
+// Rows listed in one bookmark folder popup, and folders offered in the "Move to"
+// submenu. Both stay inside their reserved command-id range.
+constexpr size_t kMaxFolderMenuEntries = 100;
 
 // Tab context menu commands. These only ever reach TrackPopupMenuEx, so they
 // stay local to this file instead of taking resource ids.
@@ -238,10 +251,23 @@ std::wstring Utf8ToWide(const std::string& value) {
   return result;
 }
 
+// Republishes the built-in documents from the profile stores. The stores are only
+// read on this UI thread; the CEF IO thread sees the finished snapshots.
+void RefreshHomeSnapshot() {
+  mtk::home::RefreshSnapshot(mtk::library::Store::Get().history(),
+                             mtk::library::Store::Get().bookmarks(),
+                             mtk::downloads::Manager::Get().items());
+  mtk::history::RefreshSnapshot(mtk::library::Store::Get().history());
+}
+
 void RefreshHomeUrl() {
-  const auto decision = mtk::policy::ResolveInput(
-      WideToUtf8(mtk::preferences::Store::Get().values().home_page));
-  kHomeUrl = decision.allow ? decision.url : kDefaultHomeUrl;
+  const auto& values = mtk::preferences::Store::Get().values();
+  if (!values.home_page_custom) {
+    kHomeUrl = mtk::home::kHomeUrl;
+    return;
+  }
+  const auto decision = mtk::policy::ResolveInput(WideToUtf8(values.home_page));
+  kHomeUrl = decision.allow ? decision.url : mtk::home::kHomeUrl;
 }
 
 // Reads a password field without leaving the PIN in a long-lived buffer.
@@ -273,13 +299,20 @@ INT_PTR CALLBACK PinPromptDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                      LPARAM l_param) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_PIN_PROMPT_LABEL, Text::kParentPin},
+          {IDOK, Text::kUnlock},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kParentPinTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       auto* context = reinterpret_cast<PinPromptContext*>(l_param);
       SetWindowLongPtrW(dialog, GWLP_USERDATA,
                         static_cast<LONG_PTR>(l_param));
       SetDlgItemTextW(dialog, IDC_PIN_PROMPT_TEXT,
                       context && context->message
                           ? context->message
-                          : L"Enter the parent PIN to continue.");
+                          : mtk::strings::Get(Text::kEnterParentPin));
       return TRUE;
     }
     case WM_COMMAND:
@@ -317,6 +350,15 @@ INT_PTR CALLBACK UserFiltersDialogProc(HWND dialog, UINT message,
                                       WPARAM w_param, LPARAM) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_FILTERS_LINE1, Text::kFiltersLine1},
+          {IDC_FILTERS_LINE2, Text::kFiltersLine2},
+          {IDC_FILTERS_NOTE, Text::kFiltersNote},
+          {IDOK, Text::kSave},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kUserFiltersTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       std::wstring text;
       for (const std::wstring& line : mtk::user_filters::Lines()) {
         text += line;
@@ -436,9 +478,20 @@ bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
 INT_PTR CALLBACK PasswordsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                      LPARAM) {
   switch (message) {
-    case WM_INITDIALOG:
+    case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_PASSWORDS_INTRO, Text::kPasswordsIntro},
+          {IDC_PASSWORDS_REVEAL, Text::kShowPassword},
+          {IDC_PASSWORDS_COPY, Text::kCopyPassword},
+          {IDC_PASSWORDS_REMOVE, Text::kRemove},
+          {IDC_PASSWORDS_CLEAR, Text::kRemoveAll},
+          {IDCANCEL, Text::kClose},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kPasswordsTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       PopulatePasswordList(dialog);
       return TRUE;
+    }
     case WM_COMMAND: {
       const WORD command = LOWORD(w_param);
       if (command == IDCANCEL) {
@@ -528,11 +581,11 @@ void FillPermissionCombo(HWND dialog, int control, mtk::sites::Permission value)
   HWND combo = GetDlgItem(dialog, control);
   if (!combo) return;
   SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-  SendMessageW(combo, CB_ADDSTRING, 0,
-               reinterpret_cast<LPARAM>(L"Blocked (default)"));
-  SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Allowed"));
-  SendMessageW(combo, CB_ADDSTRING, 0,
-               reinterpret_cast<LPARAM>(L"Blocked, and never ask"));
+  for (const Text id : {Text::kPermissionBlockedDefault, Text::kPermissionAllowed,
+                        Text::kPermissionBlockedNeverAsk}) {
+    SendMessageW(combo, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(mtk::strings::Get(id)));
+  }
   const int selection = value == mtk::sites::Permission::kAllow
                             ? 1
                             : (value == mtk::sites::Permission::kBlock ? 2 : 0);
@@ -557,6 +610,26 @@ INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
       if (!context) return TRUE;
       SetDlgItemTextW(dialog, IDC_SITE_ORIGIN,
                       Utf8ToWide(context->rule.origin).c_str());
+      {
+        static constexpr mtk::dialog_text::Item kText[] = {
+            {IDC_SITE_FOR_LABEL, Text::kSettingsForLabel},
+            {IDC_SITE_SCOPE_NOTE, Text::kSiteScopeNote},
+            {IDC_SITE_CAMERA_LABEL, Text::kCamera},
+            {IDC_SITE_MICROPHONE_LABEL, Text::kMicrophone},
+            {IDC_SITE_LOCATION_LABEL, Text::kLocation},
+            {IDC_SITE_NOTIFICATIONS_LABEL, Text::kNotifications},
+            {IDC_SITE_AD_FILTERING, Text::kBlockAdsOnSite},
+            {IDC_SITE_COOKIES, Text::kAllowCookiesOnSite},
+            {IDC_SITE_SAFETY_NOTE, Text::kSiteSafetyNote},
+            {IDC_SITE_ZOOM_LABEL, Text::kZoom},
+            {IDC_SITE_ZOOM_RESET, Text::kResetZoom},
+            {IDC_SITE_FORGET, Text::kForgetSite},
+            {IDOK, Text::kSave},
+            {IDCANCEL, Text::kCancel},
+        };
+        mtk::dialog_text::ApplyCaption(dialog, Text::kSiteSettingsTitle);
+        mtk::dialog_text::Apply(dialog, kText);
+      }
       FillPermissionCombo(dialog, IDC_SITE_CAMERA, context->rule.camera);
       FillPermissionCombo(dialog, IDC_SITE_MICROPHONE, context->rule.microphone);
       FillPermissionCombo(dialog, IDC_SITE_LOCATION, context->rule.location);
@@ -628,6 +701,11 @@ INT_PTR CALLBACK TextPromptDialogProc(HWND dialog, UINT message,
                                       WPARAM w_param, LPARAM l_param) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDOK, Text::kOk},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::Apply(dialog, kText);
       auto* context = reinterpret_cast<TextPromptContext*>(l_param);
       SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
       if (context) {
@@ -697,13 +775,24 @@ INT_PTR CALLBACK PinSetupDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                     LPARAM) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_PIN_SETUP_INTRO, Text::kPinSetupIntro},
+          {IDC_PIN_SETUP_CURRENT_LABEL, Text::kCurrentPin},
+          {IDC_PIN_SETUP_NEW_LABEL, Text::kNewPin},
+          {IDC_PIN_SETUP_CONFIRM_LABEL, Text::kConfirmNewPin},
+          {IDC_PIN_SETUP_REMOVE, Text::kRemovePin},
+          {IDOK, Text::kSavePin},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kParentPinTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       const bool existing = mtk::preferences::PinIsSet();
       EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_CURRENT), existing);
       EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_CURRENT_LABEL), existing);
       EnableWindow(GetDlgItem(dialog, IDC_PIN_SETUP_REMOVE), existing);
       if (!existing) {
         SetDlgItemTextW(dialog, IDC_PIN_SETUP_CURRENT_LABEL,
-                        L"Current PIN (none set yet)");
+                        mtk::strings::Get(Text::kCurrentPinNoneSet));
       }
       return TRUE;
     }
@@ -808,6 +897,22 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                      LPARAM l_param) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_CLEAR_INTRO, Text::kClearDataIntro},
+          {IDC_CLEAR_HISTORY, Text::kClearHistoryItem},
+          {IDC_CLEAR_DOWNLOADS, Text::kClearDownloadsItem},
+          {IDC_CLEAR_COOKIES, Text::kClearCookiesItem},
+          {IDC_CLEAR_CACHE, Text::kClearCacheItem},
+          {IDC_CLEAR_SESSION, Text::kClearSessionItem},
+          {IDC_CLEAR_BOOKMARKS, Text::kBookmarks},
+          {IDC_CLEAR_SITE_SETTINGS, Text::kClearSiteSettingsItem},
+          {IDC_CLEAR_PASSWORDS, Text::kClearPasswordsItem},
+          {IDC_CLEAR_NOTE, Text::kClearDataNote},
+          {IDOK, Text::kClearNow},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kClearDataTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
       const auto* choice = reinterpret_cast<const ClearDataChoice*>(l_param);
       if (!choice) return TRUE;
@@ -888,19 +993,58 @@ INT_PTR CALLBACK ClearDataDialogProc(HWND dialog, UINT message, WPARAM w_param,
   return FALSE;
 }
 
+Text DohText(mtk::preferences::DohProvider provider) {
+  switch (provider) {
+    case mtk::preferences::DohProvider::kCloudflareFamily:
+      return Text::kDohCloudflareFamily;
+    case mtk::preferences::DohProvider::kCloudflare:
+      return Text::kDohCloudflare;
+    case mtk::preferences::DohProvider::kQuad9:
+      return Text::kDohQuad9;
+    case mtk::preferences::DohProvider::kGoogle:
+      return Text::kDohGoogle;
+    case mtk::preferences::DohProvider::kSystem:
+      break;
+  }
+  return Text::kUseWindowsDns;
+}
+
 void RefreshPinState(HWND dialog) {
   SetDlgItemTextW(dialog, IDC_SETTINGS_PIN_STATE,
-                  mtk::preferences::PinIsSet()
-                      ? L"A parent PIN is required to open Settings."
-                      : L"No parent PIN. Anyone can change these settings.");
+                  mtk::strings::Get(mtk::preferences::PinIsSet()
+                                        ? Text::kPinRequiredState
+                                        : Text::kPinMissingState));
 }
 
 INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                                     LPARAM) {
   switch (message) {
     case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_SETTINGS_GENERAL_HEAD, Text::kGeneralHeading},
+          {IDC_SETTINGS_HOME_LABEL, Text::kHomePageLabel},
+          {IDC_SETTINGS_STARTUP_LABEL, Text::kOnStartup},
+          {IDC_SETTINGS_LANGUAGE_LABEL, Text::kWebsiteLanguage},
+          {IDC_SETTINGS_DOWNLOADS_LABEL, Text::kDownloads},
+          {IDC_SETTINGS_DOWNLOADS_NOTE, Text::kDownloadsNote},
+          {IDC_SETTINGS_SAFETY_NOTE, Text::kSafetyStaysOnNote},
+          {IDC_SETTINGS_LANGUAGE_NOTE, Text::kLanguageRestartNote},
+          {IDC_SETTINGS_CONNECTION_HEAD, Text::kConnectionHeading},
+          {IDC_SETTINGS_HTTPS_ONLY, Text::kHttpsOnlyOption},
+          {IDC_SETTINGS_DOH_LABEL, Text::kEncryptedDns},
+          {IDC_SETTINGS_DOH_NOTE, Text::kEncryptedDnsRestartNote},
+          {IDC_SETTINGS_AUTO_UPDATE, Text::kAutoUpdateOption},
+          {IDC_SETTINGS_PARENT_HEAD, Text::kParentControlsHeading},
+          {IDC_SETTINGS_PIN, Text::kParentPinButton},
+          {IDOK, Text::kSave},
+          {IDCANCEL, Text::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kSettingsTitle);
+      mtk::dialog_text::Apply(dialog, kText);
       const auto& values = mtk::preferences::Store::Get().values();
       SetDlgItemTextW(dialog, IDC_SETTINGS_HOME_PAGE, values.home_page.c_str());
+      // Language names stay in their own language, which is how a person finds
+      // the one they can read.
       HWND language = GetDlgItem(dialog, IDC_SETTINGS_LANGUAGE);
       SendMessageW(language, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(L"English (United States) and Hindi"));
@@ -912,9 +1056,11 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
 
       HWND startup = GetDlgItem(dialog, IDC_SETTINGS_STARTUP);
       SendMessageW(startup, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(L"Open the home page"));
+                   reinterpret_cast<LPARAM>(
+                       mtk::strings::Get(Text::kStartupHomePage)));
       SendMessageW(startup, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(L"Continue where you left off"));
+                   reinterpret_cast<LPARAM>(
+                       mtk::strings::Get(Text::kStartupContinue)));
       SendMessageW(startup, CB_SETCURSEL,
                    values.startup_mode ==
                            mtk::preferences::StartupMode::kContinueSession ? 1 : 0,
@@ -923,10 +1069,11 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
 
       HWND downloads = GetDlgItem(dialog, IDC_SETTINGS_DOWNLOADS);
       SendMessageW(downloads, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(L"Safe downloads (recommended)"));
+                   reinterpret_cast<LPARAM>(
+                       mtk::strings::Get(Text::kSafeDownloadsOption)));
       SendMessageW(downloads, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(
-                       L"Standard downloads (like other browsers)"));
+                       mtk::strings::Get(Text::kStandardDownloadsOption)));
       SendMessageW(downloads, CB_SETCURSEL,
                    values.download_mode ==
                            mtk::preferences::DownloadMode::kStandard ? 1 : 0,
@@ -937,12 +1084,14 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
       CheckDlgButton(dialog, IDC_SETTINGS_HTTPS_ONLY,
                      values.https_only ? BST_CHECKED : BST_UNCHECKED);
       {
-        // Providers in a fixed order so the stored value maps to an index.
+        // Providers in a fixed order so the stored value maps to an index. The
+        // label is taken from the UI string table rather than from the
+        // preference layer, which has no business holding display text.
         HWND doh = GetDlgItem(dialog, IDC_SETTINGS_DOH);
         for (const auto provider : kDohOrder) {
           SendMessageW(doh, CB_ADDSTRING, 0,
                        reinterpret_cast<LPARAM>(
-                           mtk::preferences::DohLabel(provider)));
+                           mtk::strings::Get(DohText(provider))));
         }
         int selected = 0;
         for (size_t index = 0; index < std::size(kDohOrder); ++index) {
@@ -977,14 +1126,21 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                       L"MTK Browser Settings", MB_OK | MB_ICONWARNING);
           return TRUE;
         }
-        const auto decision = mtk::policy::ResolveInput(WideToUtf8(home_page));
+        const std::string entered_home = WideToUtf8(home_page);
+        const bool built_in_home = mtk::home::IsHomeUrl(entered_home);
+        const auto decision = built_in_home
+                                  ? mtk::policy::NavigationDecision{
+                                        true, mtk::home::kHomeUrl, {}}
+                                  : mtk::policy::ResolveInput(entered_home);
         if (!decision.allow) {
           MessageBoxW(dialog, decision.reason.c_str(), L"Home page blocked",
                       MB_OK | MB_ICONWARNING);
           return TRUE;
         }
         mtk::preferences::Values values = mtk::preferences::Store::Get().values();
-        values.home_page = Utf8ToWide(decision.url);
+        values.home_page = built_in_home ? mtk::home::kHomeUrlWide
+                                         : Utf8ToWide(decision.url);
+        values.home_page_custom = !built_in_home;
         const int selected = static_cast<int>(SendMessageW(
             GetDlgItem(dialog, IDC_SETTINGS_LANGUAGE), CB_GETCURSEL, 0, 0));
         values.accept_language = selected == 1 ? "hi,en-US,en" : "en-US,en,hi";
@@ -1077,11 +1233,6 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
   return FALSE;
 }
 
-const std::vector<mtk::library::Entry>& LibraryEntries(bool bookmarks) {
-  return bookmarks ? mtk::library::Store::Get().bookmarks()
-                   : mtk::library::Store::Get().history();
-}
-
 std::wstring LibraryDisplayText(const mtk::library::Entry& entry) {
   std::wstring text = entry.title.empty() ? Utf8ToWide(entry.url) : entry.title;
   std::replace_if(text.begin(), text.end(), [](wchar_t character) {
@@ -1093,59 +1244,6 @@ std::wstring LibraryDisplayText(const mtk::library::Entry& entry) {
   return text;
 }
 
-// Local calendar day number for a Unix timestamp, used only to decide which
-// group a history row belongs to.
-long long LocalDayNumber(long long unix_seconds) {
-  if (unix_seconds <= 0) return -1;
-  ULARGE_INTEGER ticks{};
-  ticks.QuadPart = static_cast<unsigned long long>(unix_seconds) * 10000000ULL +
-                   116444736000000000ULL;
-  FILETIME utc{ticks.LowPart, ticks.HighPart};
-  FILETIME local{};
-  if (!FileTimeToLocalFileTime(&utc, &local)) return -1;
-  SYSTEMTIME parts{};
-  if (!FileTimeToSystemTime(&local, &parts)) return -1;
-  // A plain year/month/day key is enough: groups only need to compare equal for
-  // the same calendar day and to order downwards.
-  return static_cast<long long>(parts.wYear) * 10000 +
-         static_cast<long long>(parts.wMonth) * 100 + parts.wDay;
-}
-
-std::wstring HistoryGroupLabel(long long day) {
-  if (day < 0) return L"Earlier";
-  SYSTEMTIME now{};
-  GetLocalTime(&now);
-  const long long today = static_cast<long long>(now.wYear) * 10000 +
-                          static_cast<long long>(now.wMonth) * 100 + now.wDay;
-  if (day == today) return L"Today";
-
-  // Yesterday is computed from a real timestamp rather than by subtracting one
-  // from the day key, so month and year boundaries are correct.
-  FILETIME now_file{};
-  SystemTimeToFileTime(&now, &now_file);
-  ULARGE_INTEGER ticks{now_file.dwLowDateTime, now_file.dwHighDateTime};
-  ticks.QuadPart -= 24ULL * 60ULL * 60ULL * 10000000ULL;
-  FILETIME previous{ticks.LowPart, ticks.HighPart};
-  SYSTEMTIME yesterday{};
-  if (FileTimeToSystemTime(&previous, &yesterday)) {
-    const long long key = static_cast<long long>(yesterday.wYear) * 10000 +
-                          static_cast<long long>(yesterday.wMonth) * 100 +
-                          yesterday.wDay;
-    if (day == key) return L"Yesterday";
-  }
-
-  SYSTEMTIME date{};
-  date.wYear = static_cast<WORD>(day / 10000);
-  date.wMonth = static_cast<WORD>((day / 100) % 100);
-  date.wDay = static_cast<WORD>(day % 100);
-  wchar_t formatted[128]{};
-  if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_LONGDATE, &date, nullptr,
-                      formatted, 128, nullptr) > 0) {
-    return formatted;
-  }
-  return L"Earlier";
-}
-
 bool MatchesLibraryQuery(const mtk::library::Entry& entry,
                          const std::wstring& lowered_query) {
   if (lowered_query.empty()) return true;
@@ -1154,11 +1252,12 @@ bool MatchesLibraryQuery(const mtk::library::Entry& entry,
   return haystack.find(lowered_query) != std::wstring::npos;
 }
 
-// Item data is entry index + 1, so a group header can use 0 and never be
-// mistaken for a row that can be opened or removed.
+// Item data is entry index + 1, so a row that cannot be opened or removed (the
+// "nothing matches" line) can use 0 and never be mistaken for a real entry.
 constexpr LRESULT kLibraryHeaderData = 0;
 
-void PopulateLibraryList(HWND dialog, bool bookmarks) {
+// Bookmarks only. History has its own browsable document at mtk://history/.
+void PopulateLibraryList(HWND dialog) {
   HWND list = GetDlgItem(dialog, IDC_LIBRARY_LIST);
   HWND search = GetDlgItem(dialog, IDC_LIBRARY_SEARCH);
   std::wstring query;
@@ -1172,26 +1271,10 @@ void PopulateLibraryList(HWND dialog, bool bookmarks) {
 
   SendMessageW(list, WM_SETREDRAW, FALSE, 0);
   SendMessageW(list, LB_RESETCONTENT, 0, 0);
-  const auto& entries = LibraryEntries(bookmarks);
-  long long current_day = std::numeric_limits<long long>::min();
+  const auto& entries = mtk::library::Store::Get().bookmarks();
   size_t shown = 0;
   for (size_t index = 0; index < entries.size(); ++index) {
     if (!MatchesLibraryQuery(entries[index], query)) continue;
-    // History is stored newest first, so the groups come out in order without
-    // sorting anything.
-    if (!bookmarks) {
-      const long long day = LocalDayNumber(entries[index].visited);
-      if (day != current_day) {
-        current_day = day;
-        const std::wstring header = L"— " + HistoryGroupLabel(day) + L" —";
-        const LRESULT header_row = SendMessageW(
-            list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(header.c_str()));
-        if (header_row != LB_ERR && header_row != LB_ERRSPACE) {
-          SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(header_row),
-                       kLibraryHeaderData);
-        }
-      }
-    }
     const LRESULT row = SendMessageW(
         list, LB_ADDSTRING, 0,
         reinterpret_cast<LPARAM>(LibraryDisplayText(entries[index]).c_str()));
@@ -1227,19 +1310,20 @@ ptrdiff_t SelectedLibraryIndex(HWND dialog) {
 }
 
 INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
-                                   LPARAM l_param) {
-  const bool bookmarks = GetWindowLongPtrW(dialog, GWLP_USERDATA) != 0;
+                                   LPARAM) {
   switch (message) {
     case WM_INITDIALOG: {
-      const bool initial_bookmarks = l_param != 0;
-      SetWindowLongPtrW(dialog, GWLP_USERDATA, l_param);
-      SetWindowTextW(dialog, initial_bookmarks ? L"Bookmarks — MTK Browser"
-                                                : L"History — MTK Browser");
-      if (initial_bookmarks) {
-        SetWindowTextW(GetDlgItem(dialog, IDC_LIBRARY_CLEAR),
-                       L"Remove all");
-      }
-      PopulateLibraryList(dialog, initial_bookmarks);
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_LIBRARY_HINT, Text::kBookmarksHint},
+          {IDC_LIBRARY_SEARCH_LABEL, Text::kSearch},
+          {IDC_LIBRARY_OPEN, Text::kOpen},
+          {IDC_LIBRARY_REMOVE, Text::kRemove},
+          {IDC_LIBRARY_CLEAR, Text::kRemoveAll},
+          {IDCANCEL, Text::kClose},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kBookmarksTitle);
+      mtk::dialog_text::Apply(dialog, kText);
+      PopulateLibraryList(dialog);
       return TRUE;
     }
     case WM_COMMAND: {
@@ -1250,7 +1334,7 @@ INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
         return TRUE;
       }
       if (command == IDC_LIBRARY_SEARCH && notification == EN_CHANGE) {
-        PopulateLibraryList(dialog, bookmarks);
+        PopulateLibraryList(dialog);
         return TRUE;
       }
       const ptrdiff_t selected = SelectedLibraryIndex(dialog);
@@ -1262,29 +1346,28 @@ INT_PTR CALLBACK LibraryDialogProc(HWND dialog, UINT message, WPARAM w_param,
       if (command == IDC_LIBRARY_REMOVE) {
         if (selected < 0) return TRUE;
         const size_t index = static_cast<size_t>(selected);
-        const bool removed =
-            bookmarks ? mtk::library::Store::Get().RemoveBookmarkAt(index)
-                      : mtk::library::Store::Get().RemoveHistoryAt(index);
-        if (removed && !mtk::library::Store::Get().Flush()) {
+        if (mtk::library::Store::Get().RemoveBookmarkAt(index) &&
+            !mtk::library::Store::Get().Flush()) {
           MessageBoxW(dialog, L"MTK Browser could not save the library change.",
                       L"MTK Browser", MB_OK | MB_ICONERROR);
         }
-        PopulateLibraryList(dialog, bookmarks);
+        PopulateLibraryList(dialog);
         return TRUE;
       }
       if (command == IDC_LIBRARY_CLEAR) {
-        const wchar_t* prompt = bookmarks ? L"Remove all saved bookmarks?"
-                                          : L"Clear all browsing history?";
-        if (MessageBoxW(dialog, prompt, L"MTK Browser", MB_YESNO | MB_ICONWARNING) != IDYES) {
+        // Folders go with the bookmarks, so the prompt says so rather than
+        // leaving empty folders behind unexplained.
+        if (MessageBoxW(dialog,
+                        mtk::strings::Get(Text::kRemoveAllBookmarksQuestion),
+                        L"MTK Browser", MB_YESNO | MB_ICONWARNING) != IDYES) {
           return TRUE;
         }
-        const bool cleared = bookmarks ? mtk::library::Store::Get().ClearBookmarks()
-                                       : mtk::library::Store::Get().ClearHistory();
-        if (cleared && !mtk::library::Store::Get().Flush()) {
+        if (mtk::library::Store::Get().ClearBookmarks() &&
+            !mtk::library::Store::Get().Flush()) {
           MessageBoxW(dialog, L"MTK Browser could not save the library change.",
                       L"MTK Browser", MB_OK | MB_ICONERROR);
         }
-        PopulateLibraryList(dialog, bookmarks);
+        PopulateLibraryList(dialog);
         return TRUE;
       }
       if (command == IDCANCEL) {
@@ -1425,6 +1508,19 @@ INT_PTR CALLBACK DownloadsDialogProc(HWND dialog, UINT message, WPARAM w_param,
   switch (message) {
     case WM_INITDIALOG:
       g_downloads_dialog = dialog;
+      {
+        static constexpr mtk::dialog_text::Item kText[] = {
+            {IDC_DOWNLOADS_FOLDER, Text::kOpenFolder},
+            {IDC_DOWNLOADS_OPEN, Text::kOpenFile},
+            {IDC_DOWNLOADS_SHOW, Text::kShowInFolder},
+            {IDC_DOWNLOADS_PAUSE, Text::kPause},
+            {IDC_DOWNLOADS_CANCEL, Text::kCancel},
+            {IDC_DOWNLOADS_CLEAR, Text::kClearFinished},
+            {IDCANCEL, Text::kClose},
+        };
+        mtk::dialog_text::ApplyCaption(dialog, Text::kDownloadsTitle);
+        mtk::dialog_text::Apply(dialog, kText);
+      }
       RefreshDownloadModeUi(dialog);
       PopulateDownloadList(dialog);
       return TRUE;
@@ -1600,6 +1696,9 @@ RECT TabMuteRect(const RECT& tab, bool pinned) {
 
 BrowserWindow::BrowserWindow(HINSTANCE instance) : instance_(instance) {
   RefreshHomeUrl();
+  // The stores are loaded before any window exists, so the first home tab can
+  // already be served with real profile data.
+  RefreshHomeSnapshot();
   g_bookmarks_bar =
       mtk::preferences::Store::Get().values().show_bookmarks_bar;
 }
@@ -1744,6 +1843,10 @@ void BrowserWindow::ShowClearDataDialog() {
                   ? L"\n• Saved passwords deleted"
                   : L"\n• Saved passwords could not be deleted";
   }
+
+  // The home dashboard renders from the stores, so it must not keep showing
+  // rows that were just deleted.
+  RefreshHomeSnapshot();
 
   MessageBoxW(window_, (L"Clear browsing data finished." + report).c_str(),
               L"Clear browsing data", MB_OK | MB_ICONINFORMATION);
@@ -1910,16 +2013,14 @@ void BrowserWindow::ToggleBookmark() {
               L"MTK Browser", MB_OK | MB_ICONINFORMATION);
 }
 
-void BrowserWindow::ShowLibraryDialog(bool bookmarks) {
+void BrowserWindow::ShowLibraryDialog() {
   const INT_PTR selection = DialogBoxParamW(
-      instance_, MAKEINTRESOURCEW(IDD_LIBRARY), window_, LibraryDialogProc,
-      bookmarks ? 1 : 0);
-  if (selection > 0) OpenLibraryEntry(bookmarks, static_cast<size_t>(selection - 1));
+      instance_, MAKEINTRESOURCEW(IDD_LIBRARY), window_, LibraryDialogProc, 0);
+  if (selection > 0) OpenLibraryEntry(static_cast<size_t>(selection - 1));
 }
 
-void BrowserWindow::OpenLibraryEntry(bool bookmarks, size_t index) {
-  const auto& entries = bookmarks ? mtk::library::Store::Get().bookmarks()
-                                  : mtk::library::Store::Get().history();
+void BrowserWindow::OpenLibraryEntry(size_t index) {
+  const auto& entries = mtk::library::Store::Get().bookmarks();
   if (index >= entries.size()) return;
   const auto decision = mtk::policy::EvaluateNavigation(entries[index].url);
   if (!decision.allow) {
@@ -1930,6 +2031,19 @@ void BrowserWindow::OpenLibraryEntry(bool bookmarks, size_t index) {
   if (auto* tab = ActiveTab(); tab && tab->client->browser()) {
     tab->client->browser()->GetMainFrame()->LoadURL(decision.url);
   }
+}
+
+void BrowserWindow::OpenHistoryPage() {
+  // The snapshot is republished first, so the page cannot open showing a list
+  // that is one visit out of date.
+  RefreshHomeSnapshot();
+  auto* tab = ActiveTab();
+  if (tab && tab->client->browser() &&
+      !mtk::history::IsHistoryUrl(WideToUtf8(tab->url))) {
+    tab->client->browser()->GetMainFrame()->LoadURL(mtk::history::kUrl);
+    return;
+  }
+  if (!tab) CreateTab(mtk::history::kUrl);
 }
 
 void BrowserWindow::ShowDownloadsDialog() {
@@ -1968,10 +2082,103 @@ void BrowserWindow::OnBrowserDownloadsChanged(BrowserClient*) {
   if (g_downloads_dialog) PopulateDownloadList(g_downloads_dialog);
   mtk::downloads_panel::Refresh();
   if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
+  RefreshHomeSnapshot();
   if (window_) SetTimer(window_, kDownloadSaveTimer, 1500, nullptr);
 }
 
+void BrowserWindow::OnBrowserHomeAction(BrowserClient* client,
+                                        mtk::home::Action action) {
+  const auto* active = ActiveTab();
+  if (!active || active->client.get() != client) return;
+
+  switch (action) {
+    case mtk::home::Action::kDownloads:
+      ShowDownloadsDialog();
+      break;
+    case mtk::home::Action::kHistory:
+      OpenHistoryPage();
+      break;
+    case mtk::home::Action::kBookmarks:
+      ShowLibraryDialog();
+      break;
+    case mtk::home::Action::kSettings:
+      ShowSettingsDialog();
+      break;
+    case mtk::home::Action::kNone:
+      break;
+  }
+}
+
+void BrowserWindow::OnBrowserHistoryAction(BrowserClient* client,
+                                           const mtk::history::Action& action) {
+  auto* active = ActiveTab();
+  if (!active || active->client.get() != client) return;
+  auto& store = mtk::library::Store::Get();
+  bool changed = false;
+
+  switch (action.kind) {
+    case mtk::history::ActionKind::kRemoveEntry: {
+      const auto& history = store.history();
+      // The page was rendered from a copy, so the row is only removed when the
+      // stored timestamp still matches. A list that shifted in between cannot
+      // make this delete a different page.
+      if (action.index >= history.size() ||
+          history[action.index].visited != action.visited) {
+        break;
+      }
+      changed = store.RemoveHistoryAt(action.index);
+      break;
+    }
+    case mtk::history::ActionKind::kClearDay: {
+      std::vector<size_t> matches;
+      const auto& history = store.history();
+      for (size_t index = 0; index < history.size(); ++index) {
+        if (mtk::history::DayKeyOf(history[index].visited) == action.day) {
+          matches.push_back(index);
+        }
+      }
+      if (matches.empty()) break;
+      const std::wstring question =
+          L"Remove " + std::to_wstring(matches.size()) +
+          (matches.size() == 1 ? L" page from this day?" : L" pages from this day?") +
+          L"\n\nThis cannot be undone.";
+      if (MessageBoxW(window_, question.c_str(), L"Remove history",
+                      MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        break;
+      }
+      // Highest index first, so each removal leaves the earlier ones in place.
+      for (auto it = matches.rbegin(); it != matches.rend(); ++it) {
+        if (store.RemoveHistoryAt(*it)) changed = true;
+      }
+      break;
+    }
+    case mtk::history::ActionKind::kClearAll: {
+      if (store.history().empty()) break;
+      const std::wstring question =
+          L"Remove all " + std::to_wstring(store.history().size()) +
+          L" pages from your history?\n\nThis cannot be undone. Bookmarks and "
+          L"saved passwords are not affected.";
+      if (MessageBoxW(window_, question.c_str(), L"Remove history",
+                      MB_YESNO | MB_ICONWARNING) != IDYES) {
+        break;
+      }
+      changed = store.ClearHistory();
+      break;
+    }
+    case mtk::history::ActionKind::kNone:
+      break;
+  }
+
+  // The snapshot the page renders from is republished by ScheduleLibrarySave, so
+  // reloading afterwards shows the change rather than the stale list.
+  if (changed) ScheduleLibrarySave();
+  if (active->client->browser()) active->client->browser()->Reload();
+}
+
 void BrowserWindow::ScheduleLibrarySave() {
+  // History and bookmarks feed the built-in home page, so the served snapshot is
+  // rebuilt as soon as either changes.
+  RefreshHomeSnapshot();
   SetTimer(window_, kLibrarySaveTimer, 1500, nullptr);
 }
 
@@ -1997,6 +2204,9 @@ void BrowserWindow::SaveSessionSnapshot() {
 }
 
 void BrowserWindow::CreateStartupTabs() {
+  // The first page shown can be the built-in home document, so its snapshot has
+  // to reflect the loaded stores before that tab is created.
+  RefreshHomeSnapshot();
   // A window opened by the user starts on the addresses it was given. Only the
   // window that starts the process follows the startup preference, so a second
   // window never restores the previous session on top of the current one.
@@ -2062,7 +2272,8 @@ BrowserWindow* BrowserWindow::Open(HINSTANCE instance, int show_command,
     // and storage live only as long as this context does.
     CefRequestContextSettings settings;
     window->request_context_ = CefRequestContext::CreateContext(settings, nullptr);
-    if (!window->request_context_) {
+    if (!window->request_context_ ||
+        !mtk::home::RegisterSchemeHandler(window->request_context_, true)) {
       delete window;
       return nullptr;
     }
@@ -2498,10 +2709,10 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
       else ToggleBookmark();
       return true;
     case 'O':
-      ShowLibraryDialog(true);
+      ShowLibraryDialog();
       return true;
     case 'H':
-      ShowLibraryDialog(false);
+      OpenHistoryPage();
       return true;
     case 'J':
       ShowDownloadsDialog();
@@ -3630,11 +3841,13 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   FillGradient(dc, bar, kToolbarBottom, kToolbarBottom);
 
   bookmark_bar_hits_.clear();
-  const auto& bookmarks = mtk::library::Store::Get().bookmarks();
+  const auto& store = mtk::library::Store::Get();
+  const auto& bookmarks = store.bookmarks();
+  const auto& folders = store.folders();
   SetBkMode(dc, TRANSPARENT);
   SelectObject(dc, tab_font_);
 
-  if (bookmarks.empty()) {
+  if (bookmarks.empty() && folders.empty()) {
     RECT label{Scaled(14), top, client.right, top + height};
     SetTextColor(dc, kDisabledColor);
     DrawTextW(dc, L"No bookmarks yet. Ctrl+D saves the page you are on.", -1,
@@ -3643,29 +3856,143 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   }
 
   int x = Scaled(10);
-  for (size_t index = 0; index < bookmarks.size(); ++index) {
-    const std::wstring& title = bookmarks[index].title;
-    // Each button is only as wide as its label needs, capped so one long title
-    // cannot take the whole bar.
+  // One button per label, only as wide as the text needs and capped so a single
+  // long name cannot take the whole bar.
+  const auto draw_button = [&](const std::wstring& label, size_t index,
+                               bool folder) {
+    // Hover is tracked by position on the bar, which is what this button is
+    // about to become.
+    const bool hovered = hovered_bookmark_ == bookmark_bar_hits_.size();
     RECT measure{0, 0, Scaled(160), height};
-    DrawTextW(dc, title.c_str(), -1, &measure,
+    DrawTextW(dc, label.c_str(), -1, &measure,
               DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
     const int width =
         std::clamp<int>(measure.right + Scaled(20), Scaled(48), Scaled(180));
-    if (x + width > client.right - Scaled(10)) break;
+    if (x + width > client.right - Scaled(10)) return false;
 
     RECT button{x, top + Scaled(4), x + width, top + height - Scaled(4)};
-    const bool hovered = index == hovered_bookmark_;
     if (hovered) FillRounded(dc, button, Scaled(8), kControlHoverColor);
     RECT text = button;
     text.left += Scaled(10);
     text.right -= Scaled(10);
     SetTextColor(dc, hovered ? kTextColor : kMutedColor);
-    DrawTextW(dc, title.c_str(), -1, &text,
+    DrawTextW(dc, label.c_str(), -1, &text,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    bookmark_bar_hits_.push_back(BookmarkHit{button, index});
+    bookmark_bar_hits_.push_back(BookmarkHit{button, index, folder});
     x += width + Scaled(6);
+    return true;
+  };
+
+  // Folders lead the bar, so the grouping stays visible as loose bookmarks are
+  // added. The hover index is shared, so folders occupy the low range.
+  for (size_t index = 0; index < folders.size(); ++index) {
+    if (!draw_button(folders[index].name + L"  ▾", index, true)) return;
   }
+  for (size_t index = 0; index < bookmarks.size(); ++index) {
+    // A bookmark inside a folder is reached through that folder's popup.
+    if (!bookmarks[index].folder.empty()) continue;
+    if (!draw_button(bookmarks[index].title, index, false)) return;
+  }
+}
+
+void BrowserWindow::ShowBookmarkFolderMenu(size_t folder_index, POINT screen) {
+  const auto& store = mtk::library::Store::Get();
+  if (folder_index >= store.folders().size()) return;
+  const std::wstring name = store.folders()[folder_index].name;
+
+  folder_menu_urls_.clear();
+  HMENU popup = CreatePopupMenu();
+  if (!popup) return;
+  for (const auto& bookmark : store.bookmarks()) {
+    if (folder_menu_urls_.size() >= kMaxFolderMenuEntries) break;
+    if (_wcsicmp(bookmark.folder.c_str(), name.c_str()) != 0) continue;
+    std::wstring label = bookmark.title.empty()
+                             ? Utf8ToWide(bookmark.url)
+                             : bookmark.title;
+    // Ampersands in a title would otherwise be read as menu accelerators.
+    for (size_t at = label.find(L'&'); at != std::wstring::npos;
+         at = label.find(L'&', at + 2)) {
+      label.insert(at, 1, L'&');
+    }
+    AppendMenuW(popup, MF_STRING,
+                static_cast<UINT_PTR>(IDM_BOOKMARK_OPEN_FIRST +
+                                      folder_menu_urls_.size()),
+                label.c_str());
+    folder_menu_urls_.push_back(bookmark.url);
+  }
+  if (folder_menu_urls_.empty()) {
+    AppendMenuW(popup, MF_STRING | MF_GRAYED, 0, L"(empty)");
+  }
+  TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y, 0,
+                 window_, nullptr);
+  DestroyMenu(popup);
+}
+
+bool BrowserWindow::PromptForFolderName(const wchar_t* caption,
+                                        const wchar_t* message,
+                                        std::wstring* name) {
+  std::wstring entered;
+  if (!PromptForText(instance_, window_, caption, message, &entered)) {
+    return false;
+  }
+  const std::wstring normalized = mtk::library::NormalizeFolderName(entered);
+  if (normalized.empty()) {
+    MessageBoxW(window_,
+                L"That folder name cannot be used.\n\nUse up to 64 characters, "
+                L"with no control characters.",
+                L"Bookmark folders", MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  *name = normalized;
+  return true;
+}
+
+void BrowserWindow::ShowBookmarksBarMenu(const BookmarkHit* hit, POINT screen) {
+  auto& store = mtk::library::Store::Get();
+  context_bookmark_url_.clear();
+  context_folder_name_.clear();
+  folder_menu_urls_.clear();
+
+  HMENU popup = CreatePopupMenu();
+  if (!popup) return;
+
+  if (hit && hit->folder && hit->index < store.folders().size()) {
+    context_folder_name_ = store.folders()[hit->index].name;
+    AppendMenuW(popup, MF_STRING, IDM_BOOKMARK_RENAME_FOLDER,
+                L"Rename folder...");
+    AppendMenuW(popup, MF_STRING, IDM_BOOKMARK_DELETE_FOLDER,
+                L"Delete folder...");
+    AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  } else if (hit && !hit->folder && hit->index < store.bookmarks().size()) {
+    const auto& bookmark = store.bookmarks()[hit->index];
+    context_bookmark_url_ = bookmark.url;
+    HMENU move = CreatePopupMenu();
+    if (move) {
+      AppendMenuW(move, MF_STRING |
+                      (bookmark.folder.empty() ? MF_GRAYED : MF_ENABLED),
+                  IDM_BOOKMARK_MOVE_ROOT, L"Top level");
+      const auto& folders = store.folders();
+      for (size_t index = 0;
+           index < folders.size() && index < kMaxFolderMenuEntries; ++index) {
+        const bool current =
+            _wcsicmp(folders[index].name.c_str(), bookmark.folder.c_str()) == 0;
+        AppendMenuW(move, MF_STRING | (current ? MF_GRAYED : MF_ENABLED),
+                    static_cast<UINT_PTR>(IDM_BOOKMARK_MOVE_FIRST + index),
+                    folders[index].name.c_str());
+      }
+      AppendMenuW(popup, MF_POPUP | (store.folders().empty() ? MF_GRAYED : 0),
+                  reinterpret_cast<UINT_PTR>(move), L"Move to");
+    }
+    AppendMenuW(popup, MF_STRING, IDM_BOOKMARK_REMOVE, L"Remove bookmark");
+    AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+  }
+
+  const bool room = store.folders().size() < mtk::library::kMaxFolders;
+  AppendMenuW(popup, MF_STRING | (room ? MF_ENABLED : MF_GRAYED),
+              IDM_BOOKMARK_NEW_FOLDER, L"New folder...");
+  TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y, 0,
+                 window_, nullptr);
+  DestroyMenu(popup);
 }
 
 void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
@@ -3768,9 +4095,11 @@ void BrowserWindow::TrackHover(POINT point) {
   const size_t previous_bookmark = hovered_bookmark_;
   hovered_bookmark_ = static_cast<size_t>(-1);
   if (BookmarksBarHeight() > 0) {
-    for (const BookmarkHit& hit : bookmark_bar_hits_) {
-      if (PtInRect(&hit.bounds, point)) {
-        hovered_bookmark_ = hit.index;
+    // The hovered button is identified by its position on the bar, because a
+    // folder and a bookmark can both carry the same list index.
+    for (size_t position = 0; position < bookmark_bar_hits_.size(); ++position) {
+      if (PtInRect(&bookmark_bar_hits_[position].bounds, point)) {
+        hovered_bookmark_ = position;
         break;
       }
     }
@@ -4022,9 +4351,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       } else if (w_param == kLibrarySaveTimer) {
         KillTimer(window_, kLibrarySaveTimer);
         mtk::library::Store::Get().Flush();
+        RefreshHomeSnapshot();
       } else if (w_param == kDownloadSaveTimer) {
         KillTimer(window_, kDownloadSaveTimer);
         mtk::downloads::Manager::Get().Flush();
+        RefreshHomeSnapshot();
       } else if (w_param == kUpdateStartupTimer) {
         KillTimer(window_, kUpdateStartupTimer);
         StartUpdateCheck(false);
@@ -4067,10 +4398,16 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
       if (BookmarksBarHeight() > 0) {
         for (const BookmarkHit& hit : bookmark_bar_hits_) {
-          if (PtInRect(&hit.bounds, point)) {
-            OpenLibraryEntry(true, hit.index);
-            return 0;
+          if (!PtInRect(&hit.bounds, point)) continue;
+          if (hit.folder) {
+            // The popup opens under the button, like a menu bar item.
+            POINT screen{hit.bounds.left, hit.bounds.bottom};
+            ClientToScreen(window_, &screen);
+            ShowBookmarkFolderMenu(hit.index, screen);
+          } else {
+            OpenLibraryEntry(hit.index);
           }
+          return 0;
         }
       }
       if (point.y < TabBarHeight()) {
@@ -4128,6 +4465,22 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     }
     case WM_RBUTTONUP: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      if (!full_screen_ && BookmarksBarHeight() > 0) {
+        const int bar_top = TabBarHeight() + ToolbarHeight();
+        if (point.y >= bar_top && point.y < bar_top + BookmarksBarHeight()) {
+          const BookmarkHit* found = nullptr;
+          for (const BookmarkHit& hit : bookmark_bar_hits_) {
+            if (PtInRect(&hit.bounds, point)) {
+              found = &hit;
+              break;
+            }
+          }
+          POINT screen = point;
+          ClientToScreen(window_, &screen);
+          ShowBookmarksBarMenu(found, screen);
+          return 0;
+        }
+      }
       if (!full_screen_ && point.y >= 0 && point.y < TabBarHeight()) {
         RECT client{};
         GetClientRect(window_, &client);
@@ -4211,10 +4564,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           ToggleBookmark();
           break;
         case IDM_BOOKMARKS:
-          ShowLibraryDialog(true);
+          ShowLibraryDialog();
           break;
         case IDM_HISTORY:
-          ShowLibraryDialog(false);
+          OpenHistoryPage();
           break;
         case IDM_DOWNLOADS:
           ShowDownloadsDialog();
@@ -4267,6 +4620,89 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_SETTINGS:
           ShowSettingsDialog();
           break;
+        case IDM_BOOKMARK_NEW_FOLDER: {
+          std::wstring name;
+          if (!PromptForFolderName(L"New bookmark folder",
+                                   L"Name for the new folder:", &name)) {
+            break;
+          }
+          if (!mtk::library::Store::Get().CreateFolder(name)) {
+            MessageBoxW(window_,
+                        L"That folder could not be created.\n\nA folder with "
+                        L"that name may already exist.",
+                        L"Bookmark folders", MB_OK | MB_ICONWARNING);
+            break;
+          }
+          ScheduleLibrarySave();
+          InvalidateRect(window_, nullptr, FALSE);
+          break;
+        }
+        case IDM_BOOKMARK_RENAME_FOLDER: {
+          if (context_folder_name_.empty()) break;
+          std::wstring name;
+          if (!PromptForFolderName(L"Rename bookmark folder",
+                                   L"New name for this folder:", &name)) {
+            break;
+          }
+          if (!mtk::library::Store::Get().RenameFolder(context_folder_name_,
+                                                      name)) {
+            MessageBoxW(window_,
+                        L"That folder could not be renamed.\n\nAnother folder "
+                        L"may already use that name.",
+                        L"Bookmark folders", MB_OK | MB_ICONWARNING);
+            break;
+          }
+          ScheduleLibrarySave();
+          InvalidateRect(window_, nullptr, FALSE);
+          break;
+        }
+        case IDM_BOOKMARK_DELETE_FOLDER: {
+          if (context_folder_name_.empty()) break;
+          auto& store = mtk::library::Store::Get();
+          size_t inside = 0;
+          for (const auto& bookmark : store.bookmarks()) {
+            if (_wcsicmp(bookmark.folder.c_str(),
+                         context_folder_name_.c_str()) == 0) {
+              ++inside;
+            }
+          }
+          // Deleting bookmarks is not reversible, so an occupied folder asks
+          // what should happen to its contents instead of assuming.
+          bool keep = true;
+          if (inside > 0) {
+            const std::wstring question =
+                L"\"" + context_folder_name_ + L"\" holds " +
+                std::to_wstring(inside) +
+                (inside == 1 ? L" bookmark." : L" bookmarks.") +
+                L"\n\nYes: keep them and move them to the top level."
+                L"\nNo: delete them with the folder.";
+            const int answer = MessageBoxW(window_, question.c_str(),
+                                           L"Delete bookmark folder",
+                                           MB_YESNOCANCEL | MB_ICONQUESTION);
+            if (answer == IDCANCEL) break;
+            keep = answer == IDYES;
+          }
+          if (store.RemoveFolder(context_folder_name_, keep)) {
+            ScheduleLibrarySave();
+            InvalidateRect(window_, nullptr, FALSE);
+          }
+          break;
+        }
+        case IDM_BOOKMARK_REMOVE:
+          if (!context_bookmark_url_.empty() &&
+              mtk::library::Store::Get().RemoveBookmark(context_bookmark_url_)) {
+            ScheduleLibrarySave();
+            InvalidateRect(window_, nullptr, FALSE);
+          }
+          break;
+        case IDM_BOOKMARK_MOVE_ROOT:
+          if (!context_bookmark_url_.empty() &&
+              mtk::library::Store::Get().SetBookmarkFolder(
+                  context_bookmark_url_, {})) {
+            ScheduleLibrarySave();
+            InvalidateRect(window_, nullptr, FALSE);
+          }
+          break;
         default: {
           // Profile entries occupy a reserved id range; the name comes from the
           // list captured when the menu was built.
@@ -4276,6 +4712,35 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
             const size_t index = static_cast<size_t>(command - IDM_PROFILE_FIRST);
             if (index < profile_menu_ids_.size()) {
               LaunchProfile(profile_menu_ids_[index]);
+            }
+            break;
+          }
+          // A row of the folder popup. The address comes from the list captured
+          // when that popup was built, not from the menu text.
+          if (command >= IDM_BOOKMARK_OPEN_FIRST &&
+              command < IDM_BOOKMARK_OPEN_FIRST + kMaxFolderMenuEntries) {
+            const size_t index =
+                static_cast<size_t>(command - IDM_BOOKMARK_OPEN_FIRST);
+            if (index < folder_menu_urls_.size()) {
+              const auto decision =
+                  mtk::policy::ResolveInput(folder_menu_urls_[index]);
+              if (decision.allow && tab && tab->client->browser()) {
+                tab->client->browser()->GetMainFrame()->LoadURL(decision.url);
+              }
+            }
+            break;
+          }
+          if (command >= IDM_BOOKMARK_MOVE_FIRST &&
+              command < IDM_BOOKMARK_MOVE_FIRST + kMaxFolderMenuEntries) {
+            const size_t index =
+                static_cast<size_t>(command - IDM_BOOKMARK_MOVE_FIRST);
+            auto& store = mtk::library::Store::Get();
+            if (index < store.folders().size() &&
+                !context_bookmark_url_.empty() &&
+                store.SetBookmarkFolder(context_bookmark_url_,
+                                        store.folders()[index].name)) {
+              ScheduleLibrarySave();
+              InvalidateRect(window_, nullptr, FALSE);
             }
           }
           break;

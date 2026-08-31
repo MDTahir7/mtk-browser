@@ -12,7 +12,7 @@ CAPTION "Parent PIN — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
   LTEXT "", IDC_PIN_PROMPT_TEXT, 14, 12, 240, 20
-  LTEXT "Parent PIN", -1, 14, 40, 240, 10
+  LTEXT "Parent PIN", IDC_PIN_PROMPT_LABEL, 14, 40, 240, 10
   EDITTEXT IDC_PIN_PROMPT_VALUE, 14, 53, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
   DEFPUSHBUTTON "Unlock", IDOK, 118, 76, 66, 14
   PUSHBUTTON "Cancel", IDCANCEL, 188, 76, 66, 14
@@ -23,12 +23,12 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Parent PIN — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "A parent PIN stops safety settings from being changed by someone else. Use at least 4 characters.", -1, 14, 10, 240, 26
+  LTEXT "A parent PIN stops safety settings from being changed by someone else. Use at least 4 characters.", IDC_PIN_SETUP_INTRO, 14, 10, 240, 26
   LTEXT "Current PIN", IDC_PIN_SETUP_CURRENT_LABEL, 14, 42, 240, 10
   EDITTEXT IDC_PIN_SETUP_CURRENT, 14, 55, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
-  LTEXT "New PIN", -1, 14, 76, 240, 10
+  LTEXT "New PIN", IDC_PIN_SETUP_NEW_LABEL, 14, 76, 240, 10
   EDITTEXT IDC_PIN_SETUP_NEW, 14, 89, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
-  LTEXT "Confirm new PIN", -1, 14, 110, 240, 10
+  LTEXT "Confirm new PIN", IDC_PIN_SETUP_CONFIRM_LABEL, 14, 110, 240, 10
   EDITTEXT IDC_PIN_SETUP_CONFIRM, 14, 123, 240, 14, ES_PASSWORD | ES_AUTOHSCROLL
   PUSHBUTTON "Remove PIN", IDC_PIN_SETUP_REMOVE, 14, 146, 76, 14
   DEFPUSHBUTTON "Save PIN", IDOK, 118, 146, 66, 14
@@ -40,7 +40,7 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Clear browsing data — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "Choose what to remove from this computer. This cannot be undone.", -1, 14, 10, 272, 20
+  LTEXT "Choose what to remove from this computer. This cannot be undone.", IDC_CLEAR_INTRO, 14, 10, 272, 20
   AUTOCHECKBOX "Browsing history", IDC_CLEAR_HISTORY, 14, 36, 272, 10
   AUTOCHECKBOX "Download history (files on disk are kept)", IDC_CLEAR_DOWNLOADS, 14, 52, 272, 10
   AUTOCHECKBOX "Cookies and site data (signs you out of sites)", IDC_CLEAR_COOKIES, 14, 68, 272, 10
@@ -49,7 +49,7 @@ BEGIN
   AUTOCHECKBOX "Bookmarks", IDC_CLEAR_BOOKMARKS, 14, 116, 272, 10
   AUTOCHECKBOX "Per-site settings (permissions, cookies, zoom)", IDC_CLEAR_SITE_SETTINGS, 14, 132, 272, 10
   AUTOCHECKBOX "Saved passwords", IDC_CLEAR_PASSWORDS, 14, 148, 272, 10
-  LTEXT "Settings, the parent PIN and the download mode are never changed here.", -1, 14, 168, 272, 20
+  LTEXT "Settings, the parent PIN and the download mode are never changed here.", IDC_CLEAR_NOTE, 14, 168, 272, 20
   DEFPUSHBUTTON "Clear now", IDOK, 148, 198, 66, 14
   PUSHBUTTON "Cancel", IDCANCEL, 220, 198, 66, 14
 END
@@ -59,27 +59,27 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTK Browser Settings"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "General", -1, 16, 14, 140, 10
-  LTEXT "Home page", -1, 16, 34, 270, 10
+  LTEXT "General", IDC_SETTINGS_GENERAL_HEAD, 16, 14, 140, 10
+  LTEXT "Home page", IDC_SETTINGS_HOME_LABEL, 16, 34, 270, 10
   EDITTEXT IDC_SETTINGS_HOME_PAGE, 16, 47, 286, 14, ES_AUTOHSCROLL
-  LTEXT "On startup", -1, 16, 74, 270, 10
+  LTEXT "On startup", IDC_SETTINGS_STARTUP_LABEL, 16, 74, 270, 10
   COMBOBOX IDC_SETTINGS_STARTUP, 16, 87, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Website language preference", -1, 16, 116, 270, 10
+  LTEXT "Website language preference", IDC_SETTINGS_LANGUAGE_LABEL, 16, 116, 270, 10
   COMBOBOX IDC_SETTINGS_LANGUAGE, 16, 129, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Downloads", -1, 16, 158, 270, 10
+  LTEXT "Downloads", IDC_SETTINGS_DOWNLOADS_LABEL, 16, 158, 270, 10
   COMBOBOX IDC_SETTINGS_DOWNLOADS, 16, 171, 286, 48, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", -1, 16, 198, 286, 28
-  LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", -1, 16, 230, 286, 10
-  LTEXT "Language preference takes effect after you restart MTK Browser.", -1, 16, 244, 286, 10
+  LTEXT "Safe downloads save only known file types and ask every time. Standard downloads work like other browsers and save any file type.", IDC_SETTINGS_DOWNLOADS_NOTE, 16, 198, 286, 28
+  LTEXT "Site safety, shields and SafeSearch stay enabled in both modes.", IDC_SETTINGS_SAFETY_NOTE, 16, 230, 286, 10
+  LTEXT "Language preference takes effect after you restart MTK Browser.", IDC_SETTINGS_LANGUAGE_NOTE, 16, 244, 286, 10
 
-  LTEXT "Connection", -1, 16, 262, 140, 10
+  LTEXT "Connection", IDC_SETTINGS_CONNECTION_HEAD, 16, 262, 140, 10
   AUTOCHECKBOX "Block plain HTTP content on pages (HTTPS-only)", IDC_SETTINGS_HTTPS_ONLY, 16, 276, 286, 10
-  LTEXT "Encrypted DNS", -1, 16, 294, 270, 10
+  LTEXT "Encrypted DNS", IDC_SETTINGS_DOH_LABEL, 16, 294, 270, 10
   COMBOBOX IDC_SETTINGS_DOH, 16, 307, 286, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Encrypted DNS takes effect after you restart MTK Browser.", -1, 16, 326, 286, 10
+  LTEXT "Encrypted DNS takes effect after you restart MTK Browser.", IDC_SETTINGS_DOH_NOTE, 16, 326, 286, 10
 
   AUTOCHECKBOX "Check for signed MTK Browser updates automatically", IDC_SETTINGS_AUTO_UPDATE, 16, 344, 286, 10
-  LTEXT "Parent controls", -1, 16, 364, 140, 10
+  LTEXT "Parent controls", IDC_SETTINGS_PARENT_HEAD, 16, 364, 140, 10
   LTEXT "", IDC_SETTINGS_PIN_STATE, 16, 378, 190, 20
   PUSHBUTTON "Parent PIN...", IDC_SETTINGS_PIN, 212, 376, 90, 14
   DEFPUSHBUTTON "Save", IDOK, 162, 400, 66, 14
@@ -91,10 +91,10 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Your filter rules — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "One rule per line. A rule blocks any address that contains it.", -1, 14, 10, 352, 10
-  LTEXT "Start a line with @@ to allow instead of block, or with # for a note.", -1, 14, 24, 352, 10
+  LTEXT "One rule per line. A rule blocks any address that contains it.", IDC_FILTERS_LINE1, 14, 10, 352, 10
+  LTEXT "Start a line with @@ to allow instead of block, or with # for a note.", IDC_FILTERS_LINE2, 14, 24, 352, 10
   EDITTEXT IDC_FILTERS_TEXT, 14, 40, 352, 168, ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP
-  LTEXT "Your rules cannot switch off site safety, SafeSearch or adult-content blocking.", -1, 14, 214, 352, 10
+  LTEXT "Your rules cannot switch off site safety, SafeSearch or adult-content blocking.", IDC_FILTERS_NOTE, 14, 214, 352, 10
   DEFPUSHBUTTON "Save", IDOK, 232, 232, 62, 14
   PUSHBUTTON "Cancel", IDCANCEL, 302, 232, 64, 14
 END
@@ -104,7 +104,7 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Saved passwords — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "Saved sign-ins are encrypted for this Windows account and this profile.", -1, 14, 10, 402, 10
+  LTEXT "Saved sign-ins are encrypted for this Windows account and this profile.", IDC_PASSWORDS_INTRO, 14, 10, 402, 10
   LTEXT "", IDC_PASSWORDS_NOTE, 14, 24, 402, 10
   LISTBOX IDC_PASSWORDS_LIST, 14, 40, 402, 164, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
   PUSHBUTTON "Show password", IDC_PASSWORDS_REVEAL, 14, 218, 86, 14
@@ -119,24 +119,24 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Site settings — MTK Browser"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "Settings for", -1, 14, 10, 292, 10
+  LTEXT "Settings for", IDC_SITE_FOR_LABEL, 14, 10, 292, 10
   LTEXT "", IDC_SITE_ORIGIN, 14, 24, 292, 10
-  LTEXT "These choices apply only to this site.", -1, 14, 40, 292, 10
+  LTEXT "These choices apply only to this site.", IDC_SITE_SCOPE_NOTE, 14, 40, 292, 10
 
-  LTEXT "Camera", -1, 14, 62, 90, 10
+  LTEXT "Camera", IDC_SITE_CAMERA_LABEL, 14, 62, 90, 10
   COMBOBOX IDC_SITE_CAMERA, 110, 60, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
-  LTEXT "Microphone", -1, 14, 84, 90, 10
+  LTEXT "Microphone", IDC_SITE_MICROPHONE_LABEL, 14, 84, 90, 10
   COMBOBOX IDC_SITE_MICROPHONE, 110, 82, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
-  LTEXT "Location", -1, 14, 106, 90, 10
+  LTEXT "Location", IDC_SITE_LOCATION_LABEL, 14, 106, 90, 10
   COMBOBOX IDC_SITE_LOCATION, 110, 104, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
-  LTEXT "Notifications", -1, 14, 128, 90, 10
+  LTEXT "Notifications", IDC_SITE_NOTIFICATIONS_LABEL, 14, 128, 90, 10
   COMBOBOX IDC_SITE_NOTIFICATIONS, 110, 126, 196, 60, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL
 
   AUTOCHECKBOX "Block ads and trackers on this site", IDC_SITE_AD_FILTERING, 14, 156, 292, 10
   AUTOCHECKBOX "Allow cookies and site data", IDC_SITE_COOKIES, 14, 172, 292, 10
-  LTEXT "Site safety, SafeSearch and adult-content blocking stay on for every site and cannot be switched off here.", -1, 14, 188, 292, 20
+  LTEXT "Site safety, SafeSearch and adult-content blocking stay on for every site and cannot be switched off here.", IDC_SITE_SAFETY_NOTE, 14, 188, 292, 20
 
-  LTEXT "Zoom", -1, 14, 216, 40, 10
+  LTEXT "Zoom", IDC_SITE_ZOOM_LABEL, 14, 216, 40, 10
   LTEXT "", IDC_SITE_ZOOM_TEXT, 58, 216, 100, 10
   PUSHBUTTON "Reset zoom", IDC_SITE_ZOOM_RESET, 162, 213, 70, 14
 
@@ -161,8 +161,8 @@ STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "MTK Browser Library"
 FONT 9, "Segoe UI"
 BEGIN
-  LTEXT "Select an item to open it in the current tab.", -1, 14, 10, 240, 10
-  LTEXT "Search", -1, 262, 10, 30, 10
+  LTEXT "Select an item to open it in the current tab.", IDC_LIBRARY_HINT, 14, 10, 240, 10
+  LTEXT "Search", IDC_LIBRARY_SEARCH_LABEL, 262, 10, 30, 10
   EDITTEXT IDC_LIBRARY_SEARCH, 294, 8, 122, 14, ES_AUTOHSCROLL
   LISTBOX IDC_LIBRARY_LIST, 14, 28, 402, 176, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
   DEFPUSHBUTTON "Open", IDC_LIBRARY_OPEN, 152, 218, 62, 14

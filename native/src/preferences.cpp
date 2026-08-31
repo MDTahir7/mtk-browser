@@ -4,15 +4,18 @@
 #include <bcrypt.h>
 
 #include <array>
+#include <optional>
 #include <string_view>
 #include <vector>
 
+#include "home_page.h"
 #include "profile.h"
 
 namespace mtk::preferences {
 namespace {
 
-constexpr wchar_t kDefaultHomePage[] = L"https://www.google.com/?safe=active";
+constexpr wchar_t kLegacyDefaultHomePage[] =
+    L"https://www.google.com/?safe=active";
 constexpr char kDefaultAcceptLanguage[] = "en-US,en,hi";
 constexpr size_t kMaxHomePageLength = 2048;
 
@@ -196,6 +199,8 @@ bool WriteFileAtomically(const std::string& content) {
 }
 
 void ReadValues(const std::string& content, Values* values) {
+  std::optional<std::wstring> loaded_home;
+  std::optional<bool> loaded_home_custom;
   size_t offset = 0;
   while (offset < content.size()) {
     const size_t end = content.find('\n', offset);
@@ -203,6 +208,7 @@ void ReadValues(const std::string& content, Values* values) {
                           (end == std::string::npos ? content.size() : end) - offset);
     if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
     constexpr std::string_view kHomePage = "home_page=";
+    constexpr std::string_view kHomePageMode = "home_page_mode=";
     constexpr std::string_view kAcceptLanguage = "accept_language=";
     constexpr std::string_view kDownloadMode = "download_mode=";
     constexpr std::string_view kStartupMode = "startup_mode=";
@@ -215,12 +221,15 @@ void ReadValues(const std::string& content, Values* values) {
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
           std::string(line.substr(kHomePage.size())));
-      if (IsSafeHomePage(home_page)) values->home_page = home_page;
+      if (IsSafeHomePage(home_page)) loaded_home = home_page;
+    } else if (line.starts_with(kHomePageMode)) {
+      const std::string mode(line.substr(kHomePageMode.size()));
+      if (mode == "default") loaded_home_custom = false;
+      else if (mode == "custom") loaded_home_custom = true;
     } else if (line.starts_with(kAcceptLanguage)) {
       const std::string language(line.substr(kAcceptLanguage.size()));
       if (IsAllowedLanguage(language)) values->accept_language = language;
     } else if (line.starts_with(kDownloadMode)) {
-      // Anything other than the explicit opt-in keeps the safe default.
       const std::string mode(line.substr(kDownloadMode.size()));
       values->download_mode = mode == "standard" ? DownloadMode::kStandard
                                                  : DownloadMode::kSafe;
@@ -230,21 +239,17 @@ void ReadValues(const std::string& content, Values* values) {
                                  ? StartupMode::kContinueSession
                                  : StartupMode::kHomePage;
     } else if (line.starts_with(kPinSalt)) {
-      // A malformed verifier is ignored rather than trusted, which leaves the
-      // browser in the "no PIN set" state instead of an unverifiable one.
       const std::string salt(line.substr(kPinSalt.size()));
       if (IsHexOfLength(salt, kPinSaltBytes)) values->pin_salt = salt;
     } else if (line.starts_with(kPinHash)) {
       const std::string hash(line.substr(kPinHash.size()));
       if (IsHexOfLength(hash, kPinHashBytes)) values->pin_hash = hash;
     } else if (line.starts_with(kAutoUpdate)) {
-      // Anything other than an explicit "off" keeps checks enabled.
       values->auto_update = std::string(line.substr(kAutoUpdate.size())) != "off";
     } else if (line.starts_with(kBookmarksBar)) {
       values->show_bookmarks_bar =
           std::string(line.substr(kBookmarksBar.size())) == "on";
     } else if (line.starts_with(kHttpsOnly)) {
-      // Anything other than an explicit "off" keeps the protection on.
       values->https_only = std::string(line.substr(kHttpsOnly.size())) != "off";
     } else if (line.starts_with(kDohProvider)) {
       const std::string name(line.substr(kDohProvider.size()));
@@ -256,6 +261,22 @@ void ReadValues(const std::string& content, Values* values) {
     }
     if (end == std::string::npos) break;
     offset = end + 1;
+  }
+
+  // Old builds had no mode marker. Their exact Google default is migrated to
+  // the dashboard; every other saved value is treated as an explicit choice.
+  if (loaded_home_custom.value_or(false) && loaded_home &&
+      !mtk::home::IsHomeUrl(WideToUtf8(*loaded_home))) {
+    values->home_page = *loaded_home;
+    values->home_page_custom = true;
+  } else if (!loaded_home_custom.has_value() && loaded_home &&
+             *loaded_home != kLegacyDefaultHomePage &&
+             !mtk::home::IsHomeUrl(WideToUtf8(*loaded_home))) {
+    values->home_page = *loaded_home;
+    values->home_page_custom = true;
+  } else {
+    values->home_page = mtk::home::kHomeUrlWide;
+    values->home_page_custom = false;
   }
 }
 
@@ -315,7 +336,8 @@ Store& Store::Get() {
 void Store::Load() {
   // Named fields, so adding a preference cannot silently shift the defaults.
   values_ = Values{};
-  values_.home_page = kDefaultHomePage;
+  values_.home_page = mtk::home::kHomeUrlWide;
+  values_.home_page_custom = false;
   values_.accept_language = kDefaultAcceptLanguage;
   std::string content;
   if (ReadFile(PreferencesPath(), &content)) ReadValues(content, &values_);
@@ -329,7 +351,14 @@ void Store::Load() {
 const Values& Store::values() const { return values_; }
 
 bool Store::Save(const Values& values) {
+  const std::string home_page = WideToUtf8(values.home_page);
+  const bool valid_default = !values.home_page_custom &&
+                             mtk::home::IsHomeUrl(home_page);
+  const bool valid_custom = values.home_page_custom &&
+                            (home_page.starts_with("https://") ||
+                             home_page.starts_with("http://"));
   if (!IsSafeHomePage(values.home_page) ||
+      (!valid_default && !valid_custom) ||
       !IsAllowedLanguage(values.accept_language)) {
     return false;
   }
@@ -340,7 +369,9 @@ bool Store::Save(const Values& values) {
     return false;
   }
   std::string content =
-      "[MTK Browser]\r\nhome_page=" + WideToUtf8(values.home_page) +
+      "[MTK Browser]\r\nhome_page=" + home_page +
+      "\r\nhome_page_mode=" +
+      (values.home_page_custom ? "custom" : "default") +
       "\r\naccept_language=" + values.accept_language +
       "\r\ndownload_mode=" +
       (values.download_mode == DownloadMode::kStandard ? "standard" : "safe") +

@@ -46,4 +46,16 @@ bool Create(const std::wstring& id);
 // switch is absent.
 std::wstring IdFromCommandLine(const std::wstring& command_line);
 
+// Points the profile root somewhere else for the current process only, and an
+// empty path restores the real one.
+//
+// This exists because the real root comes from the Windows known folder rather
+// than from an environment variable, which is deliberate: an environment
+// variable can be set by anything that starts the browser, and profile paths
+// decide where credentials and browsing data live. The consequence is that a
+// test cannot redirect the stores by setting LOCALAPPDATA, so without this hook
+// the logic tests would read and write the real profile. Nothing in the shipping
+// browser calls it.
+void SetRootForTesting(const std::wstring& root);
+
 }  // namespace mtk::profile

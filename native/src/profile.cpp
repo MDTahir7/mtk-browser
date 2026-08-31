@@ -10,8 +10,11 @@ namespace {
 
 std::wstring g_active_id = kDefaultId;
 bool g_initialized = false;
+// Set only by SetRootForTesting; empty in the shipping browser.
+std::wstring g_root_override;
 
 std::wstring InstallationRoot() {
+  if (!g_root_override.empty()) return g_root_override;
   PWSTR path = nullptr;
   if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path))) {
     return {};
@@ -106,6 +109,8 @@ bool Create(const std::wstring& id) {
   return EnsureDirectory(InstallationRoot()) && EnsureDirectory(ProfilesRoot()) &&
          EnsureDirectory(ProfilesRoot() + L"\\" + id);
 }
+
+void SetRootForTesting(const std::wstring& root) { g_root_override = root; }
 
 std::wstring IdFromCommandLine(const std::wstring& command_line) {
   constexpr std::wstring_view kSwitch = L"--profile=";

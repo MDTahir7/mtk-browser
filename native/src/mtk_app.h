@@ -19,6 +19,8 @@ class MtkApp final : public CefApp,
 
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override;
   CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override;
+  void OnRegisterCustomSchemes(
+      CefRawPtr<CefSchemeRegistrar> registrar) override;
   void OnContextInitialized() override;
 
   // Media and accessibility switches are applied here, before Chromium reads

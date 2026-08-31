@@ -4,6 +4,8 @@
 
 #include <string>
 
+#include "browser_client.h"
+#include "home_page.h"
 #include "password_store.h"
 #include "site_settings.h"
 

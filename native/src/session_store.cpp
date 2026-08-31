@@ -6,6 +6,7 @@
 #include <charconv>
 #include <string_view>
 
+#include "home_page.h"
 #include "policy.h"
 #include "preferences.h"
 
@@ -104,6 +105,10 @@ bool WriteAtomically(const std::string& content) {
 
 bool IsRestorable(const std::string& raw_url, std::string* normalized) {
   if (raw_url.empty() || raw_url.size() > kMaxUrlBytes) return false;
+  if (mtk::home::IsHomeUrl(raw_url)) {
+    *normalized = mtk::home::kHomeUrl;
+    return true;
+  }
   const auto decision = mtk::policy::EvaluateNavigation(raw_url);
   if (!decision.allow ||
       (!decision.url.starts_with("https://") &&

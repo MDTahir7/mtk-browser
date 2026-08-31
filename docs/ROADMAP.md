@@ -96,6 +96,17 @@ has been actually built and verified, and any limitation is written down.
     none of these tests need CEF, and it also checks the committed animation and
     icon-strip assets against the same limits the release staging script
     enforces, so a bad asset fails on push rather than at packaging time.
+  - Fixed while adding the bookmark-folder cases: the suite had been reading and
+    writing the **real** profile. Several cases redirected `LOCALAPPDATA`, but the
+    profile root comes from a Windows known folder rather than that variable, so
+    the redirection did nothing and cases that write, clear or delete were acting
+    on real session, password, site-settings, crash-history and user-filter
+    files. `profile::SetRootForTesting` now exists for this, `RunAll` points the
+    whole suite at a throwaway directory before the first case and removes it
+    afterwards, and it refuses to run at all if that directory cannot be created.
+    `WritingToSuiteProfile()` lets a case assert the redirection is in effect
+    before it touches a file. Verified by hashing every file in the real profile
+    directory around a full run: nothing changed.
   - Remaining: a Release build in CI would have to download and cache the ~1 GB
     CEF binary distribution, so that is deliberately left out; the local build is
     what gates a commit today. Coverage for CEF-dependent paths still needs a
@@ -160,13 +171,57 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     Chrome, Edge and Brave (`native/src/bookmark_import.cpp`). Imported
     bookmarks pass through `EvaluateNavigation`, so an import cannot introduce an
     address the browser refuses to open, and the refused count is reported.
-  - Remaining: folders. `library_store` has a flat list, so folders need a
-    format change, drag-and-drop, and a bar overflow menu.
-- [~] **T2.5 History with search and date grouping**
-  - Done: live search box, and history grouped by Today / Yesterday / long date
-    using the new per-entry timestamp. Group rows are not selectable.
-  - Remaining: this is still a dialog, not a browsable page, and there is no
-    "remove all from this day".
+  - Done: folders, as one shallow level rather than a tree. `library.v1` gained
+    `F` folder records and an optional folder field on `B` records, both trailing
+    and optional, so a file written before folders loads unchanged and everything
+    in it stays at the top level. Names are trimmed, capped at 64 characters,
+    refuse control characters, and are unique without regard to case; there is a
+    cap of 30 folders.
+  - Folders lead the bookmarks bar and open a popup of their contents. The bar's
+    right-click menu creates, renames and deletes folders, moves a bookmark
+    between folders or back to the top level, and removes a bookmark. Deleting a
+    folder that holds bookmarks asks whether to keep them or delete them with it.
+    Renaming updates the folder and its bookmarks together, so the two cannot
+    disagree, and a bookmark that names a folder with no record gets that folder
+    registered rather than being moved silently.
+  - 11 cases in `tests/bookmark_folder_tests.cpp` cover name validation, the
+    uniqueness and count caps, moving between folders, saving into a folder that
+    does not exist, renaming, both deletion answers, a save/reload round trip
+    including an empty folder and a non-Latin name, loading a file from before
+    folders, an orphaned folder reference, malformed records, and that clearing
+    bookmarks clears folders too.
+  - Remaining: drag-and-drop, a bar overflow menu for when the buttons no longer
+    fit, nesting beyond one level, choosing the folder while saving with `Ctrl+D`,
+    and on-screen confirmation of the bar and its menus.
+- [~] **T2.5 History as a browsable page, with search and date grouping**
+  - Done: history is now a browser-owned document at `mtk://history/`
+    (`native/src/history_page.*`), served by the same `mtk` scheme as the home
+    page. `Alt+H`, the overflow menu and the home page all open it, so the list
+    dialog is no longer the history surface. Entries are grouped by local
+    calendar day as Today / Yesterday / long date, each group shows its count and
+    a "Remove this day" action, each row can be removed individually, and there
+    is "Remove everything". Every delete is confirmed in a browser dialog, not on
+    the page.
+  - The page carries no script of its own, so search is an ordinary GET form back
+    to the document and the greeting-style dynamic parts are rendered in C++. Its
+    CSP allows `form-action 'self'` only; the home page keeps its narrower Google
+    form action. Addresses the safety policy would now refuse are listed as a
+    count instead of being offered as links, and a private window renders the
+    empty state rather than the on-disk profile's history.
+  - Row deletion carries the row index **and** the stored timestamp, and the
+    browser only removes the row when both still agree, so a list that changed
+    between render and click cannot delete a different page.
+  - 10 cases in `tests/history_page_tests.cpp` cover URL and query acceptance
+    (lookalike hosts, extra parameters, fragments, control characters, malformed
+    escapes, length), the action allowlist, local-day grouping across midnight,
+    search, HTML escaping of stored titles and addresses, the private-window empty
+    state, and the absence of script or remote references. Suite is now 113
+    cases, 0 failed.
+  - The library dialog is now bookmarks-only: its history branch, the day-group
+    helpers it needed and the flag that selected between the two are gone, so
+    there is one history surface rather than two that could disagree.
+  - Remaining: on-screen confirmation in the running browser, and a keyboard
+    focus styling pass on the page.
 - [~] **T2.6 Tab UX**: drag-reorder, pin, mute, duplicate, middle-click close,
       right-click tab menu, `Ctrl+1..8`/`Ctrl+9`, `Ctrl+M`, `Ctrl+Shift+T`,
       overflow scrolling. Pinned tabs are the leading run of the strip, get a
@@ -240,10 +295,34 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     flag is now set for the browser and for the test build, and a test asserts
     the Hindi strings really are Devanagari, since this class of bug compiles
     cleanly either way.
-  - Remaining: the resource-defined dialogs (Settings, Library, Downloads, Site
-    settings, PIN prompts) are still English, as are the block page, the
-    shortcut page, the Shields panel and the message boxes. Those need either
-    per-language resource sets or runtime text assignment.
+  - Done: the resource dialogs are translated by runtime text assignment rather
+    than by keeping one dialog template per language, which would duplicate every
+    layout. `native/src/dialog_text.*` replaces a dialog's caption and the text of
+    a listed set of controls from the same table, so a dialog label cannot drift
+    away from the menu string next to it. The templates keep their English text,
+    which is what a resource editor shows and what appears if the pass is ever
+    skipped. Static labels that were left at `-1` in the script now carry real
+    ids, because a label without an id cannot be addressed at run time.
+  - Every resource dialog now goes through this route: Bookmarks, Downloads,
+    Clear browsing data, the parent-PIN prompt and setup, the shared text prompt,
+    Settings, Site settings, Saved passwords and Your filter rules. The combo-box
+    items built in code are translated too: startup mode, download mode, the
+    per-site permission choices and the encrypted-DNS list. Language names in the
+    language picker stay in their own language, which is how someone finds the one
+    they can read, and DNS operator names stay as they are while the description
+    beside each is translated.
+  - `DohLabel` in the preference layer is no longer what the Settings list shows;
+    the window maps a provider to a string id instead, so display text lives with
+    the other display text rather than in the store.
+  - About 85 new strings. The suite already checked that every entry has both
+    languages and that the English side stays ASCII, which caught a real mistake
+    here: em dashes in English dialog captions. The Devanagari spot-check list now
+    covers the dialog strings, so mojibake in them fails a run rather than
+    shipping.
+  - Remaining: the block page, the shortcut page, the Shields panel and the
+    message boxes. Hindi layout also needs an on-screen pass, because Devanagari
+    is taller than Latin and the templates use fixed label heights, so a longer
+    translation may clip.
 
 ## Tier 3 — Brave-level differentiators
 

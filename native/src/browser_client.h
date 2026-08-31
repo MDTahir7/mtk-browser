@@ -11,6 +11,8 @@
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_resource_request_handler.h"
+#include "history_page.h"
+#include "home_page.h"
 
 class BrowserClient;
 
@@ -33,6 +35,14 @@ class BrowserClientDelegate {
   virtual void OnBrowserPopupRequested(BrowserClient* client,
                                        const std::string& url) = 0;
   virtual void OnBrowserDownloadsChanged(BrowserClient* client) = 0;
+  // Dispatches only allowlisted actions clicked from the exact built-in home
+  // document. No arbitrary URL or script payload crosses this boundary.
+  virtual void OnBrowserHomeAction(BrowserClient* client,
+                                   mtk::home::Action action) = 0;
+  // The same arrangement for the built-in history document. Deleting anything
+  // asks for confirmation on the browser side, not on the page.
+  virtual void OnBrowserHistoryAction(BrowserClient* client,
+                                      const mtk::history::Action& action) = 0;
   virtual bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
                                  bool control, bool alt, bool shift) = 0;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace mtk::preferences {
 
@@ -15,6 +16,17 @@ enum class StartupMode {
   kHomePage,
   kContinueSession,
 };
+
+// New profiles use MTK's local dashboard. A separate mode lets old and future
+// custom home URLs survive without pretending the internal page is a web URL.
+enum class HomePageMode {
+  kBrowserHome,
+  kCustom,
+};
+
+// Preferences written before home_page_mode existed are migrated
+// conservatively: only the old built-in Google default becomes MTK home.
+HomePageMode InferLegacyHomePageMode(std::wstring_view home_page);
 
 // DNS-over-HTTPS resolver. kSystem leaves DNS to Windows, which is the only
 // choice that can use a resolver configured for the whole machine.
@@ -32,7 +44,11 @@ const char* DohTemplate(DohProvider provider);
 const wchar_t* DohLabel(DohProvider provider);
 
 struct Values {
+  // The built-in dashboard is the default. `home_page_custom` records whether
+  // the user explicitly chose a web address, so an old default can be migrated
+  // without overwriting a real custom choice.
   std::wstring home_page;
+  bool home_page_custom = false;
   std::string accept_language;
   DownloadMode download_mode = DownloadMode::kSafe;
   StartupMode startup_mode = StartupMode::kHomePage;

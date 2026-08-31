@@ -40,12 +40,20 @@ $sources = @(
     (Join-Path $testDir 'crash_tests.cpp'),
     (Join-Path $testDir 'user_filter_tests.cpp'),
     (Join-Path $testDir 'connection_tests.cpp'),
+    (Join-Path $testDir 'history_page_tests.cpp'),
+    (Join-Path $testDir 'bookmark_folder_tests.cpp'),
     (Join-Path $sourceDir 'user_filters.cpp'),
     (Join-Path $sourceDir 'strings.cpp'),
     (Join-Path $sourceDir 'password_store.cpp'),
     (Join-Path $sourceDir 'crash_guard.cpp'),
     (Join-Path $sourceDir 'policy.cpp'),
+    # The built-in documents. Session restore and the home-page preference both
+    # ask the home page whether a URL is the browser's own page, so it links
+    # here too; the history page is covered by its own cases.
+    (Join-Path $sourceDir 'home_page.cpp'),
+    (Join-Path $sourceDir 'history_page.cpp'),
     (Join-Path $sourceDir 'bookmark_import.cpp'),
+    (Join-Path $sourceDir 'library_store.cpp'),
     (Join-Path $sourceDir 'profile.cpp'),
     (Join-Path $sourceDir 'site_settings.cpp'),
     (Join-Path $sourceDir 'filter_engine.cpp'),

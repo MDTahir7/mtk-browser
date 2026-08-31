@@ -67,6 +67,40 @@
 #define IDC_FILTERS_TEXT 1254
 #define IDC_SETTINGS_HTTPS_ONLY 1255
 #define IDC_SETTINGS_DOH 1256
+// Static labels need real ids so their text can be replaced at run time. A label
+// left at -1 cannot be addressed, which is why these exist.
+#define IDC_PIN_PROMPT_LABEL 1257
+#define IDC_PIN_SETUP_INTRO 1258
+#define IDC_PIN_SETUP_NEW_LABEL 1259
+#define IDC_PIN_SETUP_CONFIRM_LABEL 1260
+#define IDC_CLEAR_INTRO 1261
+#define IDC_CLEAR_NOTE 1262
+#define IDC_LIBRARY_HINT 1263
+#define IDC_LIBRARY_SEARCH_LABEL 1264
+#define IDC_SETTINGS_GENERAL_HEAD 1265
+#define IDC_SETTINGS_HOME_LABEL 1266
+#define IDC_SETTINGS_STARTUP_LABEL 1267
+#define IDC_SETTINGS_LANGUAGE_LABEL 1268
+#define IDC_SETTINGS_DOWNLOADS_LABEL 1269
+#define IDC_SETTINGS_DOWNLOADS_NOTE 1270
+#define IDC_SETTINGS_SAFETY_NOTE 1271
+#define IDC_SETTINGS_LANGUAGE_NOTE 1272
+#define IDC_SETTINGS_CONNECTION_HEAD 1273
+#define IDC_SETTINGS_DOH_LABEL 1274
+#define IDC_SETTINGS_DOH_NOTE 1275
+#define IDC_SETTINGS_PARENT_HEAD 1276
+#define IDC_FILTERS_LINE1 1277
+#define IDC_FILTERS_LINE2 1278
+#define IDC_FILTERS_NOTE 1279
+#define IDC_PASSWORDS_INTRO 1280
+#define IDC_SITE_FOR_LABEL 1281
+#define IDC_SITE_SCOPE_NOTE 1282
+#define IDC_SITE_CAMERA_LABEL 1283
+#define IDC_SITE_MICROPHONE_LABEL 1284
+#define IDC_SITE_LOCATION_LABEL 1285
+#define IDC_SITE_NOTIFICATIONS_LABEL 1286
+#define IDC_SITE_SAFETY_NOTE 1287
+#define IDC_SITE_ZOOM_LABEL 1288
 
 #define IDM_ADD_BOOKMARK 4001
 #define IDM_BOOKMARKS 4002
@@ -90,7 +124,16 @@
 #define IDM_USER_FILTERS 4020
 // Profile entries take a small reserved block; the window keeps the matching
 // names in menu order.
+#define IDM_BOOKMARK_NEW_FOLDER 4021
+#define IDM_BOOKMARK_RENAME_FOLDER 4022
+#define IDM_BOOKMARK_DELETE_FOLDER 4023
+#define IDM_BOOKMARK_REMOVE 4024
+#define IDM_BOOKMARK_MOVE_ROOT 4025
 #define IDM_PROFILE_FIRST 4100
+// Dynamic ranges. Each is sized by its own cap in browser_window.cpp, and they
+// are spaced so a list can grow without running into the next range.
+#define IDM_BOOKMARK_OPEN_FIRST 4200
+#define IDM_BOOKMARK_MOVE_FIRST 4800
 
 // Kept distinct from IDC_CLEAR_HISTORY; both dialogs share one id space in the
 // resource script, so a duplicate here silently aliases two controls.
