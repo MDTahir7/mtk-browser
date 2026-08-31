@@ -2198,9 +2198,14 @@ void BrowserWindow::SaveSessionSnapshot() {
   // choosing the home page still means nothing is left on disk afterwards.
   if (private_session_) return;
   std::vector<std::string> urls;
+  std::vector<bool> pinned;
   urls.reserve(tabs_.size());
-  for (const auto& tab : tabs_) urls.push_back(WideToUtf8(tab.url));
-  mtk::session::Save(urls, active_tab_);
+  pinned.reserve(tabs_.size());
+  for (const auto& tab : tabs_) {
+    urls.push_back(WideToUtf8(tab.url));
+    pinned.push_back(tab.pinned);
+  }
+  mtk::session::Save(urls, active_tab_, pinned);
 }
 
 void BrowserWindow::CreateStartupTabs() {
@@ -2228,7 +2233,13 @@ void BrowserWindow::CreateStartupTabs() {
                                      : L" tabs that were open?");
       if (MessageBoxW(window_, question.c_str(), L"Restore tabs",
                       MB_YESNO | MB_ICONQUESTION) == IDYES) {
-        for (const auto& url : snapshot.urls) CreateTab(url);
+        for (size_t index = 0; index < snapshot.urls.size(); ++index) {
+          if (CreateTab(snapshot.urls[index])) {
+            // Pinned tabs were already the leading run when saved, so setting
+            // the flag in save order keeps that invariant without reordering.
+            tabs_.back().pinned = snapshot.pinned[index];
+          }
+        }
         if (!tabs_.empty()) {
           active_tab_ = std::min(snapshot.active_index, tabs_.size() - 1);
           return;
@@ -2241,7 +2252,11 @@ void BrowserWindow::CreateStartupTabs() {
           mtk::preferences::StartupMode::kContinueSession &&
       owns_session_) {
     const auto snapshot = mtk::session::Load();
-    for (const auto& url : snapshot.urls) CreateTab(url);
+    for (size_t index = 0; index < snapshot.urls.size(); ++index) {
+      if (CreateTab(snapshot.urls[index])) {
+        tabs_.back().pinned = snapshot.pinned[index];
+      }
+    }
     if (!tabs_.empty()) {
       active_tab_ = std::min(snapshot.active_index, tabs_.size() - 1);
       return;

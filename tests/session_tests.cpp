@@ -130,3 +130,49 @@ MTK_TEST(SessionUrlsAreNormalisedThroughPolicy) {
     MTK_EXPECT_EQ_STR(snapshot.urls[0], "https://example.com/page");
   }
 }
+
+MTK_TEST(SessionPinnedStateRoundTrips) {
+  ScopedProfile profile;
+  MTK_EXPECT_TRUE(mtk::session::Save(
+      {"https://example.com/", "https://www.iana.org/", "https://example.org/"},
+      1, {true, false, true}));
+
+  const auto snapshot = mtk::session::Load();
+  MTK_EXPECT_EQ_INT(snapshot.urls.size(), 3);
+  MTK_EXPECT_EQ_INT(snapshot.pinned.size(), 3);
+  if (snapshot.pinned.size() == 3) {
+    MTK_EXPECT_TRUE(snapshot.pinned[0]);
+    MTK_EXPECT_TRUE(!snapshot.pinned[1]);
+    MTK_EXPECT_TRUE(snapshot.pinned[2]);
+  }
+}
+
+MTK_TEST(SessionMissingPinnedArgumentRestoresEverythingUnpinned) {
+  ScopedProfile profile;
+  // Callers that do not pass `pinned` at all (or pass fewer entries than
+  // `urls`) must not crash, and every such tab restores unpinned.
+  MTK_EXPECT_TRUE(mtk::session::Save({"https://example.com/"}, 0));
+
+  const auto snapshot = mtk::session::Load();
+  MTK_EXPECT_EQ_INT(snapshot.urls.size(), 1);
+  MTK_EXPECT_EQ_INT(snapshot.pinned.size(), 1);
+  if (!snapshot.pinned.empty()) MTK_EXPECT_TRUE(!snapshot.pinned[0]);
+}
+
+MTK_TEST(SessionPinnedIndexesFollowSurvivingUrlsAfterFiltering) {
+  ScopedProfile profile;
+  // The unsafe entry at index 1 is dropped; its neighbour's pinned flag must
+  // stay attached to the URL it belongs to, not shift into the gap.
+  MTK_EXPECT_TRUE(mtk::session::Save(
+      {"https://example.com/", "data:text/html,x", "https://example.org/"}, 0,
+      {false, true, true}));
+
+  const auto snapshot = mtk::session::Load();
+  MTK_EXPECT_EQ_INT(snapshot.urls.size(), 2);
+  if (snapshot.urls.size() == 2 && snapshot.pinned.size() == 2) {
+    MTK_EXPECT_EQ_STR(snapshot.urls[0], "https://example.com/");
+    MTK_EXPECT_TRUE(!snapshot.pinned[0]);
+    MTK_EXPECT_EQ_STR(snapshot.urls[1], "https://example.org/");
+    MTK_EXPECT_TRUE(snapshot.pinned[1]);
+  }
+}
