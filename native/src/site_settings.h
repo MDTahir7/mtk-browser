@@ -39,6 +39,10 @@ struct Rule {
   // Cookies and other site data. Blocking is enforced through CEF's cookie
   // access filter, so it applies to both sending and storing.
   bool cookies = true;
+  // Exempts this site from the global HTTPS-only refusal of its own plain-HTTP
+  // subresources. For the rare page that has no https at all; it never affects
+  // the main-frame upgrade, which HTTPS-only leaves alone regardless.
+  bool allow_plain_http = false;
 };
 
 // Scheme and host of `url`, lowercased, or an empty string when the URL is not

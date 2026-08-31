@@ -134,11 +134,13 @@ bool IsDefault(const Rule& rule) {
          rule.microphone == Permission::kAsk &&
          rule.location == Permission::kAsk &&
          rule.notifications == Permission::kAsk && rule.ad_filtering &&
-         rule.cookies;
+         rule.cookies && !rule.allow_plain_http;
 }
 
 // Field layout, tab separated: origin, zoom, four permission codes, ad
-// filtering, cookies. Any malformed line is skipped rather than failing the
+// filtering, cookies, allow-plain-http. The last field is new and optional on
+// read, so a file written before it existed still parses with the field
+// defaulting to false. Any malformed line is skipped rather than failing the
 // whole file, so one bad row cannot lose every other rule.
 std::string Serialize(const std::vector<Rule>& rules) {
   std::string content = std::string(kHeader) + "\r\n";
@@ -156,6 +158,8 @@ std::string Serialize(const std::vector<Rule>& rules) {
     content += rule.ad_filtering ? '1' : '0';
     content += '\t';
     content += rule.cookies ? '1' : '0';
+    content += '\t';
+    content += rule.allow_plain_http ? '1' : '0';
     content += "\r\n";
   }
   return content;
@@ -273,6 +277,7 @@ void Store::Load() {
         }
         rule.ad_filtering = fields[3] != "0";
         rule.cookies = fields.size() < 5 || fields[4] != "0";
+        rule.allow_plain_http = fields.size() >= 6 && fields[5] == "1";
         if (!HasRule(rule.origin)) rules_.push_back(std::move(rule));
       }
     }

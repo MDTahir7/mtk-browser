@@ -104,14 +104,33 @@ MTK_TEST(SiteStoreDefaultsAreSafe) {
   store.Clear();
   const auto rule = store.For("https://unknown.example");
   // No permission is granted by default, filtering is on, cookies behave
-  // normally and zoom is untouched.
+  // normally, zoom is untouched and HTTPS-only is not exempted.
   MTK_EXPECT_TRUE(rule.camera == mtk::sites::Permission::kAsk);
   MTK_EXPECT_TRUE(rule.microphone == mtk::sites::Permission::kAsk);
   MTK_EXPECT_TRUE(rule.location == mtk::sites::Permission::kAsk);
   MTK_EXPECT_TRUE(rule.notifications == mtk::sites::Permission::kAsk);
   MTK_EXPECT_TRUE(rule.ad_filtering);
   MTK_EXPECT_TRUE(rule.cookies);
+  MTK_EXPECT_TRUE(!rule.allow_plain_http);
   MTK_EXPECT_EQ_INT(rule.zoom_percent, 100);
+}
+
+MTK_TEST(SiteStoreAllowPlainHttpRoundTrips) {
+  auto& store = mtk::sites::Store::Get();
+  store.Clear();
+
+  mtk::sites::Rule rule;
+  rule.origin = "https://example.com";
+  rule.allow_plain_http = true;
+  MTK_EXPECT_TRUE(store.Set(rule));
+  MTK_EXPECT_TRUE(store.HasRule("https://example.com"));
+  MTK_EXPECT_TRUE(store.For("https://example.com").allow_plain_http);
+
+  // Turning it back off removes the rule again, since nothing else is set.
+  rule.allow_plain_http = false;
+  MTK_EXPECT_TRUE(store.Set(rule));
+  MTK_EXPECT_FALSE(store.HasRule("https://example.com"));
+  store.Clear();
 }
 
 MTK_TEST(SiteShieldsOffNeverWeakensSafetyRules) {

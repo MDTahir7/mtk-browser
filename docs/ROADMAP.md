@@ -360,9 +360,15 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     layer as well, and "Use the Windows DNS setting" switches it off. The mode is
     `automatic`, not `secure`, so an unreachable resolver degrades instead of
     looking like a broken internet connection.
+  - Done: a per-site "Allow plain HTTP on this site" switch in the site
+    settings dialog (`Alt+S`), stored as `allow_plain_http` on `sites::Rule`.
+    `policy::EvaluateRequest` looks up the request's initiator origin and skips
+    the HTTPS-only refusal only for that exact origin; every other safety rule
+    in the same function, and the global toggle for every other site, are
+    unaffected. Covered by new cases in `site_settings_tests.cpp` and
+    `connection_tests.cpp`.
   - Remaining: on-screen confirmation that lookups really are encrypted (e.g.
-    against a resolver test page), and a per-site HTTP exception for the rare page
-    that has no https at all.
+    against a resolver test page).
 - [ ] **T3.6 Managed, updatable filter and category feed** (signed, with fail-safe
       fallback to the bundled list)
 - [ ] **T3.7 Performance**: background tab freeze/discard, startup and memory work

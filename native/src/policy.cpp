@@ -7,6 +7,7 @@
 
 #include "filter_engine.h"
 #include "preferences.h"
+#include "site_settings.h"
 
 namespace mtk::policy {
 namespace {
@@ -546,10 +547,18 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
   // HTTPS-only applies to what a page pulls in, not to what you type. A typed or
   // linked address is upgraded to https by EnforceSafeSearch on the allowed
   // path, so refusing http main frames here would turn an upgrade into a block
-  // page.
+  // page. A site can be excused from this one rule through its own site
+  // settings, for the rare page that has no https at all; every other safety
+  // rule above stays in force regardless.
   if (resource_type != ResourceType::kMainFrame && url.starts_with("http://") &&
       mtk::preferences::Store::Get().values().https_only) {
-    return {false, L"Plain HTTP blocked by HTTPS-only mode"};
+    const std::string initiator_origin =
+        mtk::sites::OriginOf(request_initiator);
+    const bool exempted = !initiator_origin.empty() &&
+        mtk::sites::Store::Get().For(initiator_origin).allow_plain_http;
+    if (!exempted) {
+      return {false, L"Plain HTTP blocked by HTTPS-only mode"};
+    }
   }
 
   if (apply_ad_filtering &&

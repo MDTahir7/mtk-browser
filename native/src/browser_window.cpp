@@ -620,6 +620,7 @@ INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
             {IDC_SITE_NOTIFICATIONS_LABEL, Text::kNotifications},
             {IDC_SITE_AD_FILTERING, Text::kBlockAdsOnSite},
             {IDC_SITE_COOKIES, Text::kAllowCookiesOnSite},
+            {IDC_SITE_ALLOW_PLAIN_HTTP, Text::kAllowPlainHttpOnSite},
             {IDC_SITE_SAFETY_NOTE, Text::kSiteSafetyNote},
             {IDC_SITE_ZOOM_LABEL, Text::kZoom},
             {IDC_SITE_ZOOM_RESET, Text::kResetZoom},
@@ -639,6 +640,9 @@ INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
                      context->rule.ad_filtering ? BST_CHECKED : BST_UNCHECKED);
       CheckDlgButton(dialog, IDC_SITE_COOKIES,
                      context->rule.cookies ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_SITE_ALLOW_PLAIN_HTTP,
+                     context->rule.allow_plain_http ? BST_CHECKED
+                                                     : BST_UNCHECKED);
       SetDlgItemTextW(
           dialog, IDC_SITE_ZOOM_TEXT,
           (std::to_wstring(context->rule.zoom_percent) + L"%").c_str());
@@ -673,6 +677,9 @@ INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
                 IsDlgButtonChecked(dialog, IDC_SITE_AD_FILTERING) == BST_CHECKED;
             context->rule.cookies =
                 IsDlgButtonChecked(dialog, IDC_SITE_COOKIES) == BST_CHECKED;
+            context->rule.allow_plain_http =
+                IsDlgButtonChecked(dialog, IDC_SITE_ALLOW_PLAIN_HTTP) ==
+                BST_CHECKED;
           }
           EndDialog(dialog, IDOK);
           return TRUE;

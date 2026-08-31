@@ -227,6 +227,8 @@ namespace mtk::strings {
     L"इस साइट पर विज्ञापन और ट्रैकर रोकें")                                       \
   V(kAllowCookiesOnSite, L"Allow cookies and site data",                          \
     L"कुकीज़ और साइट डेटा की अनुमति दें")                                          \
+  V(kAllowPlainHttpOnSite, L"Allow plain HTTP on this site",                      \
+    L"इस साइट पर सादा HTTP की अनुमति दें")                                        \
   V(kSiteSafetyNote,                                                            \
     L"Site safety, SafeSearch and adult-content blocking stay on for every site "  \
     L"and cannot be switched off here.",                                          \

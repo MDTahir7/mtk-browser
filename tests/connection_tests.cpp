@@ -9,6 +9,7 @@
 
 #include "policy.h"
 #include "preferences.h"
+#include "site_settings.h"
 #include "test_support.h"
 
 namespace {
@@ -46,6 +47,30 @@ MTK_TEST(HttpsOnlyLeavesMainFrameAddressesToTheUpgrade) {
 MTK_TEST(HttpsSubresourcesStillAllowedOverHttps) {
   MTK_EXPECT_FALSE(Refused("https://example.com/app.js",
                            mtk::policy::ResourceType::kScript));
+}
+
+MTK_TEST(HttpsOnlyExemptsOnlyTheOptedInInitiatorOrigin) {
+  auto& store = mtk::sites::Store::Get();
+  store.Clear();
+  mtk::sites::Rule rule;
+  rule.origin = "https://plaintext-only.example";
+  rule.allow_plain_http = true;
+  MTK_EXPECT_TRUE(store.Set(rule));
+
+  // A subresource requested by a page that opted in is allowed even though it
+  // is plain http. (logo.png is neither an ad-host label nor a tracking path,
+  // so only the HTTPS-only rule is in play here.)
+  MTK_EXPECT_FALSE(!mtk::policy::EvaluateRequest(
+      "http://example.com/logo.png", mtk::policy::ResourceType::kImage,
+      "https://plaintext-only.example").allow);
+  // The same request from a page that did not opt in is still refused.
+  MTK_EXPECT_TRUE(!mtk::policy::EvaluateRequest(
+      "http://example.com/logo.png", mtk::policy::ResourceType::kImage,
+      "https://other.example").allow);
+  // No initiator at all (the browser's own requests) is also still refused.
+  MTK_EXPECT_TRUE(Refused("http://example.com/logo.png",
+                          mtk::policy::ResourceType::kImage));
+  store.Clear();
 }
 
 MTK_TEST(DohProvidersHaveHttpsTemplatesExceptSystem) {

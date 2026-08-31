@@ -114,7 +114,7 @@ BEGIN
   DEFPUSHBUTTON "Close", IDCANCEL, 362, 218, 54, 14
 END
 
-IDD_SITE_SETTINGS DIALOGEX 0, 0, 320, 268
+IDD_SITE_SETTINGS DIALOGEX 0, 0, 320, 284
 STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Site settings — MTK Browser"
 FONT 9, "Segoe UI"
@@ -134,15 +134,16 @@ BEGIN
 
   AUTOCHECKBOX "Block ads and trackers on this site", IDC_SITE_AD_FILTERING, 14, 156, 292, 10
   AUTOCHECKBOX "Allow cookies and site data", IDC_SITE_COOKIES, 14, 172, 292, 10
-  LTEXT "Site safety, SafeSearch and adult-content blocking stay on for every site and cannot be switched off here.", IDC_SITE_SAFETY_NOTE, 14, 188, 292, 20
+  AUTOCHECKBOX "Allow plain HTTP on this site", IDC_SITE_ALLOW_PLAIN_HTTP, 14, 188, 292, 10
+  LTEXT "Site safety, SafeSearch and adult-content blocking stay on for every site and cannot be switched off here.", IDC_SITE_SAFETY_NOTE, 14, 204, 292, 20
 
-  LTEXT "Zoom", IDC_SITE_ZOOM_LABEL, 14, 216, 40, 10
-  LTEXT "", IDC_SITE_ZOOM_TEXT, 58, 216, 100, 10
-  PUSHBUTTON "Reset zoom", IDC_SITE_ZOOM_RESET, 162, 213, 70, 14
+  LTEXT "Zoom", IDC_SITE_ZOOM_LABEL, 14, 232, 40, 10
+  LTEXT "", IDC_SITE_ZOOM_TEXT, 58, 232, 100, 10
+  PUSHBUTTON "Reset zoom", IDC_SITE_ZOOM_RESET, 162, 229, 70, 14
 
-  PUSHBUTTON "Forget site", IDC_SITE_FORGET, 14, 240, 70, 14
-  DEFPUSHBUTTON "Save", IDOK, 174, 240, 62, 14
-  PUSHBUTTON "Cancel", IDCANCEL, 244, 240, 62, 14
+  PUSHBUTTON "Forget site", IDC_SITE_FORGET, 14, 256, 70, 14
+  DEFPUSHBUTTON "Save", IDOK, 174, 256, 62, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 244, 256, 62, 14
 END
 
 IDD_TEXT_PROMPT DIALOGEX 0, 0, 268, 92
