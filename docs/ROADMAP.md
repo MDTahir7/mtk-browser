@@ -399,7 +399,43 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     button now reads that map for `SiteState.custom_rule_count` instead of
     `user_filters::ActiveRuleCount()`.
   - Remaining: a rule syntax check while typing rather than only on save.
-- [ ] **T3.4 Fingerprinting protection**
+- [~] **T3.4 Fingerprinting protection**
+  - Done: a global "Fingerprinting protection" toggle in Settings, on by
+    default, with the same turn-it-off-and-confirm pattern HTTPS-only already
+    uses. It does two independent things:
+    - Browser process, per request, no restart needed: the high-entropy
+      User-Agent Client Hint request headers (`Sec-CH-UA-Full-Version-List`,
+      `-Platform-Version`, `-Arch`, `-Bitness`, `-Model`, `-WoW64`,
+      `-Full-Version`) are stripped in `OnBeforeResourceLoad`
+      (`policy::HighEntropyClientHintHeaderNames`). The low-entropy hints
+      Chromium sends to every site regardless (`Sec-CH-UA`, `-Mobile`,
+      `-Platform`) are left alone, since removing those would itself be an
+      unusual signal.
+    - Render process, takes effect after a restart: `native/src/fingerprint_script.*`
+      (CEF-free, unit tested on its own) builds a script injected at
+      `OnContextCreated`, before any page script runs. It perturbs the low bits
+      of `CanvasRenderingContext2D`/`OffscreenCanvasRenderingContext2D`
+      `getImageData` and `HTMLCanvasElement.toDataURL` readback and
+      `AudioBuffer.getChannelData` samples with a seeded PRNG (deterministic
+      within one run, so two reads of the same canvas still agree with each
+      other; different on the next launch), and replaces the WebGL
+      `UNMASKED_VENDOR_WEBGL`/`UNMASKED_RENDERER_WEBGL` strings (read through
+      the `WEBGL_debug_renderer_info` extension) with generic values. The
+      ordinary `VENDOR`/`RENDERER` parameters are untouched.
+  - The seed is generated once per browser-process launch and carried to the
+    renderer through a command-line switch
+    (`MtkApp::OnBeforeChildProcessLaunch`), since preferences are only loaded
+    in the browser process and there is no other IPC channel for this yet.
+  - Known limitation, written down rather than hidden: the renderer-side part
+    (canvas/WebGL/audio) has no per-site exemption today, unlike
+    `allow_plain_http`. A per-site override would need a channel carrying a
+    per-navigation decision into the render process, which does not exist.
+    Turning the whole feature off in Settings is the only override for now.
+  - Remaining: per-site exemption for the renderer-side part; on-screen
+    verification against a real fingerprinting test page (e.g.
+    coveryourtracks.eff.org, browserleaks.com); font-enumeration and
+    `navigator.hardwareConcurrency`/`deviceMemory` reduction, which this pass
+    does not touch.
 - [~] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
   - Done: HTTPS-only refuses plain-HTTP **subresources** and is on by default,
     with a Settings toggle that asks for confirmation before it is turned off.

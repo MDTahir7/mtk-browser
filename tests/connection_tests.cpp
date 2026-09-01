@@ -73,6 +73,24 @@ MTK_TEST(HttpsOnlyExemptsOnlyTheOptedInInitiatorOrigin) {
   store.Clear();
 }
 
+MTK_TEST(FingerprintProtectionIsOnByDefault) {
+  MTK_EXPECT_TRUE(mtk::preferences::Store::Get().values().fingerprint_protection);
+}
+
+MTK_TEST(HighEntropyClientHintHeaderNamesCoversTheKnownHighEntropyHints) {
+  const auto names = mtk::policy::HighEntropyClientHintHeaderNames();
+  // Every name is one of the documented high-entropy hints and none is one of
+  // the low-entropy hints Chromium sends unconditionally to every site (those
+  // carry far less identifying detail and are left alone).
+  for (const auto& name : names) {
+    MTK_EXPECT_TRUE(name.starts_with("Sec-CH-UA"));
+    MTK_EXPECT_TRUE(name != "Sec-CH-UA");
+    MTK_EXPECT_TRUE(name != "Sec-CH-UA-Mobile");
+    MTK_EXPECT_TRUE(name != "Sec-CH-UA-Platform");
+  }
+  MTK_EXPECT_TRUE(!names.empty());
+}
+
 MTK_TEST(DohProvidersHaveHttpsTemplatesExceptSystem) {
   using mtk::preferences::DohProvider;
   for (const auto provider :

@@ -43,6 +43,8 @@ set(MTK_BROWSER_SOURCES
   src/icon_strip.h
   src/mtk_app.cpp
   src/mtk_app.h
+  src/fingerprint_script.cpp
+  src/fingerprint_script.h
   src/browser_client.cpp
   src/browser_client.h
   src/browser_window.cpp

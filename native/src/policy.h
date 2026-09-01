@@ -47,6 +47,11 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
                                 bool apply_ad_filtering = true);
 std::vector<std::pair<std::string, std::string>> PrivacyRequestHeaders(
     const std::string& raw_url);
+// Names of the high-entropy User-Agent Client Hint request headers that
+// fingerprinting protection removes, regardless of site. Exposed so the
+// caller can erase them from an outgoing request's header map; this function
+// does not touch a request itself.
+std::vector<std::string> HighEntropyClientHintHeaderNames();
 std::string EnforceSafeSearch(std::string url);
 // Replacement address for a browse surface that must not load, or an empty
 // string when the URL needs no substitution.

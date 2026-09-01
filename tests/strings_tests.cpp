@@ -78,6 +78,7 @@ MTK_TEST(StringsHindiIsActuallyDevanagariNotMojibake) {
       mtk::strings::Id::kConnectionHeading,
       mtk::strings::Id::kParentControlsHeading,
       mtk::strings::Id::kHttpsOnlyOption,
+      mtk::strings::Id::kFingerprintProtectionOption,
       mtk::strings::Id::kAutoUpdateOption,
       mtk::strings::Id::kStartupHomePage, mtk::strings::Id::kStartupContinue,
       mtk::strings::Id::kSafeDownloadsOption,

@@ -166,6 +166,8 @@ namespace mtk::strings {
   V(kHttpsOnlyOption,                                                           \
     L"Block plain HTTP content on pages (HTTPS-only)",                            \
     L"पेजों पर सादा HTTP सामग्री रोकें (सिर्फ़ HTTPS)")                            \
+  V(kFingerprintProtectionOption, L"Fingerprinting protection",                   \
+    L"फ़िंगरप्रिंटिंग सुरक्षा")                                                   \
   V(kAutoUpdateOption,                                                          \
     L"Check for signed MTK Browser updates automatically",                        \
     L"हस्ताक्षरित MTK Browser अपडेट अपने आप देखें")                               \

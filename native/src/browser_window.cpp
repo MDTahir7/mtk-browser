@@ -1137,6 +1137,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
           {IDC_SETTINGS_LANGUAGE_NOTE, Text::kLanguageRestartNote},
           {IDC_SETTINGS_CONNECTION_HEAD, Text::kConnectionHeading},
           {IDC_SETTINGS_HTTPS_ONLY, Text::kHttpsOnlyOption},
+          {IDC_SETTINGS_FINGERPRINT_PROTECTION, Text::kFingerprintProtectionOption},
           {IDC_SETTINGS_DOH_LABEL, Text::kEncryptedDns},
           {IDC_SETTINGS_DOH_NOTE, Text::kEncryptedDnsRestartNote},
           {IDC_SETTINGS_AUTO_UPDATE, Text::kAutoUpdateOption},
@@ -1189,6 +1190,9 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
                      values.auto_update ? BST_CHECKED : BST_UNCHECKED);
       CheckDlgButton(dialog, IDC_SETTINGS_HTTPS_ONLY,
                      values.https_only ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(dialog, IDC_SETTINGS_FINGERPRINT_PROTECTION,
+                     values.fingerprint_protection ? BST_CHECKED
+                                                    : BST_UNCHECKED);
       {
         // Providers in a fixed order so the stored value maps to an index. The
         // label is taken from the UI string table rather than from the
@@ -1306,6 +1310,24 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
         }
         values.https_only = https_only;
 
+        const bool fingerprint_protection =
+            IsDlgButtonChecked(dialog, IDC_SETTINGS_FINGERPRINT_PROTECTION) ==
+            BST_CHECKED;
+        // Same acknowledgement pattern as HTTPS-only: turning off a safety
+        // default should not be one accidental click.
+        if (!fingerprint_protection && values.fingerprint_protection &&
+            MessageBoxW(dialog,
+                        L"Sites will be able to read more detailed device and "
+                        L"browser information, which makes it easier to "
+                        L"recognise you across visits.\n\nTurn it off anyway?",
+                        L"Turn off fingerprinting protection?",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          CheckDlgButton(dialog, IDC_SETTINGS_FINGERPRINT_PROTECTION,
+                        BST_CHECKED);
+          return TRUE;
+        }
+        values.fingerprint_protection = fingerprint_protection;
+
         const LRESULT doh_index =
             SendMessageW(GetDlgItem(dialog, IDC_SETTINGS_DOH), CB_GETCURSEL, 0, 0);
         if (doh_index >= 0 &&
@@ -1322,8 +1344,9 @@ INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM w_param,
         HWND owner = GetParent(dialog);
         EndDialog(dialog, IDOK);
         MessageBoxW(owner,
-                    L"Saved. Home and new tabs use the new page. Website language "
-                    L"preference applies after you restart MTK Browser.",
+                    L"Saved. Home and new tabs use the new page. Website "
+                    L"language, encrypted DNS and fingerprinting protection "
+                    L"apply after you restart MTK Browser.",
                     L"MTK Browser Settings", MB_OK | MB_ICONINFORMATION);
         return TRUE;
       }

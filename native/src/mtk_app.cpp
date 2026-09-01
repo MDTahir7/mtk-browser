@@ -3,6 +3,7 @@
 #include <string>
 
 #include "browser_window.h"
+#include "fingerprint_script.h"
 #include "home_scheme.h"
 #include "password_bridge.h"
 #include "preferences.h"
@@ -349,6 +350,35 @@ void MtkApp::OnBeforeCommandLineProcessing(
   }
 }
 
+void MtkApp::OnBeforeChildProcessLaunch(
+    CefRefPtr<CefCommandLine> command_line) {
+  if (!command_line) return;
+  // The renderer process reads this back through its own global command line
+  // in OnContextCreated. Preferences are loaded only in the browser process
+  // (see main.cpp), so this is the one channel that carries the choice across
+  // the process boundary; there is no shared memory or IPC message for it.
+  // The seed is generated once per browser-process launch (not per child
+  // process) so every renderer of this run agrees on it.
+  static const uint64_t seed = []() {
+    unsigned char bytes[8]{};
+    // A cryptographic RNG is overkill for a value whose only job is to differ
+    // between runs; GetTickCount64 plus the address of a stack variable (ASLR)
+    // is enough entropy for that and needs no extra dependency.
+    const ULONGLONG tick = GetTickCount64();
+    const uintptr_t address = reinterpret_cast<uintptr_t>(&bytes);
+    memcpy(bytes, &tick, 4);
+    memcpy(bytes + 4, &address, 4);
+    uint64_t value = 0;
+    memcpy(&value, bytes, 8);
+    return value;
+  }();
+  command_line->AppendSwitchWithValue(
+      mtk::fingerprint::kSwitchName,
+      mtk::fingerprint::EncodeSwitchValue(
+          mtk::preferences::Store::Get().values().fingerprint_protection,
+          seed));
+}
+
 void MtkApp::OnContextInitialized() {
   ConfigureSpellcheck();
   ConfigureSecureDns();
@@ -370,12 +400,31 @@ void MtkApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
   // have nowhere to land.
   mtk::password_bridge::RendererOnContextCreated(browser, frame, context);
   if (!frame || !frame->IsMain()) return;
-  // Run in the freshly-created page context. All three scripts are intentionally
-  // bounded and check the page themselves: no mutation observer and no periodic
-  // page-data traversal.
+  // Run in the freshly-created page context. All these scripts are
+  // intentionally bounded and check the page themselves: no mutation observer
+  // and no periodic page-data traversal.
   frame->ExecuteJavaScript(kShieldsPageScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kInstagramGuardScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(mtk::password_bridge::PageScript(), frame->GetURL(), 0);
+
+  // Read once per render process: the switch was set for this whole process
+  // in OnBeforeChildProcessLaunch, so it cannot change between frames of the
+  // same renderer.
+  static const std::string kFingerprintScript = []() {
+    auto command_line = CefCommandLine::GetGlobalCommandLine();
+    if (!command_line ||
+        !command_line->HasSwitch(mtk::fingerprint::kSwitchName)) {
+      return std::string();
+    }
+    const std::string value =
+        command_line->GetSwitchValue(mtk::fingerprint::kSwitchName).ToString();
+    return mtk::fingerprint::BuildScript(
+        mtk::fingerprint::IsEnabledSwitchValue(value),
+        mtk::fingerprint::DecodeSeed(value));
+  }();
+  if (!kFingerprintScript.empty()) {
+    frame->ExecuteJavaScript(kFingerprintScript, frame->GetURL(), 0);
+  }
 }
 
 void MtkApp::OnContextReleased(CefRefPtr<CefBrowser> browser,

@@ -59,6 +59,15 @@ struct Values {
   // upgraded to https before they are fetched, so this is about the resources a
   // page then pulls in. On by default.
   bool https_only = true;
+  // Fingerprinting protection: strips the high-entropy User-Agent Client Hint
+  // request headers (Sec-CH-UA-Platform-Version, -Full-Version-List, -Arch,
+  // -Bitness, -Model, -WoW64) and, in the renderer, adds session-consistent
+  // noise to Canvas readback and spoofs the WebGL vendor/renderer strings.
+  // Applies globally; there is currently no per-site exemption for the
+  // renderer-side part, because that would need a channel to carry a
+  // per-navigation decision into the render process, which does not exist yet.
+  // On by default.
+  bool fingerprint_protection = true;
   // Encrypted DNS. The default resolves through Cloudflare's family resolver,
   // which refuses malware and adult domains at the DNS layer as well.
   DohProvider doh_provider = DohProvider::kCloudflareFamily;

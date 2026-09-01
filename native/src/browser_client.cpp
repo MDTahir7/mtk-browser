@@ -22,6 +22,7 @@
 #include "inline_asset.h"
 #include "password_bridge.h"
 #include "policy.h"
+#include "preferences.h"
 #include "site_settings.h"
 #include "user_filters.h"
 
@@ -965,6 +966,11 @@ CefResourceRequestHandler::ReturnValue BrowserClient::OnBeforeResourceLoad(
   for (const auto& [name, value] : mtk::policy::PrivacyRequestHeaders(url)) {
     headers.erase(name);
     headers.insert({name, value});
+  }
+  if (mtk::preferences::Store::Get().values().fingerprint_protection) {
+    for (const auto& name : mtk::policy::HighEntropyClientHintHeaderNames()) {
+      headers.erase(name);
+    }
   }
   request->SetHeaderMap(headers);
   return RV_CONTINUE;

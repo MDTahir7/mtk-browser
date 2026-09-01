@@ -625,6 +625,23 @@ NavigationDecision ResolveInput(const std::string& raw_input) {
   return EvaluateNavigation("https://www.google.com/search?safe=active&q=" + encoded);
 }
 
+// Chromium sends a handful of these unconditionally (Sec-CH-UA,
+// Sec-CH-UA-Mobile, Sec-CH-UA-Platform) and the rest only once a site opts in
+// through Accept-CH, but the opt-in is a request the browser answers on the
+// site's behalf; the person never sees it. Every one of these is exact
+// version, architecture or device-model information that canvas/WebGL
+// fingerprinting scripts are not the only way to read. Stripping them removes
+// the passive channel outright rather than trying to lie convincingly through
+// it.
+std::vector<std::string> HighEntropyClientHintHeaderNames() {
+  return {
+      "Sec-CH-UA-Full-Version-List", "Sec-CH-UA-Platform-Version",
+      "Sec-CH-UA-Arch",              "Sec-CH-UA-Bitness",
+      "Sec-CH-UA-Model",             "Sec-CH-UA-WoW64",
+      "Sec-CH-UA-Full-Version",
+  };
+}
+
 std::vector<std::pair<std::string, std::string>> PrivacyRequestHeaders(
     const std::string& raw_url) {
   std::vector<std::pair<std::string, std::string>> headers{{"DNT", "1"},

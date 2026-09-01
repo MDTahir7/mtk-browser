@@ -42,6 +42,8 @@ $sources = @(
     (Join-Path $testDir 'connection_tests.cpp'),
     (Join-Path $testDir 'history_page_tests.cpp'),
     (Join-Path $testDir 'bookmark_folder_tests.cpp'),
+    (Join-Path $testDir 'fingerprint_tests.cpp'),
+    (Join-Path $sourceDir 'fingerprint_script.cpp'),
     (Join-Path $sourceDir 'user_filters.cpp'),
     (Join-Path $sourceDir 'strings.cpp'),
     (Join-Path $sourceDir 'password_store.cpp'),

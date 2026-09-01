@@ -69,6 +69,7 @@
 #define IDC_PASSWORDS_NOTE 1253
 #define IDC_FILTERS_TEXT 1254
 #define IDC_SETTINGS_HTTPS_ONLY 1255
+#define IDC_SETTINGS_FINGERPRINT_PROTECTION 1297
 #define IDC_SETTINGS_DOH 1256
 // Static labels need real ids so their text can be replaced at run time. A label
 // left at -1 cannot be addressed, which is why these exist.

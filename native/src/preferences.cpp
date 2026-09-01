@@ -217,6 +217,8 @@ void ReadValues(const std::string& content, Values* values) {
     constexpr std::string_view kAutoUpdate = "auto_update=";
     constexpr std::string_view kBookmarksBar = "bookmarks_bar=";
     constexpr std::string_view kHttpsOnly = "https_only=";
+    constexpr std::string_view kFingerprintProtection =
+        "fingerprint_protection=";
     constexpr std::string_view kDohProvider = "doh_provider=";
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
@@ -251,6 +253,9 @@ void ReadValues(const std::string& content, Values* values) {
           std::string(line.substr(kBookmarksBar.size())) == "on";
     } else if (line.starts_with(kHttpsOnly)) {
       values->https_only = std::string(line.substr(kHttpsOnly.size())) != "off";
+    } else if (line.starts_with(kFingerprintProtection)) {
+      values->fingerprint_protection =
+          std::string(line.substr(kFingerprintProtection.size())) != "off";
     } else if (line.starts_with(kDohProvider)) {
       const std::string name(line.substr(kDohProvider.size()));
       if (name == "system") values->doh_provider = DohProvider::kSystem;
@@ -389,6 +394,8 @@ bool Store::Save(const Values& values) {
              (values.show_bookmarks_bar ? "on" : "off") + "\r\n";
   content += std::string("https_only=") + (values.https_only ? "on" : "off") +
              "\r\n";
+  content += std::string("fingerprint_protection=") +
+             (values.fingerprint_protection ? "on" : "off") + "\r\n";
   const auto doh_name = [](DohProvider provider) -> const char* {
     switch (provider) {
       case DohProvider::kSystem: return "system";

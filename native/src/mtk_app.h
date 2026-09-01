@@ -27,6 +27,10 @@ class MtkApp final : public CefApp,
   // its command line.
   void OnBeforeCommandLineProcessing(const CefString& process_type,
                                      CefRefPtr<CefCommandLine> command_line) override;
+  // Carries the fingerprint-protection preference into the renderer's command
+  // line, since preferences are only loaded in the browser process.
+  void OnBeforeChildProcessLaunch(
+      CefRefPtr<CefCommandLine> command_line) override;
 
   // Runs MTK Shields as soon as CEF creates the page V8 context. This avoids
   // the renderer-stalling V8-extension registration path.
