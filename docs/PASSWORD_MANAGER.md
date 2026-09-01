@@ -22,6 +22,7 @@ them is the safer option, provided the limits below are honest.
 | A page asking for every saved password at once | The renderer can request credentials for the origin of the page it is running in, and nothing else |
 | Passwords ending up in a plain file by accident | There is no export, no sync and no plaintext file at any point; only the encrypted blob is written |
 | A saved password surviving a "clear data" | Clear browsing data can delete saved passwords |
+| Autofill guessing between several saved accounts on one site | Nothing is filled automatically; the person is shown a native picker of the saved user names for that exact origin and chooses, or cancels and nothing is filled |
 
 ## What it does NOT protect against
 
@@ -69,6 +70,13 @@ Stated plainly, because pretending otherwise is worse than the gap:
    cannot ask for another site's credential.
 10. **A blocked site can hold no credential.** Save requests run through the same
     navigation policy as everything else.
+11. **Several accounts on one site are resolved by asking, not guessing.** When
+    more than one credential matches an origin, a native dialog (never a page
+    element, so a compromised page cannot spoof it) lists the saved user names
+    for that exact origin and lets the person pick one, or cancel. This is not
+    PIN-gated: it happens at the same trust level as ordinary autofill, which is
+    already ungated, and the dialog only ever shows user names, never
+    passwords.
 
 ## Reviewing this later
 

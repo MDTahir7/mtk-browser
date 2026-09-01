@@ -179,9 +179,18 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     remove and remove all. Filling is not PIN-gated, since gating the everyday
     case would make the feature pointless. Clear browsing data can delete the
     lot, with its own confirmation.
-  - Remaining: an account picker for sites with several saved sign-ins, an
-    "update the saved password" flow when a changed password is submitted, and
-    on-screen verification of capture and fill on real sign-in forms.
+  - Done: an account picker for sites with several saved sign-ins. Filling used
+    to do nothing at all once a second account existed for an origin
+    (`SingleFor` simply refusing rather than guessing); it now offers a native
+    dialog (`IDD_ACCOUNT_PICKER`) listing the saved user names for that exact
+    origin, built from a new `Store::AllFor(origin)`, and fills whichever one is
+    chosen. Cancelling fills nothing, the same as today. The dialog only ever
+    shows user names, never passwords, and is not PIN-gated for the same reason
+    ordinary autofill is not. `docs/PASSWORD_MANAGER.md` updated in the same
+    commit, per its own rule.
+  - Remaining: an "update the saved password" flow when a changed password is
+    submitted, and on-screen verification of capture, fill and the new picker
+    on real sign-in forms.
 - [~] **T2.4 Bookmarks bar, folders, and Chrome import**
   - Done: bookmarks bar under the toolbar (painted, DPI-scaled, `Ctrl+Shift+B`,
     remembered in preferences), `Ctrl+D` to save a page, and an importer for

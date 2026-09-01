@@ -43,6 +43,11 @@ class Store final {
   // guessing which one is wanted.
   bool SingleFor(const std::string& origin, Credential* credential) const;
 
+  // Every credential saved for `origin`, in storage order. Used to offer an
+  // account picker when SingleFor finds more than one and filling would
+  // otherwise be a guess.
+  std::vector<Credential> AllFor(const std::string& origin) const;
+
   // Decrypts one password. `password` is overwritten on failure and the caller
   // is responsible for zeroing it after use.
   bool Reveal(const std::string& origin, const std::wstring& user_name,

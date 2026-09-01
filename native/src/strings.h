@@ -258,7 +258,15 @@ namespace mtk::strings {
     L"Clear this site's stored settings, browsing history and saved "             \
     L"passwords?\n\nThis cannot be undone.",                                       \
     L"इस साइट की संग्रहित सेटिंग, ब्राउज़िंग इतिहास और सहेजे गए पासवर्ड हटाएँ?\n\n"  \
-    L"इसे वापस नहीं किया जा सकता।")
+    L"इसे वापस नहीं किया जा सकता।")                                                \
+                                                                                  \
+  /* Password account picker */                                                 \
+  V(kAccountPickerTitle, L"Choose an account - MTK Browser",                      \
+    L"खाता चुनें — MTK Browser")                                                  \
+  V(kAccountPickerIntro,                                                         \
+    L"Several saved sign-ins match this site. Choose which one to fill.",          \
+    L"इस साइट पर सहेजे गए कई साइन-इन मिलते हैं। भरने के लिए एक चुनें।")             \
+  V(kFill, L"Fill", L"भरें")
 
 enum class Id {
 #define MTK_STRING_ENUM(name, english, hindi) name,

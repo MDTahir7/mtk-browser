@@ -86,6 +86,24 @@ MTK_TEST(PasswordsFillNothingWhenSeveralAccountsAreSaved) {
   ClearStore();
 }
 
+MTK_TEST(PasswordsAllForListsEveryAccountOnASite) {
+  ClearStore();
+  auto& store = mtk::passwords::Store::Get();
+  MTK_EXPECT_TRUE(store.Save("https://example.com", L"first", L"a"));
+  MTK_EXPECT_TRUE(store.Save("https://example.com", L"second", L"b"));
+  MTK_EXPECT_TRUE(store.Save("https://other.example", L"third", L"c"));
+
+  const auto matches = store.AllFor("https://example.com");
+  MTK_EXPECT_EQ_INT(matches.size(), 2);
+  if (matches.size() == 2) {
+    MTK_EXPECT_EQ_WSTR(matches[0].user_name, L"first");
+    MTK_EXPECT_EQ_WSTR(matches[1].user_name, L"second");
+  }
+  // A site with nothing saved gets an empty list, not a guess.
+  MTK_EXPECT_EQ_INT(store.AllFor("https://unknown.example").size(), 0);
+  ClearStore();
+}
+
 MTK_TEST(PasswordsMatchOriginExactly) {
   ClearStore();
   auto& store = mtk::passwords::Store::Get();

@@ -326,6 +326,14 @@ bool Store::SingleFor(const std::string& origin, Credential* credential) const {
   return true;
 }
 
+std::vector<Credential> Store::AllFor(const std::string& origin) const {
+  std::vector<Credential> result;
+  for (const Entry& entry : entries_) {
+    if (entry.credential.origin == origin) result.push_back(entry.credential);
+  }
+  return result;
+}
+
 bool Store::Reveal(const std::string& origin, const std::wstring& user_name,
                    std::wstring* password) const {
   if (!password) return false;

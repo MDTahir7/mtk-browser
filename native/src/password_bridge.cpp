@@ -5,9 +5,12 @@
 #include <string>
 
 #include "browser_client.h"
+#include "dialog_text.h"
 #include "home_page.h"
 #include "password_store.h"
+#include "resource.h"
 #include "site_settings.h"
+#include "strings.h"
 
 namespace mtk::password_bridge {
 namespace {
@@ -110,6 +113,76 @@ HWND OwnerWindow(CefRefPtr<CefBrowser> browser) {
   return parent ? parent : view;
 }
 
+struct AccountPickerContext {
+  const std::vector<std::wstring>* names = nullptr;
+  // Set to the chosen row on IDOK; left at -1 otherwise.
+  ptrdiff_t selected = -1;
+};
+
+INT_PTR CALLBACK AccountPickerDialogProc(HWND dialog, UINT message,
+                                        WPARAM w_param, LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_ACCOUNT_PICKER_INTRO, mtk::strings::Id::kAccountPickerIntro},
+          {IDOK, mtk::strings::Id::kFill},
+          {IDCANCEL, mtk::strings::Id::kCancel},
+      };
+      mtk::dialog_text::ApplyCaption(dialog,
+                                     mtk::strings::Id::kAccountPickerTitle);
+      mtk::dialog_text::Apply(dialog, kText);
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
+      auto* context = reinterpret_cast<AccountPickerContext*>(l_param);
+      if (context && context->names) {
+        HWND list = GetDlgItem(dialog, IDC_ACCOUNT_PICKER_LIST);
+        for (const auto& name : *context->names) {
+          SendMessageW(list, LB_ADDSTRING, 0,
+                      reinterpret_cast<LPARAM>(name.c_str()));
+        }
+        if (!context->names->empty()) SendMessageW(list, LB_SETCURSEL, 0, 0);
+      }
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(w_param) == IDOK) {
+        auto* context = reinterpret_cast<AccountPickerContext*>(
+            GetWindowLongPtrW(dialog, GWLP_USERDATA));
+        if (context) {
+          HWND list = GetDlgItem(dialog, IDC_ACCOUNT_PICKER_LIST);
+          const LRESULT row = SendMessageW(list, LB_GETCURSEL, 0, 0);
+          if (row != LB_ERR) context->selected = row;
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(w_param) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
+// Asks which account to fill when several are saved for one origin. Returns
+// -1 when the dialog was cancelled, could not be shown, or nothing was
+// selected, otherwise the index into `candidates` the person picked.
+ptrdiff_t PickAccount(HWND owner,
+                      const std::vector<mtk::passwords::Credential>& candidates) {
+  std::vector<std::wstring> names;
+  names.reserve(candidates.size());
+  for (const auto& credential : candidates) names.push_back(credential.user_name);
+  AccountPickerContext context{&names, -1};
+  const INT_PTR result = DialogBoxParamW(
+      GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCOUNT_PICKER), owner,
+      AccountPickerDialogProc, reinterpret_cast<LPARAM>(&context));
+  if (result != IDOK) return -1;
+  return context.selected;
+}
+
 class QueryHandler : public CefMessageRouterBrowserSide::Handler {
  public:
   bool OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
@@ -136,19 +209,32 @@ class QueryHandler : public CefMessageRouterBrowserSide::Handler {
       return true;
     }
 
-    if (action == "get") return HandleGet(origin, callback);
+    if (action == "get") return HandleGet(browser, origin, callback);
     if (action == "save") return HandleSave(browser, origin, body, callback);
     callback->Failure(2, "bad request");
     return true;
   }
 
  private:
-  bool HandleGet(const std::string& origin, CefRefPtr<Callback> callback) {
+  bool HandleGet(CefRefPtr<CefBrowser> browser, const std::string& origin,
+                CefRefPtr<Callback> callback) {
     mtk::passwords::Credential credential;
     if (!mtk::passwords::Store::Get().SingleFor(origin, &credential)) {
-      // Nothing saved, or more than one account: filling would be a guess.
-      callback->Failure(3, "no credential");
-      return true;
+      // Exactly one match would have succeeded above, so either nothing is
+      // saved here, or several accounts are and the person has to choose.
+      const auto candidates = mtk::passwords::Store::Get().AllFor(origin);
+      if (candidates.size() < 2) {
+        callback->Failure(3, "no credential");
+        return true;
+      }
+      const ptrdiff_t chosen = PickAccount(OwnerWindow(browser), candidates);
+      if (chosen < 0 || static_cast<size_t>(chosen) >= candidates.size()) {
+        // Cancelled: declining to fill is not a failure worth reporting to the
+        // page, which would otherwise be free to react to it.
+        callback->Failure(3, "no credential");
+        return true;
+      }
+      credential = candidates[static_cast<size_t>(chosen)];
     }
     std::wstring password;
     if (!mtk::passwords::Store::Get().Reveal(origin, credential.user_name,
