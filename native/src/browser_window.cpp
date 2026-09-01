@@ -698,6 +698,101 @@ INT_PTR CALLBACK SiteSettingsDialogProc(HWND dialog, UINT message,
   return FALSE;
 }
 
+// Result of the site list dialog: which origin (if any) was chosen for
+// "Change..." or "Clear this site's data", read after the dialog closes.
+struct SiteListContext {
+  // Set on IDOK once, to the origin whose "Change..." button was pressed.
+  // Empty when the dialog was simply closed.
+  std::string open_origin;
+  // Set when "Clear this site's data" was pressed and confirmed.
+  std::string clear_origin;
+};
+
+void PopulateSiteList(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_SITE_LIST_LIST);
+  SendMessageW(list, LB_RESETCONTENT, 0, 0);
+  const auto& rules = mtk::sites::Store::Get().rules();
+  for (size_t index = 0; index < rules.size(); ++index) {
+    const std::wstring row = Utf8ToWide(rules[index].origin);
+    const LRESULT added =
+        SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
+    if (added != LB_ERR && added != LB_ERRSPACE) {
+      SendMessageW(list, LB_SETITEMDATA, static_cast<WPARAM>(added), index);
+    }
+  }
+  const bool any = !rules.empty();
+  for (const int control : {IDC_SITE_LIST_OPEN, IDC_SITE_LIST_CLEAR}) {
+    EnableWindow(GetDlgItem(dialog, control), any ? TRUE : FALSE);
+  }
+  if (any) SendMessageW(list, LB_SETCURSEL, 0, 0);
+  SetDlgItemTextW(dialog, IDC_SITE_LIST_NOTE,
+                  any ? L"" : mtk::strings::Get(Text::kSiteListEmptyNote));
+}
+
+// Origin at the selected row, or an empty string when nothing is selected.
+std::string SelectedSiteListOrigin(HWND dialog) {
+  HWND list = GetDlgItem(dialog, IDC_SITE_LIST_LIST);
+  const LRESULT row = SendMessageW(list, LB_GETCURSEL, 0, 0);
+  if (row == LB_ERR) return {};
+  const LRESULT data =
+      SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+  if (data == LB_ERR) return {};
+  const auto& rules = mtk::sites::Store::Get().rules();
+  return static_cast<size_t>(data) < rules.size()
+             ? rules[static_cast<size_t>(data)].origin
+             : std::string();
+}
+
+INT_PTR CALLBACK SiteListDialogProc(HWND dialog, UINT message, WPARAM w_param,
+                                    LPARAM l_param) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      static constexpr mtk::dialog_text::Item kText[] = {
+          {IDC_SITE_LIST_INTRO, Text::kSiteListIntro},
+          {IDC_SITE_LIST_OPEN, Text::kSiteListOpen},
+          {IDC_SITE_LIST_CLEAR, Text::kSiteListClear},
+          {IDCANCEL, Text::kClose},
+      };
+      mtk::dialog_text::ApplyCaption(dialog, Text::kSiteListTitle);
+      mtk::dialog_text::Apply(dialog, kText);
+      SetWindowLongPtrW(dialog, GWLP_USERDATA, static_cast<LONG_PTR>(l_param));
+      PopulateSiteList(dialog);
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      const WORD command = LOWORD(w_param);
+      auto* context = reinterpret_cast<SiteListContext*>(
+          GetWindowLongPtrW(dialog, GWLP_USERDATA));
+      if (command == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+      }
+      const std::string origin = SelectedSiteListOrigin(dialog);
+      if (origin.empty()) return TRUE;
+      if (command == IDC_SITE_LIST_OPEN) {
+        if (context) context->open_origin = origin;
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      if (command == IDC_SITE_LIST_CLEAR) {
+        if (MessageBoxW(dialog, mtk::strings::Get(Text::kSiteListClearConfirm),
+                        L"Sites with stored settings",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          return TRUE;
+        }
+        if (context) context->clear_origin = origin;
+        EndDialog(dialog, IDOK);
+        return TRUE;
+      }
+      break;
+    }
+    case WM_CLOSE:
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+  }
+  return FALSE;
+}
+
 struct TextPromptContext {
   const wchar_t* caption = nullptr;
   const wchar_t* message = nullptr;
@@ -1944,6 +2039,7 @@ void BrowserWindow::ShowBrowserMenu() {
               label(Text::kKeyboardShortcuts, L"\tAlt+/").c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED),
               IDM_SITE_SETTINGS, label(Text::kSiteSettings, L"\tAlt+S").c_str());
+  AppendMenuW(popup, MF_STRING, IDM_SITE_LIST, label(Text::kSiteList).c_str());
   AppendMenuW(popup, MF_STRING, IDM_USER_FILTERS,
               label(Text::kUserFilters, L"\tAlt+Y").c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
@@ -3199,6 +3295,11 @@ void BrowserWindow::ShowSiteSettingsDialog() {
                 L"Site settings", MB_OK | MB_ICONINFORMATION);
     return;
   }
+  ShowSiteSettingsDialogFor(origin);
+}
+
+void BrowserWindow::ShowSiteSettingsDialogFor(const std::string& origin) {
+  if (origin.empty()) return;
   // Allowing a camera or a microphone is a safety decision, so the dialog sits
   // behind the parent PIN like the rest of Settings.
   if (!AuthorizeParentAction(
@@ -3223,9 +3324,80 @@ void BrowserWindow::ShowSiteSettingsDialog() {
     return;
   }
   // Cookie and filtering changes take effect on the next load, and the zoom is
-  // applied straight away so the result is visible.
-  if (tab) ApplySiteZoom(*tab);
-  if (tab && tab->client->browser()) tab->client->browser()->ReloadIgnoreCache();
+  // applied straight away so the result is visible, but only for a tab that is
+  // actually showing this origin: a rule opened from the site list may not
+  // match the page in front of the user right now.
+  auto* tab = ActiveTab();
+  if (tab && mtk::sites::OriginOf(WideToUtf8(tab->url)) == origin) {
+    ApplySiteZoom(*tab);
+    if (tab->client->browser()) tab->client->browser()->ReloadIgnoreCache();
+  }
+}
+
+void BrowserWindow::ShowSiteListDialog() {
+  // Reviewing or clearing another site's stored data is exactly the kind of
+  // decision the parent PIN already protects for the single-site dialog.
+  if (!AuthorizeParentAction(
+          instance_, window_,
+          L"Site settings are protected. Enter the parent PIN to see this "
+          L"list.")) {
+    return;
+  }
+  for (;;) {
+    SiteListContext context;
+    const INT_PTR result =
+        DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_SITE_LIST), window_,
+                        SiteListDialogProc,
+                        reinterpret_cast<LPARAM>(&context));
+    if (result != IDOK) return;
+
+    if (!context.open_origin.empty()) {
+      ShowSiteSettingsDialogFor(context.open_origin);
+      continue;  // Back to the (possibly now-different) list.
+    }
+    if (context.clear_origin.empty()) return;
+
+    const std::string& origin = context.clear_origin;
+    std::wstring report;
+
+    auto& sites = mtk::sites::Store::Get();
+    if (sites.Forget(origin) && sites.Flush()) {
+      report += L"\n• Stored settings for this site removed";
+    }
+
+    auto& library = mtk::library::Store::Get();
+    const size_t history_removed = library.RemoveHistoryForOrigin(origin);
+    if (history_removed > 0) {
+      if (library.Flush()) {
+        report += L"\n• " + std::to_wstring(history_removed) +
+                  L" history entries for this site removed";
+      }
+    }
+
+    auto& passwords = mtk::passwords::Store::Get();
+    const size_t passwords_removed = passwords.RemoveAllForOrigin(origin);
+    if (passwords_removed > 0) {
+      if (passwords.Flush()) {
+        report += L"\n• " + std::to_wstring(passwords_removed) +
+                  L" saved password(s) for this site removed";
+      }
+    }
+
+    // Cookies are scoped to the origin's own URL; CEF matches on host, so
+    // this does not touch a different site.
+    if (auto manager = CefCookieManager::GetGlobalManager(nullptr);
+        manager && manager->DeleteCookies(CefString(Utf8ToWide(origin) + L"/"),
+                                          CefString(), nullptr)) {
+      report += L"\n• Cookies for this site cleared";
+    }
+
+    if (!report.empty()) {
+      MessageBoxW(window_, (L"Cleared for this site:" + report).c_str(),
+                  L"Sites with stored settings", MB_OK | MB_ICONINFORMATION);
+    }
+    // Reopens the list, now missing the site that was just cleared (unless
+    // clearing partly failed and the rule is still there).
+  }
 }
 
 void BrowserWindow::SelectTab(size_t index) {
@@ -4608,6 +4780,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
           break;
         case IDM_SITE_SETTINGS:
           ShowSiteSettingsDialog();
+          break;
+        case IDM_SITE_LIST:
+          ShowSiteListDialog();
           break;
         case IDM_PASSWORDS:
           ShowPasswordsDialog();

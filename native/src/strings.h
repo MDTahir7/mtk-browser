@@ -33,6 +33,7 @@ namespace mtk::strings {
   V(kPrint, L"Print...", L"प्रिंट करें...")                                       \
   V(kKeyboardShortcuts, L"Keyboard shortcuts", L"कीबोर्ड शॉर्टकट")                \
   V(kSiteSettings, L"Settings for this site...", L"इस साइट की सेटिंग...")         \
+  V(kSiteList, L"Sites with stored settings...", L"संग्रहित सेटिंग वाली साइटें...")\
   V(kUserFilters, L"Your filter rules...", L"आपके फ़िल्टर नियम...")                \
   V(kClearBrowsingData, L"Clear browsing data...", L"ब्राउज़िंग डेटा हटाएँ...")    \
   V(kCheckForUpdates, L"Check for updates...", L"अपडेट देखें...")                 \
@@ -240,7 +241,24 @@ namespace mtk::strings {
   V(kPermissionBlockedDefault, L"Blocked (default)", L"रोका गया (डिफ़ॉल्ट)")       \
   V(kPermissionAllowed, L"Allowed", L"अनुमति है")                                 \
   V(kPermissionBlockedNeverAsk, L"Blocked, and never ask",                        \
-    L"रोका गया, और कभी न पूछें")
+    L"रोका गया, और कभी न पूछें")                                                  \
+                                                                                  \
+  /* Site list dialog */                                                        \
+  V(kSiteListTitle, L"Sites with stored settings - MTK Browser",                  \
+    L"संग्रहित सेटिंग वाली साइटें — MTK Browser")                                  \
+  V(kSiteListIntro,                                                              \
+    L"Every site with a permission, filtering, cookie or zoom choice that is "    \
+    L"not the default.",                                                          \
+    L"हर वह साइट जिसकी अनुमति, फ़िल्टरिंग, कुकी या ज़ूम की पसंद डिफ़ॉल्ट से अलग है।") \
+  V(kSiteListOpen, L"Change...", L"बदलें...")                                     \
+  V(kSiteListClear, L"Clear this site's data", L"इस साइट का डेटा हटाएँ")           \
+  V(kSiteListEmptyNote, L"No site has a stored setting yet.",                     \
+    L"अभी किसी साइट की कोई सेटिंग संग्रहित नहीं है।")                              \
+  V(kSiteListClearConfirm,                                                        \
+    L"Clear this site's stored settings, browsing history and saved "             \
+    L"passwords?\n\nThis cannot be undone.",                                       \
+    L"इस साइट की संग्रहित सेटिंग, ब्राउज़िंग इतिहास और सहेजे गए पासवर्ड हटाएँ?\n\n"  \
+    L"इसे वापस नहीं किया जा सकता।")
 
 enum class Id {
 #define MTK_STRING_ENUM(name, english, hindi) name,

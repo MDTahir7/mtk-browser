@@ -1,3 +1,20 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # MTK Browser Roadmap to Chrome/Brave Level
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done and verified.
@@ -254,8 +271,16 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     (scheme, private network, unsafe host, adult search term, NSFW social
     surface) stay in force for every site and are not adjustable, which is
     covered by a test.
-  - Remaining: a list of all sites with stored rules, per-site "clear this
-    site's data", and reaching the dialog from the Shields panel.
+  - Done: a "Sites with stored settings..." dialog (browser menu, `IDD_SITE_LIST`)
+    lists every origin with a non-default `sites::Rule`. "Change..." reopens the
+    ordinary per-site dialog for that origin without needing to navigate there.
+    "Clear this site's data" (confirmed first) forgets the site rule, removes
+    that origin's history entries (`library::Store::RemoveHistoryForOrigin`,
+    bookmarks untouched on purpose, matching the whole-profile Clear browsing
+    data dialog), removes its saved passwords
+    (`passwords::Store::RemoveAllForOrigin`) and clears its cookies through
+    CEF's cookie manager, then reports what was actually removed.
+  - Remaining: reaching the dialog from the Shields panel.
 - [x] **T2.11 Clear browsing data dialog** (history, downloads, cookies, cache,
       saved session, bookmarks)
 - [~] **T2.12 Media**: autoplay now requires a user gesture, and picture-in-picture,

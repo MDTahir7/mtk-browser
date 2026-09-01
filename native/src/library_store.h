@@ -52,6 +52,12 @@ class Store final {
   bool RemoveBookmark(const std::string& url);
   bool RemoveHistoryAt(size_t index);
   bool RemoveBookmarkAt(size_t index);
+  // Removes every history entry whose URL belongs to `origin` ("scheme://host",
+  // as produced by sites::OriginOf). Returns how many rows were removed.
+  // Bookmarks are left alone: they are saved deliberately, not a browsing
+  // trace, and the site-level "clear this site's data" action follows the
+  // same rule the whole-profile Clear browsing data dialog already does.
+  size_t RemoveHistoryForOrigin(const std::string& origin);
   bool ClearHistory();
   // Removes every bookmark and every folder, since a folder without its
   // bookmarks would only be a leftover.

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "preferences.h"
+#include "site_settings.h"
 
 namespace mtk::library {
 namespace {
@@ -427,6 +428,20 @@ bool Store::RemoveBookmarkAt(size_t index) {
   bookmarks_.erase(bookmarks_.begin() + static_cast<ptrdiff_t>(index));
   dirty_ = true;
   return true;
+}
+
+size_t Store::RemoveHistoryForOrigin(const std::string& origin) {
+  if (origin.empty()) return 0;
+  const size_t before = history_.size();
+  history_.erase(
+      std::remove_if(history_.begin(), history_.end(),
+                     [&origin](const Entry& entry) {
+                       return mtk::sites::OriginOf(entry.url) == origin;
+                     }),
+      history_.end());
+  const size_t removed = before - history_.size();
+  if (removed > 0) dirty_ = true;
+  return removed;
 }
 
 bool Store::ClearHistory() {

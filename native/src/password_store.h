@@ -49,6 +49,9 @@ class Store final {
               std::wstring* password) const;
 
   bool Remove(const std::string& origin, const std::wstring& user_name);
+  // Removes every credential saved for `origin`, regardless of user name.
+  // Returns how many were removed.
+  size_t RemoveAllForOrigin(const std::string& origin);
   bool Clear();
 
   const std::vector<Credential>& credentials() const;

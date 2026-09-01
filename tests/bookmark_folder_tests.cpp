@@ -289,3 +289,23 @@ MTK_TEST(ClearingBookmarksAlsoClearsTheFolders) {
   MTK_EXPECT_EQ_INT(store.bookmarks().size(), 0);
   MTK_EXPECT_EQ_INT(store.folders().size(), 0);
 }
+
+MTK_TEST(RemoveHistoryForOriginOnlyTouchesThatSiteAndLeavesBookmarks) {
+  ScopedProfile profile;
+  MTK_EXPECT_TRUE(profile.RedirectedAwayFromRealProfile());
+  if (!profile.RedirectedAwayFromRealProfile()) return;
+  auto& store = mtk::library::Store::Get();
+  MTK_EXPECT_TRUE(store.RecordVisit("https://example.com/a", L"A"));
+  MTK_EXPECT_TRUE(store.RecordVisit("https://example.com/b", L"B"));
+  MTK_EXPECT_TRUE(store.RecordVisit("https://other.example/c", L"C"));
+  MTK_EXPECT_TRUE(
+      store.AddBookmark("https://example.com/saved", L"Saved page"));
+
+  MTK_EXPECT_EQ_INT(store.RemoveHistoryForOrigin("https://example.com"), 2);
+  MTK_EXPECT_EQ_INT(store.history().size(), 1);
+  MTK_EXPECT_EQ_STR(store.history()[0].url, "https://other.example/c");
+  // A site-scoped history clear must not touch a deliberately saved bookmark.
+  MTK_EXPECT_EQ_INT(store.bookmarks().size(), 1);
+  // An origin with nothing left removes nothing on a second call.
+  MTK_EXPECT_EQ_INT(store.RemoveHistoryForOrigin("https://example.com"), 0);
+}

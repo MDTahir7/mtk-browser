@@ -352,6 +352,21 @@ bool Store::Remove(const std::string& origin, const std::wstring& user_name) {
   return true;
 }
 
+size_t Store::RemoveAllForOrigin(const std::string& origin) {
+  size_t removed = 0;
+  for (auto it = entries_.begin(); it != entries_.end();) {
+    if (it->credential.origin == origin) {
+      SecureZeroMemory(it->encrypted.data(), it->encrypted.size());
+      it = entries_.erase(it);
+      ++removed;
+    } else {
+      ++it;
+    }
+  }
+  if (removed > 0) dirty_ = true;
+  return removed;
+}
+
 bool Store::Clear() {
   if (entries_.empty()) return true;
   for (Entry& entry : entries_) {

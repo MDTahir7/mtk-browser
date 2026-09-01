@@ -117,6 +117,21 @@ MTK_TEST(PasswordsRemoveAndClearForgetEverything) {
   MTK_EXPECT_EQ_INT(store.credentials().size(), 0);
 }
 
+MTK_TEST(PasswordsRemoveAllForOriginLeavesOtherSitesAlone) {
+  ClearStore();
+  auto& store = mtk::passwords::Store::Get();
+  MTK_EXPECT_TRUE(store.Save("https://example.com", L"first", L"a"));
+  MTK_EXPECT_TRUE(store.Save("https://example.com", L"second", L"b"));
+  MTK_EXPECT_TRUE(store.Save("https://other.example", L"user", L"c"));
+
+  MTK_EXPECT_EQ_INT(store.RemoveAllForOrigin("https://example.com"), 2);
+  MTK_EXPECT_EQ_INT(store.credentials().size(), 1);
+  MTK_EXPECT_EQ_STR(store.credentials()[0].origin, "https://other.example");
+  // A second call finds nothing left to remove.
+  MTK_EXPECT_EQ_INT(store.RemoveAllForOrigin("https://example.com"), 0);
+  ClearStore();
+}
+
 MTK_TEST(PasswordsStorableUrlFollowsTheSafetyPolicy) {
   MTK_EXPECT_TRUE(mtk::passwords::IsStorableUrl("https://example.com/login"));
   // Plain http, private network and adult hosts can hold no credential.

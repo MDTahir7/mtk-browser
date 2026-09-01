@@ -110,6 +110,12 @@ class BrowserWindow final : public BrowserClientDelegate {
   // Per-site permissions, cookies, ad filtering and remembered zoom for the
   // site in the active tab.
   void ShowSiteSettingsDialog();
+  // Same dialog, for an origin chosen from the site list rather than the
+  // active tab (so a stored rule can be reviewed without navigating there).
+  void ShowSiteSettingsDialogFor(const std::string& origin);
+  // Lists every origin with a non-default site::Rule, and offers to clear one
+  // site's history, saved passwords, cookies and stored rule together.
+  void ShowSiteListDialog();
   // Saved sign-ins. Opening the list requires the parent PIN when one is set.
   void ShowPasswordsDialog();
   // Registers the browser with Windows and opens the Default apps page, which is
