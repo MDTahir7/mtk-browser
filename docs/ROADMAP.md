@@ -256,8 +256,9 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
 - [~] **T2.6 Tab UX**: drag-reorder, pin, mute, duplicate, middle-click close,
       right-click tab menu, `Ctrl+1..8`/`Ctrl+9`, `Ctrl+M`, `Ctrl+Shift+T`,
       overflow scrolling. Pinned tabs are the leading run of the strip, get a
-      narrow slot and no close button. Not yet checked on screen; pinned state is
-      not written to the session file.
+      narrow slot and no close button, and now survive a restart
+      (`session.v1` gained an optional per-tab pinned flag; see T1.6/session
+      history for the format note). Not yet checked on screen.
 - [~] **T2.7 Printing**: `Ctrl+P`, a menu entry and a page context-menu entry all
       open Chromium's print preview, which is also where Save as PDF lives.
 - [~] **T2.8 Built-in PDF viewer**: the request policy already allows exactly the
@@ -294,7 +295,13 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     data dialog), removes its saved passwords
     (`passwords::Store::RemoveAllForOrigin`) and clears its cookies through
     CEF's cookie manager, then reports what was actually removed.
-  - Remaining: reaching the dialog from the Shields panel.
+  - Done: the Shields panel has a "Manage all sites with stored settings" link
+    that opens the same dialog. It is caught the same way the home and history
+    pages catch their own action links: an exact `mtk://shields/action/...`
+    address intercepted in `OnBeforeBrowse` before any scheme factory would see
+    it, never a script bridge, so the panel is exactly as presentation-only as
+    before. The dialog itself is modal, so the click posts a message back to
+    the window's own loop instead of opening it from inside CEF's callback.
 - [x] **T2.11 Clear browsing data dialog** (history, downloads, cookies, cache,
       saved session, bookmarks)
 - [~] **T2.12 Media**: autoplay now requires a user gesture, and picture-in-picture,

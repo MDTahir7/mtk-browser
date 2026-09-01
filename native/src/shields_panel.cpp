@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 
 #include <string>
+#include <utility>
 
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
@@ -177,6 +178,10 @@ std::string PanelUrl(unsigned long blocked_count, bool standard_downloads,
       "white-space:nowrap}"
       ".site b{color:#f0f4ff;font-weight:600}"
       ".site .off{color:#fbbf24}"
+      ".manage{flex:0 0 auto;display:block;padding:8px 18px;font-size:11px;"
+      "text-align:center;color:#94b7ff;text-decoration:none;"
+      "border-top:1px solid #2a3350}"
+      ".manage:hover{color:#c3d6ff;text-decoration:underline}"
       "</style><div class=hero>" + art +
       "<h1>MTK Shields are active</h1><div class=pill>PROTECTING</div></div>"
       "<div class=count><b>" + std::to_string(blocked_count) +
@@ -190,7 +195,9 @@ std::string PanelUrl(unsigned long blocked_count, bool standard_downloads,
       downloads +
       "<li><i>&#10003;</i><div>Popups and risky permissions denied</div></li>"
       "</ul><div class=hint>Alt+S for this site &middot; Alt+Y for your own "
-      "filters &middot; Esc to close</div>";
+      "filters &middot; Esc to close</div>"
+      "<a class=manage href=\"mtk://shields/action/manage-sites\">Manage all "
+      "sites with stored settings</a>";
 
   std::string url = "data:text/html," + EscapeForDataUrl(markup);
   // Restore the placeholder with the already-encoded asset URL.
@@ -222,6 +229,13 @@ void ShowFallbackSummary(HWND owner, unsigned long blocked_count,
 // Presentation only: no script bridge, no downloads, no navigation. Everything
 // the panel needs is already inside the one data: URL it is given, so every
 // other request is refused.
+// Reuses the "mtk" custom scheme already registered for the home and history
+// pages, under a host no scheme factory answers for. Caught by exact string
+// match in OnBeforeBrowse before CEF would ever ask a factory for it, the same
+// way those two pages' own action links are caught; no factory registration
+// is needed for a link that is always cancelled before it gets that far.
+constexpr char kManageSitesActionUrl[] = "mtk://shields/action/manage-sites";
+
 class PanelClient final : public CefClient,
                           public CefLifeSpanHandler,
                           public CefKeyboardHandler,
@@ -229,7 +243,8 @@ class PanelClient final : public CefClient,
                           public CefRequestHandler,
                           public CefResourceRequestHandler {
  public:
-  explicit PanelClient(HWND panel) : panel_(panel) {}
+  PanelClient(HWND panel, OnManageSites on_manage_sites)
+      : panel_(panel), on_manage_sites_(std::move(on_manage_sites)) {}
 
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
@@ -284,8 +299,17 @@ class PanelClient final : public CefClient,
 
   bool OnBeforeBrowse(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                       CefRefPtr<CefRequest> request, bool, bool) override {
+    const std::string url = request->GetURL().ToString();
+    // One internal action link, the same navigation-intercept pattern the home
+    // and history pages already use: a fixed address is caught here and turned
+    // into a call on the browser side, never into a script bridge. Everything
+    // else about the panel stays exactly as presentation-only as before.
+    if (url == kManageSitesActionUrl) {
+      if (on_manage_sites_) on_manage_sites_();
+      return true;
+    }
     // Returning true cancels. Only the panel's own document may ever load.
-    return !IsPanelDocument(request->GetURL().ToString());
+    return !IsPanelDocument(url);
   }
 
   bool OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
@@ -324,6 +348,7 @@ class PanelClient final : public CefClient,
   HWND panel_ = nullptr;
   bool closing_ = false;
   CefRefPtr<CefBrowser> browser_;
+  OnManageSites on_manage_sites_;
 
   IMPLEMENT_REFCOUNTING(PanelClient);
 };
@@ -432,7 +457,7 @@ void ClosePanel() {
 
 void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
                unsigned long blocked_count, bool standard_downloads,
-               const SiteState& site_state) {
+               const SiteState& site_state, OnManageSites on_manage_sites) {
   // A second click on the shield button should dismiss the open panel rather
   // than stack another one.
   if (g_panel) {
@@ -484,7 +509,8 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
   DwmSetWindowAttribute(g_panel, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
                         sizeof(corner));
 
-  CefRefPtr<PanelClient> client = new PanelClient(g_panel);
+  CefRefPtr<PanelClient> client =
+      new PanelClient(g_panel, std::move(on_manage_sites));
   g_client = client;
 
   CefWindowInfo info;

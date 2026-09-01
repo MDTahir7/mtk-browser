@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <functional>
 #include <string>
 
 // The Shields summary panel: a frameless popup, anchored under the toolbar
@@ -10,6 +11,12 @@
 // data: URL. It replaced a plain MessageBoxW so the summary can carry the
 // rendered beacon loop and the product's own styling.
 namespace mtk::shields {
+
+// Called when the panel's "Manage sites..." hint is activated. Reached through
+// the same fixed-URL navigation-intercept pattern the home and history pages
+// use for their own action links, never through a script bridge: the panel
+// stays exactly as presentation-only as it always was.
+using OnManageSites = std::function<void()>;
 
 // Shows the panel for `owner`, anchored under `anchor`. Any panel already on
 // screen is replaced. The panel dismisses itself when it loses activation or
@@ -32,7 +39,7 @@ struct SiteState {
 
 void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
                unsigned long blocked_count, bool standard_downloads,
-               const SiteState& site_state);
+               const SiteState& site_state, OnManageSites on_manage_sites);
 
 // Closes the panel if one is open. Called when the owner window moves, resizes
 // or loses focus, so the popup never floats detached from its anchor.

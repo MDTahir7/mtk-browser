@@ -91,6 +91,10 @@ constexpr UINT kUpdateStartupDelayMs = 45 * 1000;
 constexpr UINT kUpdatePeriodMs = 12 * 60 * 60 * 1000;
 constexpr UINT kFinalizeCloseMessage = WM_APP + 1;
 constexpr UINT kUpdateResultMessage = WM_APP + 2;
+// Posted from the Shields panel's "Manage all sites" link, which fires from
+// inside a CEF navigation callback; the site list dialog is modal, so it is
+// opened back on the window's own message loop rather than from there.
+constexpr UINT kShieldsManageSitesMessage = WM_APP + 3;
 
 // Result of the worker thread's check, owned by the UI thread once posted.
 mtk::update::Result g_update_result;
@@ -4830,10 +4834,13 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
                   BrowserClient::user_rule_blocked_count_for_origin(state.site);
             }
           }
+          HWND window = window_;
           mtk::shields::ShowPanel(
               instance_, window_, shield_, BrowserClient::blocked_count(),
               mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard,
-              state);
+              state, [window]() {
+                if (window) PostMessageW(window, kShieldsManageSitesMessage, 0, 0);
+              });
           break;
         }
         case kDownloadsId:
@@ -5070,6 +5077,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       }
       return 0;
     }
+    case kShieldsManageSitesMessage:
+      ShowSiteListDialog();
+      return 0;
     case kUpdateResultMessage:
       HandleUpdateResult();
       return 0;
