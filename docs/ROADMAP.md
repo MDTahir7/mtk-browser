@@ -371,8 +371,13 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     a script bridge to a surface that was deliberately built without one.
   - A custom **allow** rule cannot open anything the safety policy refuses: the
     policy is consulted first and independently, which a test pins down.
-  - Remaining: per-site rule counts in the panel, and a rule syntax check while
-    typing rather than only on save.
+  - Done: the panel's rule count is now how many of the user's own rules
+    actually matched on the current page, not the total number of rules that
+    exist. `BrowserClient` tracks blocks from `user_filters` in a second
+    per-origin map alongside the existing one for all blocks, and the Shields
+    button now reads that map for `SiteState.custom_rule_count` instead of
+    `user_filters::ActiveRuleCount()`.
+  - Remaining: a rule syntax check while typing rather than only on save.
 - [ ] **T3.4 Fingerprinting protection**
 - [~] **T3.5 HTTPS-only mode + DNS-over-HTTPS provider choice**
   - Done: HTTPS-only refuses plain-HTTP **subresources** and is on by default,

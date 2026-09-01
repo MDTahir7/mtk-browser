@@ -224,6 +224,10 @@ class BrowserClient final : public CefClient,
   // Requests blocked while the given page origin was showing, for the Shields
   // panel. A display counter only.
   static unsigned long blocked_count_for_origin(const std::string& origin);
+  // Same, but only the subset of those blocks that matched a rule the user
+  // wrote themselves, so the panel can say how many of *those* fired here.
+  static unsigned long user_rule_blocked_count_for_origin(
+      const std::string& origin);
   static bool CanControlDownload(uint32_t id);
   static bool PauseDownload(uint32_t id);
   static bool ResumeDownload(uint32_t id);
@@ -234,7 +238,9 @@ class BrowserClient final : public CefClient,
   // off in its site settings.
   bool AdFilteringAllowedForCurrentPage() const;
   // Records one blocked request, in the session total and per page origin.
-  void CountBlockedRequest() const;
+  // `from_user_rule` is true when the block came from user_filters rather than
+  // the built-in policy, which is tracked separately for the same reason.
+  void CountBlockedRequest(bool from_user_rule) const;
 
   BrowserClientDelegate* delegate_ = nullptr;
   bool block_page_pending_ = false;

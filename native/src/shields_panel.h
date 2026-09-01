@@ -21,12 +21,13 @@ namespace mtk::shields {
 // `site` is what the panel says the current page is; empty for a page that has
 // no site of its own. `site_blocked_count` is what was blocked while that page
 // was showing, and `site_filtering` is that site's own ad/tracker switch.
-// `custom_rule_count` is how many rules the user has written themselves.
+// `custom_rule_count` is how many of the user's own rules matched *on this
+// page*, not how many rules exist in total.
 struct SiteState {
   std::string site;
   unsigned long site_blocked_count = 0;
   bool site_filtering = true;
-  size_t custom_rule_count = 0;
+  unsigned long custom_rule_count = 0;
 };
 
 void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,

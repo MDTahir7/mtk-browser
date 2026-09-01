@@ -4737,9 +4737,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
                   BrowserClient::blocked_count_for_origin(state.site);
               state.site_filtering =
                   mtk::sites::Store::Get().For(state.site).ad_filtering;
+              state.custom_rule_count =
+                  BrowserClient::user_rule_blocked_count_for_origin(state.site);
             }
           }
-          state.custom_rule_count = mtk::user_filters::ActiveRuleCount();
           mtk::shields::ShowPanel(
               instance_, window_, shield_, BrowserClient::blocked_count(),
               mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard,

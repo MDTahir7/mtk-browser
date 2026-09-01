@@ -42,6 +42,10 @@ std::atomic<unsigned long> g_blocked_count{0};
 // it is a display counter, not part of any decision.
 std::mutex g_site_block_mutex;
 std::unordered_map<std::string, unsigned long> g_site_blocks;
+// Same idea, but counting only the subset of those blocks that came from a
+// rule the user wrote themselves, so the panel can say how many of *those*
+// fired on this page rather than only how many exist in total.
+std::unordered_map<std::string, unsigned long> g_site_user_rule_blocks;
 std::unordered_map<uint32_t, CefRefPtr<CefDownloadItemCallback>>
     g_download_callbacks;
 
@@ -799,7 +803,7 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
       url, MapResourceType(request->GetResourceType()),
       request_initiator.ToString(), ad_filtering);
   if (!decision.allow) {
-    CountBlockedRequest();
+    CountBlockedRequest(/*from_user_rule=*/false);
     disable_default_handling = true;
     return nullptr;
   }
@@ -817,7 +821,7 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
                    });
     if (mtk::user_filters::Evaluate(lowered) ==
         mtk::user_filters::Decision::kBlock) {
-      CountBlockedRequest();
+      CountBlockedRequest(/*from_user_rule=*/true);
       disable_default_handling = true;
       return nullptr;
     }
@@ -825,7 +829,7 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
   return this;
 }
 
-void BrowserClient::CountBlockedRequest() const {
+void BrowserClient::CountBlockedRequest(bool from_user_rule) const {
   g_blocked_count.fetch_add(1, std::memory_order_relaxed);
   // Also counted per site, so the Shields panel can say what was blocked on the
   // page in front of you rather than only a session total.
@@ -836,11 +840,14 @@ void BrowserClient::CountBlockedRequest() const {
   if (origin.empty()) return;
   std::lock_guard<std::mutex> lock(g_site_block_mutex);
   // Bounded: an origin that is no longer open is not worth remembering, and this
-  // is only a display counter.
+  // is only a display counter. Both maps are cleared together so they never
+  // disagree about which origins they still know about.
   if (g_site_blocks.size() > 200 && !g_site_blocks.contains(origin)) {
     g_site_blocks.clear();
+    g_site_user_rule_blocks.clear();
   }
   ++g_site_blocks[origin];
+  if (from_user_rule) ++g_site_user_rule_blocks[origin];
 }
 
 unsigned long BrowserClient::blocked_count_for_origin(const std::string& origin) {
@@ -848,6 +855,14 @@ unsigned long BrowserClient::blocked_count_for_origin(const std::string& origin)
   std::lock_guard<std::mutex> lock(g_site_block_mutex);
   const auto found = g_site_blocks.find(origin);
   return found == g_site_blocks.end() ? 0 : found->second;
+}
+
+unsigned long BrowserClient::user_rule_blocked_count_for_origin(
+    const std::string& origin) {
+  if (origin.empty()) return 0;
+  std::lock_guard<std::mutex> lock(g_site_block_mutex);
+  const auto found = g_site_user_rule_blocks.find(origin);
+  return found == g_site_user_rule_blocks.end() ? 0 : found->second;
 }
 
 bool BrowserClient::AdFilteringAllowedForCurrentPage() const {

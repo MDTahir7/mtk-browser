@@ -109,7 +109,7 @@ std::string SiteLine(const SiteState& state) {
   }
   if (state.custom_rule_count > 0) {
     line += " &middot; " + std::to_string(state.custom_rule_count) +
-            " of your own rules";
+            " blocked by your own rules";
   }
   line += "</div>";
   return line;
