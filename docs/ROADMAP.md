@@ -207,9 +207,14 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     including an empty folder and a non-Latin name, loading a file from before
     folders, an orphaned folder reference, malformed records, and that clearing
     bookmarks clears folders too.
-  - Remaining: drag-and-drop, a bar overflow menu for when the buttons no longer
-    fit, nesting beyond one level, choosing the folder while saving with `Ctrl+D`,
-    and on-screen confirmation of the bar and its menus.
+  - Done: a "»" overflow button appears once a folder or bookmark would not
+    fit on the bar, and every entry that did not fit (in bar order) is offered
+    from its popup instead of being silently dropped as before. A folder row
+    inside that popup opens its own submenu of that folder's bookmarks, the
+    same as clicking the folder directly on the bar.
+  - Remaining: drag-and-drop, nesting beyond one level, choosing the folder
+    while saving with `Ctrl+D`, and on-screen confirmation of the bar and its
+    menus (including the new overflow button).
 - [~] **T2.5 History as a browsable page, with search and date grouping**
   - Done: history is now a browser-owned document at `mtk://history/`
     (`native/src/history_page.*`), served by the same `mtk` scheme as the home

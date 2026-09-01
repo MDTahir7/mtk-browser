@@ -70,9 +70,12 @@ class BrowserWindow final : public BrowserClientDelegate {
   struct BookmarkHit {
     RECT bounds;
     // Index into the store's bookmark list, or into its folder list when
-    // `folder` is set.
+    // `folder` is set. Meaningless when `overflow` is set.
     size_t index;
     bool folder = false;
+    // The single "»" button that opens everything that did not fit on the
+    // bar. `index` and `folder` are unused for this entry.
+    bool overflow = false;
   };
 
   void RememberClosedTab(const Tab& tab);
@@ -207,6 +210,10 @@ class BrowserWindow final : public BrowserClientDelegate {
   // Right-click menu of the bar: folder management, and moving or removing the
   // bookmark that was clicked.
   void ShowBookmarksBarMenu(const BookmarkHit* hit, POINT screen);
+  // Popup listing every folder and top-level bookmark that did not fit on the
+  // bar. Folders open their own submenu of that folder's bookmarks, the same
+  // way clicking a folder button on the bar does.
+  void ShowBookmarksOverflowMenu(POINT screen);
   // Returns false when the name was rejected, after telling the user why.
   bool PromptForFolderName(const wchar_t* caption, const wchar_t* message,
                            std::wstring* name);
@@ -277,6 +284,10 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool dragging_ = false;
   std::vector<BookmarkHit> bookmark_bar_hits_;
   size_t hovered_bookmark_ = static_cast<size_t>(-1);
+  // Folders and top-level bookmarks that did not fit on the bookmarks bar,
+  // rebuilt on every paint alongside bookmark_bar_hits_. Each entry is
+  // (index into the store's folder or bookmark list, is_folder).
+  std::vector<std::pair<size_t, bool>> bookmark_overflow_entries_;
   // Bookmarks listed in the folder popup currently on screen, in menu order.
   std::vector<std::string> folder_menu_urls_;
   // Bookmark the bar context menu was opened on, empty when it was opened on

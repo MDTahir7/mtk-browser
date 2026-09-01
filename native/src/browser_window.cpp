@@ -4035,6 +4035,7 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   FillGradient(dc, bar, kToolbarBottom, kToolbarBottom);
 
   bookmark_bar_hits_.clear();
+  bookmark_overflow_entries_.clear();
   const auto& store = mtk::library::Store::Get();
   const auto& bookmarks = store.bookmarks();
   const auto& folders = store.folders();
@@ -4050,20 +4051,30 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   }
 
   int x = Scaled(10);
+  const int overflow_width = Scaled(32);
+  // Once a button would not leave room for the overflow indicator either, every
+  // remaining folder and bookmark goes into the overflow list instead of just
+  // being dropped, so nothing on the bar becomes unreachable.
+  bool overflowing = false;
+
   // One button per label, only as wide as the text needs and capped so a single
   // long name cannot take the whole bar.
   const auto draw_button = [&](const std::wstring& label, size_t index,
                                bool folder) {
-    // Hover is tracked by position on the bar, which is what this button is
-    // about to become.
-    const bool hovered = hovered_bookmark_ == bookmark_bar_hits_.size();
     RECT measure{0, 0, Scaled(160), height};
     DrawTextW(dc, label.c_str(), -1, &measure,
               DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
     const int width =
         std::clamp<int>(measure.right + Scaled(20), Scaled(48), Scaled(180));
-    if (x + width > client.right - Scaled(10)) return false;
+    if (overflowing || x + width > client.right - Scaled(10) - overflow_width) {
+      overflowing = true;
+      bookmark_overflow_entries_.emplace_back(index, folder);
+      return;
+    }
 
+    // Hover is tracked by position on the bar, which is what this button is
+    // about to become.
+    const bool hovered = hovered_bookmark_ == bookmark_bar_hits_.size();
     RECT button{x, top + Scaled(4), x + width, top + height - Scaled(4)};
     if (hovered) FillRounded(dc, button, Scaled(8), kControlHoverColor);
     RECT text = button;
@@ -4072,20 +4083,30 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
     SetTextColor(dc, hovered ? kTextColor : kMutedColor);
     DrawTextW(dc, label.c_str(), -1, &text,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    bookmark_bar_hits_.push_back(BookmarkHit{button, index, folder});
+    bookmark_bar_hits_.push_back(BookmarkHit{button, index, folder, false});
     x += width + Scaled(6);
-    return true;
   };
 
   // Folders lead the bar, so the grouping stays visible as loose bookmarks are
   // added. The hover index is shared, so folders occupy the low range.
   for (size_t index = 0; index < folders.size(); ++index) {
-    if (!draw_button(folders[index].name + L"  ▾", index, true)) return;
+    draw_button(folders[index].name + L"  ▾", index, true);
   }
   for (size_t index = 0; index < bookmarks.size(); ++index) {
     // A bookmark inside a folder is reached through that folder's popup.
     if (!bookmarks[index].folder.empty()) continue;
-    if (!draw_button(bookmarks[index].title, index, false)) return;
+    draw_button(bookmarks[index].title, index, false);
+  }
+
+  if (!bookmark_overflow_entries_.empty()) {
+    const bool hovered = hovered_bookmark_ == bookmark_bar_hits_.size();
+    RECT button{x, top + Scaled(4), x + overflow_width, top + height - Scaled(4)};
+    if (hovered) FillRounded(dc, button, Scaled(8), kControlHoverColor);
+    SetTextColor(dc, hovered ? kTextColor : kMutedColor);
+    DrawTextW(dc, L"\u00BB", -1, &button,
+              DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+    bookmark_bar_hits_.push_back(
+        BookmarkHit{button, static_cast<size_t>(-1), false, true});
   }
 }
 
@@ -4119,6 +4140,70 @@ void BrowserWindow::ShowBookmarkFolderMenu(size_t folder_index, POINT screen) {
   }
   TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y, 0,
                  window_, nullptr);
+  DestroyMenu(popup);
+}
+
+void BrowserWindow::ShowBookmarksOverflowMenu(POINT screen) {
+  const auto& store = mtk::library::Store::Get();
+  folder_menu_urls_.clear();
+  HMENU popup = CreatePopupMenu();
+  if (!popup) return;
+
+  const auto escape_ampersands = [](std::wstring label) {
+    for (size_t at = label.find(L'&'); at != std::wstring::npos;
+         at = label.find(L'&', at + 2)) {
+      label.insert(at, 1, L'&');
+    }
+    return label;
+  };
+
+  // Command ids double up as an index into bookmark_overflow_entries_ itself,
+  // since that vector already carries exactly what each row needs: which kind
+  // of entry it is and its index into the matching store list. A folder row
+  // opens its own submenu of that folder's bookmarks, in one Chinese-menu-box
+  // nested popup rather than a second click through the bar.
+  for (size_t position = 0; position < bookmark_overflow_entries_.size() &&
+                            position < kMaxFolderMenuEntries;
+       ++position) {
+    const auto [index, is_folder] = bookmark_overflow_entries_[position];
+    if (is_folder) {
+      if (index >= store.folders().size()) continue;
+      const std::wstring& name = store.folders()[index].name;
+      HMENU submenu = CreatePopupMenu();
+      if (!submenu) continue;
+      bool any = false;
+      for (const auto& bookmark : store.bookmarks()) {
+        if (folder_menu_urls_.size() >= kMaxFolderMenuEntries) break;
+        if (_wcsicmp(bookmark.folder.c_str(), name.c_str()) != 0) continue;
+        const std::wstring label = escape_ampersands(
+            bookmark.title.empty() ? Utf8ToWide(bookmark.url)
+                                   : bookmark.title);
+        AppendMenuW(submenu, MF_STRING,
+                    static_cast<UINT_PTR>(IDM_BOOKMARK_OPEN_FIRST +
+                                          folder_menu_urls_.size()),
+                    label.c_str());
+        folder_menu_urls_.push_back(bookmark.url);
+        any = true;
+      }
+      if (!any) AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, L"(empty)");
+      AppendMenuW(popup, MF_STRING | MF_POPUP,
+                 reinterpret_cast<UINT_PTR>(submenu),
+                 escape_ampersands(name + L"  ▾").c_str());
+    } else {
+      if (index >= store.bookmarks().size()) continue;
+      const auto& bookmark = store.bookmarks()[index];
+      const std::wstring label = escape_ampersands(
+          bookmark.title.empty() ? Utf8ToWide(bookmark.url) : bookmark.title);
+      if (folder_menu_urls_.size() >= kMaxFolderMenuEntries) continue;
+      AppendMenuW(popup, MF_STRING,
+                  static_cast<UINT_PTR>(IDM_BOOKMARK_OPEN_FIRST +
+                                        folder_menu_urls_.size()),
+                  label.c_str());
+      folder_menu_urls_.push_back(bookmark.url);
+    }
+  }
+  TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN, screen.x, screen.y, 0,
+                window_, nullptr);
   DestroyMenu(popup);
 }
 
@@ -4593,10 +4678,12 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       if (BookmarksBarHeight() > 0) {
         for (const BookmarkHit& hit : bookmark_bar_hits_) {
           if (!PtInRect(&hit.bounds, point)) continue;
-          if (hit.folder) {
-            // The popup opens under the button, like a menu bar item.
-            POINT screen{hit.bounds.left, hit.bounds.bottom};
-            ClientToScreen(window_, &screen);
+          // The popup opens under the button, like a menu bar item.
+          POINT screen{hit.bounds.left, hit.bounds.bottom};
+          ClientToScreen(window_, &screen);
+          if (hit.overflow) {
+            ShowBookmarksOverflowMenu(screen);
+          } else if (hit.folder) {
             ShowBookmarkFolderMenu(hit.index, screen);
           } else {
             OpenLibraryEntry(hit.index);
@@ -4664,7 +4751,9 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         if (point.y >= bar_top && point.y < bar_top + BookmarksBarHeight()) {
           const BookmarkHit* found = nullptr;
           for (const BookmarkHit& hit : bookmark_bar_hits_) {
-            if (PtInRect(&hit.bounds, point)) {
+            // The overflow button is not a bookmark or a folder, so a right
+            // click on it opens the same menu as blank space on the bar.
+            if (PtInRect(&hit.bounds, point) && !hit.overflow) {
               found = &hit;
               break;
             }
