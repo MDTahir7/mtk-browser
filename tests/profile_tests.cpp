@@ -87,3 +87,29 @@ MTK_TEST(ProfileDefaultsBeforeInitialization) {
   MTK_EXPECT_TRUE(directory.find(L"\\MTK Browser") != std::wstring::npos);
   MTK_EXPECT_TRUE(directory.find(L"\\Profiles") == std::wstring::npos);
 }
+
+MTK_TEST(ProfileDisplayNamesAllowReadableUnicodeButRejectUnsafeText) {
+  MTK_EXPECT_TRUE(mtk::profile::IsValidDisplayName(L"Work laptop"));
+  MTK_EXPECT_TRUE(mtk::profile::IsValidDisplayName(L"काम"));
+  MTK_EXPECT_TRUE(mtk::profile::IsValidDisplayName(std::wstring(64, L'x')));
+  MTK_EXPECT_FALSE(mtk::profile::IsValidDisplayName(L""));
+  MTK_EXPECT_FALSE(mtk::profile::IsValidDisplayName(std::wstring(65, L'x')));
+  MTK_EXPECT_FALSE(mtk::profile::IsValidDisplayName(L"Work\nLaptop"));
+  MTK_EXPECT_FALSE(mtk::profile::IsValidDisplayName(L"Work\tLaptop"));
+}
+
+MTK_TEST(ProfileDisplayNamePersistsSeparatelyFromItsSafeId) {
+  if (!mtk::test::WritingToSuiteProfile()) { MTK_EXPECT_TRUE(false); return; }
+  MTK_EXPECT_TRUE(mtk::profile::Create(L"display_test"));
+  MTK_EXPECT_EQ_WSTR(mtk::profile::DisplayName(L"display_test"), L"display_test");
+  MTK_EXPECT_TRUE(mtk::profile::SetDisplayName(L"display_test", L"काम Laptop"));
+  MTK_EXPECT_EQ_WSTR(mtk::profile::DisplayName(L"display_test"), L"काम Laptop");
+  MTK_EXPECT_FALSE(mtk::profile::SetDisplayName(L"display_test", L"bad\nname"));
+  MTK_EXPECT_FALSE(mtk::profile::SetDisplayName(L"../escape", L"Name"));
+}
+
+MTK_TEST(ProfileDeletionRefusesDefaultAndActiveProfile) {
+  MTK_EXPECT_FALSE(mtk::profile::Delete(mtk::profile::kDefaultId));
+  MTK_EXPECT_FALSE(mtk::profile::Delete(mtk::profile::ActiveId()));
+  MTK_EXPECT_FALSE(mtk::profile::Delete(L"../escape"));
+}

@@ -88,6 +88,45 @@ MTK_TEST(FolderNamesAreTrimmedBoundedAndFreeOfControlCharacters) {
   MTK_EXPECT_EQ_WSTR(mtk::library::NormalizeFolderName(too_long), L"");
 }
 
+MTK_TEST(BookmarkHtmlExportEscapesContentAndKeepsFolders) {
+  const std::vector<mtk::library::Entry> bookmarks = {
+      {"https://example.test/?a=1&b=2", L"A <useful> & \"safe\" title", 0,
+       L"Work & Research"},
+      {"https://root.test/", L"Root bookmark", 0, L""},
+  };
+  const std::string html = mtk::library::ExportBookmarksHtml(bookmarks);
+  MTK_EXPECT_TRUE(html.find("<!DOCTYPE NETSCAPE-Bookmark-file-1>") !=
+                  std::string::npos);
+  MTK_EXPECT_TRUE(html.find("<H3>Work &amp; Research</H3>") !=
+                  std::string::npos);
+  MTK_EXPECT_TRUE(html.find("HREF=\"https://example.test/?a=1&amp;b=2\"") !=
+                  std::string::npos);
+  MTK_EXPECT_TRUE(html.find("A &lt;useful&gt; &amp; &quot;safe&quot; title") !=
+                  std::string::npos);
+  MTK_EXPECT_TRUE(html.find("HREF=\"https://root.test/\"") !=
+                  std::string::npos);
+}
+
+MTK_TEST(NestedBookmarkHtmlExportProducesNestedDlStructure) {
+  const std::vector<mtk::library::Entry> bookmarks = {
+      {"https://sub.test/1", L"Project 1", 0, L"Work/Projects"},
+      {"https://sub.test/2", L"Project 2", 0, L"Work/Projects"},
+      {"https://sub.test/3", L"Personal Notes", 0, L"Personal"},
+  };
+  const std::string html = mtk::library::ExportBookmarksHtml(bookmarks);
+  // Verify Work opening and Projects opening
+  const size_t work_pos = html.find("<DT><H3>Work</H3>\n<DL><p>\n");
+  MTK_EXPECT_TRUE(work_pos != std::string::npos);
+  const size_t proj_pos = html.find("<DT><H3>Projects</H3>\n<DL><p>\n");
+  MTK_EXPECT_TRUE(proj_pos != std::string::npos);
+  MTK_EXPECT_TRUE(work_pos < proj_pos);
+
+  // Verify Personal starts after Work/Projects closes
+  const size_t personal_pos = html.find("<DT><H3>Personal</H3>\n<DL><p>\n");
+  MTK_EXPECT_TRUE(personal_pos != std::string::npos);
+  MTK_EXPECT_TRUE(proj_pos < personal_pos);
+}
+
 MTK_TEST(FoldersAreUniqueWithoutCaseAndAreCapped) {
   ScopedProfile profile;
   MTK_EXPECT_TRUE(profile.RedirectedAwayFromRealProfile());

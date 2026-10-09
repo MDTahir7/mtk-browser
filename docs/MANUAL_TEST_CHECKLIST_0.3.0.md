@@ -9,7 +9,7 @@ tab-strip mouse behaviour, and real-world browsing quality.
 
 ## Setup
 
-- Build under test: `dist/installer/MTK-Browser-Setup-0.3.0-Preview.exe` (118.7 MB, unsigned)
+- Build under test: `dist/installer/MTK-Browser-Setup-0.3.0-Preview.exe` (120.0 MB, unsigned)
 - Install per-user; expect a SmartScreen "unknown publisher" prompt. That is expected for this preview.
 - Data locations to inspect: `%LOCALAPPDATA%\MTK Browser\` (`preferences.ini`, `session.v1`, `downloads.v1`, `library.v1`, `User Data\`)
 - Downloads land in `%USERPROFILE%\Downloads\MTK Browser`
@@ -55,6 +55,9 @@ tab-strip mouse behaviour, and real-world browsing quality.
 | 4.1 | Tab through the Settings dialog | Logical tab order, all labels fully readable, nothing clipped | |
 | 4.2 | Set a valid home page, Save, click Home | Navigates to that page; survives restart | |
 | 4.3 | Enter a blocked/adult URL as home page | Rejected with a "Home page blocked" message, not saved | |
+| 4.4 | Enable “On exit, clear browsing history, finished download history and saved tabs”; visit a harmless site, complete a small download, then close all MTK windows normally and relaunch | History, finished download row and saved tabs are gone; bookmarks, passwords, site settings, cookies/cache and the downloaded file remain | |
+| 4.5 | In Site settings, allow camera and/or microphone for an authorized disposable test site; start then stop device capture | `CAM`, `MIC`, or `CAM+MIC` appears only while capture is live and disappears when capture stops; a stored Allow without capture shows no badge | |
+| 4.6 | Choose “Allowed until MTK Browser closes” for an authorized test site's camera or microphone, verify one request, fully close/relaunch MTK Browser and request again | Access works only during that run; after restart it is refused until explicitly granted again | |
 | 4.4 | Change website language, Save | Notice says restart needed; after restart pages honour it | |
 | 4.5 | Cancel after editing fields | Nothing is saved | |
 
@@ -66,6 +69,22 @@ tab-strip mouse behaviour, and real-world browsing quality.
 | 4A.2 | Use the PDF viewer's download button | Existing safe/standard download policy is used | |
 | 4A.3 | Reload, zoom, change pages, then use Back | Viewer remains responsive and Back returns to the previous page | |
 | 4A.4 | Close the PDF tab while it is loading | Tab closes cleanly with no leftover MTK Browser process after app exit | |
+
+## 4C. Advanced tab controls and diagnostics
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 4C.1 | Open three ordinary pages, assign two to the same tab group | Group name is visible in the tab strip and Tab search results | |
+| 4C.2 | Open Tab groups, choose the group, then restart MTK Browser | Group members are arranged together and the group label survives restart | |
+| 4C.3 | Use Tab groups → Ungroup tabs | Tabs remain open and only their group labels are removed | |
+| 4C.4 | Browser menu → Browser diagnostics | Dialog shows local CEF version, window/tab count, DPI, private state and memory-saver state; no URL, password or browsing-history data is shown | |
+| 4C.5 | Browser menu → Passkey capability check | Internal page reports WebAuthn and platform-authenticator availability without creating or transmitting a credential | |
+| 4C.6 | On a permitted HTTPS page, choose Open in separate app window | A separate window opens with an isolated profile and a Start-menu shortcut is created; the original tab stays open | |
+| 4C.7 | Hover a normal tab, then move over its close button | Tooltip shows title, group and full URL; it disappears over the close button and when the pointer leaves the tab strip | |
+| 4C.8 | Open a second normal MTK window, then use Tab Search in the first window | Tabs from both normal windows are listed; choosing the second-window tab foregrounds that window and selects the tab | |
+| 4C.9 | Open a private window and use Tab Search | Only tabs from that private window are listed; normal-window tabs never appear | |
+| 4C.10 | Open two tabs, Browser menu → Split view, then select and close each pane | Both live pages resize side-by-side; selecting the right pane promotes it without reloading; closing/reordering/pinning returns safely to one pane | |
+| 4C.11 | Enable Windows Hello for saved passwords in Settings, then open Saved passwords | Windows checks availability before saving; its secure prompt appears before the password list, and cancellation keeps the list closed | |
 
 ## 5. Downloads — safe mode (default)
 
@@ -131,7 +150,8 @@ tab-strip mouse behaviour, and real-world browsing quality.
 | 8.5 | Right-click a link to a blocked site | "Open link in new tab" is greyed out | |
 | 8.6 | Right-click an image → "Save image" | Goes through the normal download policy | |
 | 8.7 | Right-click inside a text field | Copy / Paste / Select all appear when applicable | |
-| 8.8 | Look for DevTools, View Source, Print, Inspect | None of them present anywhere | |
+| 8.8 | Right-click ordinary page content → Inspect element | Associated CEF DevTools opens at the clicked element | |
+| 8.9 | Press F12 on an ordinary page | Associated CEF DevTools opens; Console and Network panels are usable | |
 
 ## 9. Safety and shields
 
@@ -177,9 +197,12 @@ tab-strip mouse behaviour, and real-world browsing quality.
 | 10.10 | Type 2+ characters of a visited or bookmarked site in the omnibox | A short list appears under the toolbar; bookmarks (★) are listed before history (🕘) | |
 | 10.11 | Use Down/Up then Enter, then repeat with a mouse click | The highlighted entry opens; Esc and clicking elsewhere close the list | |
 | 10.12 | Type only 1 character, then clear the omnibox | No list is shown | |
-| 10.13 | Overflow menu → Clear browsing data | Six choices; nothing selected is refused; the summary lists exactly what was cleared | |
+| 10.13 | Overflow menu → Clear browsing data | Eight choices; nothing selected is refused; the summary lists exactly what was cleared or requested | |
 | 10.14 | Clear cookies only, then revisit a site you were signed in to | You are signed out; history and bookmarks are untouched | |
 | 10.15 | With a parent PIN set, open Clear browsing data | The PIN is required first | |
+| 10.16 | Set MTK Browser as default in Windows Default apps, fully close it, then open a harmless HTTPS link from another application | MTK opens the requested URL as the first tab, not only the home page | |
+| 10.17 | With MTK Browser already open, open a second harmless HTTPS link from another application | Existing MTK window is focused and a new tab opens the requested URL; no second same-profile process remains | |
+| 10.18 | On a disposable HTTPS storage-test page, create a cookie, localStorage row, IndexedDB row and Cache Storage entry; select Cookies and site data, close/reopen the page | The site is signed out and each disposable storage bucket is absent. Record any surviving bucket as a release blocker. | |
 | 10.7 | Resize and maximise the window | Toolbar and page area lay out correctly, no gaps or overlap | |
 | 10.10 | `F11`, then `F11` or `Esc` again | Page fills the screen with no chrome; leaving restores the exact previous size, position and tabs | |
 | 10.11 | Overflow menu → Full screen / Exit full screen | Same behaviour as F11; the label reflects the current state | |
@@ -189,6 +212,40 @@ tab-strip mouse behaviour, and real-world browsing quality.
 | 10.15 | With many tabs open, switch tabs with `Ctrl+Tab` | The selected tab always scrolls into view | |
 | 10.8 | Play a video (YouTube or similar) | Video and audio work | |
 | 10.9 | Log into a normal site | Login works within the session | |
+
+## 10A. Release compatibility matrix
+
+Run this matrix on a clean, non-private profile for each Release candidate. Use
+throwaway accounts only; never record passwords, messages, payment details or
+personal browsing data in the Result column. Record browser version, CEF build,
+Windows version, test date, outcome (`Pass`, `Fail`, `Blocked`), and a short
+non-sensitive symptom or issue link for every row. A `Blocked` row is not a
+pass: it needs an owner and retest date before release promotion.
+
+| # | Service / flow | Test | Expected | Result |
+|---|---|---|---|---|
+| 10A.1 | Google Account | Sign in, open account page, sign out | Login, redirects and cookies work; sign-out removes session | |
+| 10A.2 | Gmail | Open inbox, read a test email, compose then discard | Mail UI loads; editor, attachments picker and discard flow work | |
+| 10A.3 | YouTube | Search, play a normal video, seek, captions, full screen, PiP if offered | Video/audio controls stay usable; no player breakage | |
+| 10A.4 | WhatsApp Web | Link a disposable test account, send/receive a test message, sign out | QR/linking, messages and attachment picker work | |
+| 10A.5 | Google Meet / Jitsi | Join a private test room without admitting external participants | Camera/mic permission state is clear; expected deny/default behavior is explained and no crash occurs | |
+| 10A.6 | File upload | Upload a harmless small text/image file to a test site, then cancel/remove it | Native picker opens; selected file reaches the site only after user chooses it | |
+| 10A.7 | Office web editor | Open a disposable document and edit a short non-sensitive line | Editing, autosave indicator and keyboard input work | |
+| 10A.8 | Payment sandbox | Use an official sandbox/test checkout only; never a live card or bank login | Redirects, 3DS/test UI and cancel path work; no live transaction | |
+| 10A.9 | Banking | Public landing page only unless a bank-approved test environment exists | TLS, navigation and rendering work; do not enter credentials in production banking | |
+| 10A.10 | PDF | Open a public PDF, search, rotate if available, Print → Save as PDF then cancel | PDF viewer is in-tab; no crash or unexpected external app | |
+| 10A.11 | Streaming | Public trailer/sample from a supported service | Playback, seek and full screen work; document DRM/codec limitation exactly | |
+| 10A.12 | Internal pages | Visit `mtk://home/`, history and a deliberately blocked URL | CSP and navigation boundaries hold; no external content or script injection | |
+| 10A.13 | External URL launch | With MTK Browser selected for `https`, open an ordinary link from a separate Windows app or Run dialog | The target opens as the first tab; unsafe schemes and local paths do not open | |
+
+### Compatibility release gate
+
+- Security-sensitive rows (10A.1, 10A.5, 10A.8, 10A.9 and 10A.12) must be
+  `Pass` or have a written, user-visible limitation approved for the channel.
+- Public-service checks may be repeated by engineering. Account, payment and
+  private-call checks require a designated tester with authorized test accounts.
+- Preserve only non-sensitive screenshots/log excerpts in the release issue;
+  do not attach QR codes, inbox content, account identifiers or payment data.
 
 ## 11. Uninstall
 

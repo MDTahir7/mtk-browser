@@ -146,7 +146,9 @@ void EndSessionCleanly() {
   DeleteFileW(MarkerPath().c_str());
 }
 
-bool LastExitWasUnclean() { return g_unclean; }
+// Unclean exits are recorded to history, but we do not show a blocking modal
+// dialog on an unmapped/invisible window during WM_CREATE.
+bool LastExitWasUnclean() { return false; }
 
 std::wstring RecentCrashReport() {
   std::string history;

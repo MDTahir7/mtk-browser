@@ -11,12 +11,16 @@ set(MTK_BROWSER_SOURCES
   src/site_settings.h
   src/downloads_panel.cpp
   src/downloads_panel.h
+  src/screenshot_panel.cpp
+  src/screenshot_panel.h
   src/strings.cpp
   src/strings.h
   src/dialog_text.cpp
   src/dialog_text.h
   src/password_store.cpp
   src/password_store.h
+  src/private_session.cpp
+  src/private_session.h
   src/user_filters.cpp
   src/user_filters.h
   src/crash_guard.cpp
@@ -31,12 +35,18 @@ set(MTK_BROWSER_SOURCES
   src/bookmark_import.h
   src/download_manager.cpp
   src/download_manager.h
+  src/downloads_page.cpp
+  src/downloads_page.h
   src/home_page.cpp
   src/home_page.h
   src/history_page.cpp
   src/history_page.h
   src/home_scheme.cpp
   src/home_scheme.h
+  src/passkey_page.cpp
+  src/passkey_page.h
+  src/settings_page.cpp
+  src/settings_page.h
   src/session_store.cpp
   src/session_store.h
   src/icon_strip.cpp
@@ -47,8 +57,22 @@ set(MTK_BROWSER_SOURCES
   src/fingerprint_script.h
   src/browser_client.cpp
   src/browser_client.h
+  src/fullpage_screenshot.cpp
   src/browser_window.cpp
   src/browser_window.h
+  src/memory_saver.h
+  src/tab_search.cpp
+  src/tab_search.h
+  src/task_manager_dialog.cpp
+  src/task_manager_dialog.h
+  src/translation.cpp
+  src/translation.h
+  src/web_app.cpp
+  src/web_app.h
+  src/autofill_store.cpp
+  src/autofill_store.h
+  src/windows_hello.cpp
+  src/windows_hello.h
   src/inline_asset.cpp
   src/inline_asset.h
   src/shields_panel.cpp
@@ -60,11 +84,48 @@ set(MTK_BROWSER_SOURCES
   src/updater.cpp
   src/updater.h
   src/update_public_key.h
+  src/builtin_favicons.cpp
+  src/builtin_favicons.h
+  src/favicon_store.cpp
+  src/favicon_store.h
   resources/mtk_filters.txt
   resources/mtk_block_shield.webm
   resources/mtk_siren_alert.webm
   resources/mtk_shield_hover.png
+  resources/mtk_home_hover.png
+  resources/mtk_search_3d.webp
+  resources/mtk_search_3d_still.webp
+  resources/mtk_search_web_3d.webp
+  resources/mtk_search_web_3d_still.webp
+  resources/mtk_ask_ai_3d.webp
+  resources/mtk_ask_ai_3d_still.webp
+  resources/mtk_publishing_3d.webp
+  resources/mtk_publishing_3d_still.webp
+  resources/mtk_home_3d.webp
+  resources/mtk_home_3d_still.webp
+  resources/mtk_store_3d.webp
+  resources/mtk_store_3d_still.webp
+  resources/mtk_store_hover.png
+  resources/mtk_notes_3d.webp
+  resources/mtk_notes_3d_still.webp
+  resources/mtk_notes_hover.png
+  resources/mtk_download_3d.webp
+  resources/mtk_download_3d_still.webp
+  resources/mtk_download_hover.png
+  resources/mtk_bookmarks_3d.webp
+  resources/mtk_bookmarks_3d_still.webp
+  resources/mtk_bookmarks_hover.png
+  resources/mtk_focus_3d.webp
+  resources/mtk_focus_3d_still.webp
+  resources/mtk_focus_strip.png
+  resources/mtk_refresh_3d.webp
+  resources/mtk_refresh_3d_still.webp
+  resources/mtk_screenshot_3d.webp
+  resources/mtk_screenshot_3d_still.webp
+  resources/mtk_screenshot_hover.png
+  resources/mtk_screenshot_strip.png
 )
+
 
 SET_CEF_TARGET_OUT_DIR()
 
@@ -98,7 +159,10 @@ target_link_libraries(mtk_browser PRIVATE
   dwmapi.lib
   uxtheme.lib
   shell32.lib
+  advapi32.lib
   ole32.lib
+  comctl32.lib
+  comdlg32.lib
   # Windows CNG, used for the parent-PIN PBKDF2 verifier and update signatures.
   bcrypt.lib
   # HTTPS update checks and base64 decoding, both from the OS.
@@ -108,8 +172,11 @@ target_link_libraries(mtk_browser PRIVATE
   # msimg32 provides AlphaBlend for compositing its premultiplied frames.
   windowscodecs.lib
   msimg32.lib
+  # Windows Runtime implementation of the optional Windows Hello verification.
+  windowsapp.lib
   # AssocQueryString, used to ask Windows which program currently handles https.
   shlwapi.lib
+  gdiplus.lib
 )
 
 set_target_properties(mtk_browser PROPERTIES
@@ -132,6 +199,129 @@ add_custom_command(TARGET mtk_browser POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_shield_hover.png"
           "$<TARGET_FILE_DIR:mtk_browser>/mtk_shield_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_web_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_web_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_web_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_web_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_ask_ai_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_ask_ai_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_ask_ai_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_ask_ai_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_home_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_home_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_home_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_home_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_home_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_home_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_store_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_store_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_store_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_store_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_store_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_store_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_notes_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_notes_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_notes_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_notes_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_notes_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_notes_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_download_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_download_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_download_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_download_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_download_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_download_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_history_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_history_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_history_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_history_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_history_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_history_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_settings_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_settings_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_settings_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_settings_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_settings_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_settings_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_bookmarks_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_bookmarks_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_bookmarks_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_bookmarks_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_bookmarks_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_bookmarks_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_focus_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_focus_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_focus_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_focus_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_focus_strip.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_focus_strip.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_refresh_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_refresh_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_refresh_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_refresh_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_refresh_strip.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_refresh_strip.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_screenshot_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_screenshot_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_screenshot_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_screenshot_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_screenshot_hover.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_screenshot_hover.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_screenshot_strip.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_screenshot_strip.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_web_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_web_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_search_web_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_search_web_3d_still.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_publishing_3d.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_publishing_3d.webp"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_publishing_3d_still.webp"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_publishing_3d_still.webp"
   VERBATIM
 )
 

@@ -1,5 +1,13 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -33,6 +41,15 @@ struct Item {
   bool risky = false;
   // The large-file warning is shown at most once per download.
   bool size_warned = false;
+  // Resumption metadata across process restarts.
+  std::string etag;
+  std::string last_modified;
+  std::wstring partial_path;
+  bool can_resume = false;
+  // True when the download originated in a Private Window. Private downloads
+  // are never written to the on-disk downloads history and are evicted when
+  // the private session ends.
+  bool is_private = false;
 };
 
 struct Decision {
@@ -72,6 +89,33 @@ Decision Evaluate(const std::string& url, const std::wstring& suggested_name,
 // the standard-mode save warning and the "Open file" confirmation.
 bool IsRiskyFileName(const std::wstring& file_name);
 
+// Case-insensitive local search for the full Downloads view. It never makes a
+// network request and matches the visible file name, disk path, source address
+// and current status detail.
+bool MatchesSearch(const Item& item, const std::wstring& query);
+
+// A retry always starts a fresh request. It is available only for an attempt
+// that ended unsuccessfully; a completed or currently active item cannot be
+// accidentally downloaded again.
+bool CanRetry(const Item& item);
+
+// Returns true when an interrupted download has recorded partial progress
+// and a valid web address, allowing HTTP Range resumption.
+bool CanResume(const Item& item);
+
+// Computes the partial file path (e.g. "<full_path>.mtkpart") used during transfer.
+std::wstring PartialFilePath(const std::wstring& full_path);
+
+// Generates the HTTP Range header value string for resuming, e.g. "bytes=12345-".
+std::string BuildRangeHeader(int64_t received_bytes);
+
+// Generates the HTTP If-Range header value from ETag or Last-Modified timestamp.
+std::string BuildIfRangeHeader(const std::string& etag,
+                               const std::string& last_modified);
+
+// Reads the byte length of any existing partial download file on disk.
+int64_t GetExistingPartialBytes(const std::wstring& full_path);
+
 // "%USERPROFILE%\Downloads\MTK Browser", created on demand. Falls back to the
 // application data directory when the known folder cannot be resolved.
 std::wstring DownloadDirectory();
@@ -79,6 +123,25 @@ std::wstring DownloadDirectory();
 // Full target path inside DownloadDirectory() that does not overwrite an
 // existing file. Returns an empty string when no free name is available.
 std::wstring UniqueTargetPath(const std::wstring& file_name);
+
+// Prompts the user with a standard Windows "Save As" file dialog to select the
+// target folder and file name. Returns true if the user clicked Save, or false
+// if the user canceled.
+bool PromptDownloadLocation(HWND owner, const std::wstring& suggested_name,
+                            std::wstring* out_full_path,
+                            std::wstring* out_file_name);
+
+// Generates a sanitized, Windows-safe filename for offline PDF export from a page title.
+std::wstring SuggestPdfFileName(const std::wstring& page_title);
+
+// Generates a sanitized, timestamped filename for webpage screenshot PNG export.
+std::wstring SuggestScreenshotFileName(const std::wstring& page_title);
+
+// Saves an HBITMAP to a lossless PNG file using Windows Imaging Component (WIC).
+bool SaveBitmapToPng(HBITMAP hbitmap, const std::wstring& file_path);
+
+// Copies an HBITMAP to the Windows clipboard as CF_BITMAP.
+bool CopyBitmapToClipboard(HWND owner, HBITMAP hbitmap);
 
 // Session list of downloads. All methods are called on the CEF browser-process
 // UI thread, which is also the Win32 UI thread, so no locking is required.
@@ -92,9 +155,11 @@ class Manager final {
   void Upsert(const Item& item);
   bool Remove(uint64_t id);
   size_t ClearFinished();
+  size_t ClearPrivateDownloads();
   size_t ActiveCount() const;
 
   const std::vector<Item>& items() const;
+  Item* FindItem(uint64_t id);
 
  private:
   std::vector<Item> items_;

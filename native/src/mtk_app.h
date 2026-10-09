@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "include/cef_app.h"
 #include "include/cef_browser_process_handler.h"
@@ -14,7 +16,9 @@ class MtkApp final : public CefApp,
                      public CefBrowserProcessHandler,
                      public CefRenderProcessHandler {
  public:
-  MtkApp(HINSTANCE instance, int show_command);
+  MtkApp(HINSTANCE instance, int show_command,
+         std::vector<std::string> startup_urls = {},
+         bool app_mode = false);
   ~MtkApp() override;
 
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override;
@@ -49,6 +53,8 @@ class MtkApp final : public CefApp,
  private:
   HINSTANCE instance_ = nullptr;
   int show_command_ = SW_SHOWDEFAULT;
+  std::vector<std::string> startup_urls_;
+  bool app_mode_ = false;
 
   IMPLEMENT_REFCOUNTING(MtkApp);
 };

@@ -96,13 +96,6 @@ home.addEventListener('click', () => window.browser.home());
 addTabBtn.addEventListener('click', () => window.browser.createTab());
 address.addEventListener('focus', () => address.select());
 
-// Bookmarks Bar Click Handlers
-document.querySelectorAll('.bookmark-item').forEach((bm) => {
-  bm.addEventListener('click', () => {
-    const targetUrl = bm.dataset.url;
-    if (targetUrl) window.browser.navigate(targetUrl);
-  });
-});
 
 // Modal Toggles
 shieldToggle.addEventListener('click', (e) => {

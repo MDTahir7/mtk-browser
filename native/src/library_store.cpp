@@ -14,6 +14,7 @@ namespace {
 
 constexpr size_t kMaxHistoryEntries = 500;
 constexpr size_t kMaxBookmarkEntries = 500;
+constexpr size_t kMaxReadingListEntries = 200;
 constexpr size_t kMaxUrlBytes = 4096;
 constexpr size_t kMaxTitleCharacters = 512;
 constexpr size_t kMaxFileBytes = 512 * 1024;
@@ -191,7 +192,9 @@ std::vector<std::string_view> SplitFields(std::string_view line) {
 }
 
 void ParseLine(std::string_view line, std::vector<Entry>* history,
-               std::vector<Entry>* bookmarks, std::vector<Folder>* folders) {
+               std::vector<Entry>* bookmarks,
+               std::vector<Entry>* reading_list,
+               std::vector<Folder>* folders) {
   const std::vector<std::string_view> fields = SplitFields(line);
   if (fields.size() < 2 || fields[0].size() != 1) return;
   const char type = fields[0].front();
@@ -212,7 +215,7 @@ void ParseLine(std::string_view line, std::vector<Entry>* history,
     return;
   }
 
-  if (type != 'H' && type != 'B') return;
+  if (type != 'H' && type != 'B' && type != 'R') return;
   if (fields.size() < 3) return;
   std::string url;
   std::string title;
@@ -231,6 +234,10 @@ void ParseLine(std::string_view line, std::vector<Entry>* history,
     AddLoadedEntry(history, entry, kMaxHistoryEntries);
     return;
   }
+  if (type == 'R') {
+    AddLoadedEntry(reading_list, entry, kMaxReadingListEntries);
+    return;
+  }
   if (fields.size() >= 5) {
     std::string folder;
     if (HexDecode(fields[4], &folder)) {
@@ -242,6 +249,7 @@ void ParseLine(std::string_view line, std::vector<Entry>* history,
 
 std::string Serialize(const std::vector<Entry>& history,
                       const std::vector<Entry>& bookmarks,
+                      const std::vector<Entry>& reading_list,
                       const std::vector<Folder>& folders) {
   std::string content = std::string(kHeader) + "\r\n";
   // Folder records come first so the list exists before anything refers to it.
@@ -268,10 +276,74 @@ std::string Serialize(const std::vector<Entry>& history,
   };
   for (const Entry& entry : history) append('H', entry);
   for (const Entry& entry : bookmarks) append('B', entry);
+  for (const Entry& entry : reading_list) append('R', entry);
   return content;
 }
 
 }  // namespace
+
+std::vector<std::wstring> SplitFolderSegments(const std::wstring& folder) {
+  std::vector<std::wstring> segments;
+  if (folder.empty()) return segments;
+  size_t start = 0;
+  while (start < folder.size()) {
+    size_t sep = folder.find_first_of(L"/\\", start);
+    if (sep == std::wstring::npos) sep = folder.size();
+    std::wstring seg = NormalizeFolderName(folder.substr(start, sep - start));
+    if (!seg.empty()) segments.push_back(seg);
+    start = sep + 1;
+  }
+  return segments;
+}
+
+std::string ExportBookmarksHtml(const std::vector<Entry>& bookmarks) {
+  const auto escape = [](std::string value) {
+    std::string result;
+    for (const char c : value) {
+      if (c == '&') result += "&amp;";
+      else if (c == '<') result += "&lt;";
+      else if (c == '>') result += "&gt;";
+      else if (c == '"') result += "&quot;";
+      else result.push_back(c);
+    }
+    return result;
+  };
+
+  std::string html =
+      "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
+      "<!-- This is an automatically generated file. -->\n"
+      "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n"
+      "<TITLE>Bookmarks</TITLE>\n"
+      "<H1>Bookmarks</H1>\n"
+      "<DL><p>\n";
+
+  std::vector<std::wstring> open_stack;
+  for (const auto& bookmark : bookmarks) {
+    const std::vector<std::wstring> segments = SplitFolderSegments(bookmark.folder);
+    size_t match_len = 0;
+    while (match_len < open_stack.size() && match_len < segments.size() &&
+           _wcsicmp(open_stack[match_len].c_str(), segments[match_len].c_str()) == 0) {
+      ++match_len;
+    }
+    while (open_stack.size() > match_len) {
+      html += "</DL><p>\n";
+      open_stack.pop_back();
+    }
+    while (open_stack.size() < segments.size()) {
+      const std::wstring& seg = segments[open_stack.size()];
+      html += "<DT><H3>" + escape(WideToUtf8(seg)) + "</H3>\n<DL><p>\n";
+      open_stack.push_back(seg);
+    }
+    html += "<DT><A HREF=\"" + escape(bookmark.url) + "\">" +
+            escape(WideToUtf8(bookmark.title)) + "</A>\n";
+  }
+  while (!open_stack.empty()) {
+    html += "</DL><p>\n";
+    open_stack.pop_back();
+  }
+  html += "</DL><p>\n";
+  return html;
+}
 
 std::wstring NormalizeFolderName(const std::wstring& name) {
   size_t begin = 0;
@@ -296,6 +368,7 @@ Store& Store::Get() {
 void Store::Load() {
   history_.clear();
   bookmarks_.clear();
+  reading_list_.clear();
   folders_.clear();
   dirty_ = false;
   std::string content;
@@ -312,7 +385,7 @@ void Store::Load() {
     std::string_view line(content.data() + offset,
         (end == std::string::npos ? content.size() : end) - offset);
     if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-    ParseLine(line, &history_, &bookmarks_, &folders_);
+    ParseLine(line, &history_, &bookmarks_, &reading_list_, &folders_);
     if (end == std::string::npos) break;
     offset = end + 1;
   }
@@ -332,7 +405,7 @@ void Store::Load() {
 
 bool Store::Flush() {
   if (!dirty_) return true;
-  if (!WriteFileAtomically(Serialize(history_, bookmarks_, folders_))) {
+  if (!WriteFileAtomically(Serialize(history_, bookmarks_, reading_list_, folders_))) {
     return false;
   }
   dirty_ = false;
@@ -397,6 +470,10 @@ bool Store::AddBookmark(const std::string& url, const std::wstring& title,
   if (match != bookmarks_.end()) {
     if (match->title != entry.title) {
       match->title = entry.title;
+      dirty_ = true;
+    }
+    if (match->folder != entry.folder) {
+      match->folder = entry.folder;
       dirty_ = true;
     }
     return true;
@@ -540,13 +617,162 @@ bool Store::SetBookmarkFolder(const std::string& url,
   return true;
 }
 
+bool Store::SaveBookmarkAndFlush(const std::string& url, const std::wstring& title,
+                                 const std::wstring& folder) {
+  // A non-empty folder name that does not match an existing folder is an error;
+  // the caller must create the folder first rather than having the bookmark
+  // silently land at the top level.
+  const std::wstring target = NormalizeFolderName(folder);
+  if (!target.empty() && !FolderExists(target)) return false;
+  const auto previous = bookmarks_;
+  const bool was_dirty = dirty_;
+  if (!AddBookmark(url, title, folder)) return false;
+  if (Flush()) return true;
+  bookmarks_ = previous;
+  dirty_ = was_dirty;
+  return false;
+}
+
+bool Store::RemoveBookmarkAndFlush(const std::string& url) {
+  const auto previous = bookmarks_;
+  const bool was_dirty = dirty_;
+  if (!RemoveBookmark(url)) return false;
+  if (Flush()) return true;
+  bookmarks_ = previous;
+  dirty_ = was_dirty;
+  return false;
+}
+
+bool Store::SaveReadingListAndFlush(const std::string& url, const std::wstring& title) {
+  const auto previous = reading_list_;
+  const bool was_dirty = dirty_;
+  Entry entry{url, title.empty() ? Utf8ToWide(url) : title, UnixTime()};
+  if (!IsUsableEntry(entry)) return false;
+  const auto match = std::find_if(reading_list_.begin(), reading_list_.end(),
+      [&url](const Entry& saved) { return saved.url == url; });
+  if (match != reading_list_.end()) {
+    match->title = entry.title;
+  } else {
+    reading_list_.insert(reading_list_.begin(), entry);
+    if (reading_list_.size() > kMaxReadingListEntries) reading_list_.pop_back();
+  }
+  dirty_ = true;
+  if (Flush()) return true;
+  reading_list_ = previous;
+  dirty_ = was_dirty;
+  return false;
+}
+
+namespace {
+
+std::wstring ArticlesDirectory() {
+  const std::wstring dir = mtk::preferences::ApplicationDataDirectory() + L"\\Articles";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
+
+std::wstring ArticlePathForUrl(const std::string& url) {
+  if (url.empty()) return {};
+  unsigned long long hash = 1469598103934665603ULL;
+  for (unsigned char c : url) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  wchar_t hex[32]{};
+  swprintf(hex, 32, L"art_%016llx.html", hash);
+  return ArticlesDirectory() + L"\\" + hex;
+}
+
+}  // namespace
+
+bool Store::SaveArticleArchive(const std::string& url, const std::string& html_content) {
+  if (url.empty() || html_content.empty()) return false;
+  const std::wstring path = ArticlePathForUrl(url);
+  if (path.empty()) return false;
+  const std::wstring tmp = path + L".tmp";
+  HANDLE file = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, html_content.data(),
+                            static_cast<DWORD>(html_content.size()),
+                            &written, nullptr) != FALSE &&
+                  written == html_content.size() &&
+                  FlushFileBuffers(file) != FALSE;
+  CloseHandle(file);
+  if (!ok) {
+    DeleteFileW(tmp.c_str());
+    return false;
+  }
+  return MoveFileExW(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+}
+
+bool Store::HasArticleArchive(const std::string& url) {
+  const std::wstring path = ArticlePathForUrl(url);
+  if (path.empty()) return false;
+  const DWORD attr = GetFileAttributesW(path.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring Store::GetArticleArchivePath(const std::string& url) {
+  return ArticlePathForUrl(url);
+}
+
+bool Store::RemoveArticleArchive(const std::string& url) {
+  const std::wstring path = ArticlePathForUrl(url);
+  if (path.empty()) return false;
+  return DeleteFileW(path.c_str()) != FALSE || GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+
+bool Store::RemoveReadingListAndFlush(const std::string& url) {
+  const auto previous = reading_list_;
+  const bool was_dirty = dirty_;
+  const auto match = std::find_if(reading_list_.begin(), reading_list_.end(),
+      [&url](const Entry& entry) { return entry.url == url; });
+  if (match == reading_list_.end()) return false;
+  reading_list_.erase(match);
+  dirty_ = true;
+  if (Flush()) {
+    RemoveArticleArchive(url);
+    return true;
+  }
+  reading_list_ = previous;
+  dirty_ = was_dirty;
+  return false;
+}
+
+bool Store::MoveBookmark(size_t from, size_t to) {
+  if (from >= bookmarks_.size() || to >= bookmarks_.size() || from == to) return false;
+  Entry moving = std::move(bookmarks_[from]);
+  bookmarks_.erase(bookmarks_.begin() + static_cast<ptrdiff_t>(from));
+  bookmarks_.insert(bookmarks_.begin() + static_cast<ptrdiff_t>(to), std::move(moving));
+  dirty_ = true;
+  return Flush();
+}
+
+bool Store::MoveFolder(size_t from, size_t to) {
+  if (from >= folders_.size() || to >= folders_.size() || from == to) return false;
+  Folder moving = std::move(folders_[from]);
+  folders_.erase(folders_.begin() + static_cast<ptrdiff_t>(from));
+  folders_.insert(folders_.begin() + static_cast<ptrdiff_t>(to), std::move(moving));
+  dirty_ = true;
+  return Flush();
+}
+
 bool Store::IsBookmarked(const std::string& url) const {
   return std::any_of(bookmarks_.begin(), bookmarks_.end(),
       [&url](const Entry& entry) { return entry.url == url; });
 }
 
+bool Store::IsInReadingList(const std::string& url) const {
+  return std::any_of(reading_list_.begin(), reading_list_.end(),
+      [&url](const Entry& entry) { return entry.url == url; });
+}
+
 const std::vector<Entry>& Store::history() const { return history_; }
 const std::vector<Entry>& Store::bookmarks() const { return bookmarks_; }
+const std::vector<Entry>& Store::reading_list() const { return reading_list_; }
 const std::vector<Folder>& Store::folders() const { return folders_; }
 
 }  // namespace mtk::library

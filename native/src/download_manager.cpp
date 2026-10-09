@@ -5,7 +5,13 @@
 #endif
 
 #include <windows.h>
+#include <commdlg.h>
 #include <shlobj_core.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 #include <algorithm>
 #include <array>
@@ -34,9 +40,12 @@ constexpr std::array kAllowedExtensions{
     L"odt", L"ods", L"odp", L"epub",
     // Images
     L"jpg", L"jpeg", L"png", L"gif", L"webp", L"bmp", L"tif", L"tiff", L"ico",
+    // SVG is intentionally excluded in safe mode: standalone SVG documents can
+    // execute script when opened, unlike passive raster image formats.
+    L"avif",
     // Audio and video
-    L"mp3", L"wav", L"flac", L"m4a", L"aac", L"ogg", L"opus",
-    L"mp4", L"m4v", L"webm", L"mov", L"mkv", L"avi",
+    L"mp3", L"wav", L"flac", L"m4a", L"aac", L"ogg", L"opus", L"weba",
+    L"mp4", L"m4v", L"webm", L"mov", L"mkv", L"avi", L"ogv",
     // Archives
     L"zip", L"7z", L"rar", L"tar", L"gz",
 };
@@ -199,6 +208,169 @@ bool IsRiskyFileName(const std::wstring& file_name) {
   return HasDeniedExtension(file_name);
 }
 
+bool MatchesSearch(const Item& item, const std::wstring& query) {
+  if (query.empty()) return true;
+  const std::wstring haystack = ToLower(
+      item.file_name + L"\n" + item.full_path + L"\n" +
+      std::wstring(item.url.begin(), item.url.end()) + L"\n" + item.detail);
+  return haystack.find(ToLower(query)) != std::wstring::npos;
+}
+
+bool CanRetry(const Item& item) {
+  return item.state == State::kFailed || item.state == State::kCanceled ||
+         item.state == State::kPaused;
+}
+
+bool CanResume(const Item& item) {
+  if (item.state != State::kPaused && item.state != State::kFailed) return false;
+  if (item.received_bytes <= 0) return false;
+  if (item.url.empty()) return false;
+  return item.url.starts_with("http://") || item.url.starts_with("https://");
+}
+
+std::wstring PartialFilePath(const std::wstring& full_path) {
+  if (full_path.empty()) return {};
+  return full_path + L".mtkpart";
+}
+
+std::string BuildRangeHeader(int64_t received_bytes) {
+  if (received_bytes <= 0) return {};
+  return "bytes=" + std::to_string(received_bytes) + "-";
+}
+
+std::string BuildIfRangeHeader(const std::string& etag,
+                               const std::string& last_modified) {
+  if (!etag.empty()) return etag;
+  if (!last_modified.empty()) return last_modified;
+  return {};
+}
+
+int64_t GetExistingPartialBytes(const std::wstring& full_path) {
+  if (full_path.empty()) return 0;
+  const std::wstring part = PartialFilePath(full_path);
+  HANDLE file = CreateFileW(part.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    file = CreateFileW(full_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  }
+  if (file == INVALID_HANDLE_VALUE) return 0;
+  LARGE_INTEGER size{};
+  const bool ok = GetFileSizeEx(file, &size);
+  CloseHandle(file);
+  return (ok && size.QuadPart > 0) ? static_cast<int64_t>(size.QuadPart) : 0;
+}
+
+std::wstring CleanSuggestedPrefixes(const std::wstring& raw) {
+  std::wstring s = raw;
+  static const wchar_t* const kPrefixes[] = {
+      L"objecttype-raw-",
+      L"objecttype-",
+      L"response-content-disposition=",
+      L"filename*=",
+      L"filename=",
+      L"attachment; filename=",
+  };
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto* prefix : kPrefixes) {
+      const size_t len = wcslen(prefix);
+      if (s.size() > len) {
+        bool match = true;
+        for (size_t i = 0; i < len; ++i) {
+          if (towlower(s[i]) != towlower(prefix[i])) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          s.erase(0, len);
+          changed = true;
+        }
+      }
+    }
+    while (!s.empty() && (s.front() == L'"' || s.front() == L'\'')) {
+      s.erase(s.begin());
+      changed = true;
+    }
+    while (!s.empty() && (s.back() == L'"' || s.back() == L'\'')) {
+      s.pop_back();
+      changed = true;
+    }
+  }
+  if (!s.empty() && (s.front() == L'_' || s.front() == L'-') && s.size() > 1 && iswalnum(s[1])) {
+    s.erase(s.begin());
+  }
+  return s;
+}
+
+std::wstring ExtensionFromMime(const std::string& mime) {
+  std::string lower = ToLowerAscii(mime);
+  const size_t semicolon = lower.find(';');
+  if (semicolon != std::string::npos) {
+    lower = lower.substr(0, semicolon);
+  }
+  while (!lower.empty() && (lower.back() == ' ' || lower.back() == '\t')) {
+    lower.pop_back();
+  }
+  while (!lower.empty() && (lower.front() == ' ' || lower.front() == '\t')) {
+    lower.erase(lower.begin());
+  }
+
+  // Images
+  if (lower == "image/jpeg" || lower == "image/jpg" || lower == "image/pjpeg") return L"jpg";
+  if (lower == "image/png") return L"png";
+  if (lower == "image/webp") return L"webp";
+  if (lower == "image/gif") return L"gif";
+  if (lower == "image/svg+xml") return L"svg";
+  if (lower == "image/bmp" || lower == "image/x-ms-bmp") return L"bmp";
+  if (lower == "image/avif") return L"avif";
+  if (lower == "image/x-icon" || lower == "image/vnd.microsoft.icon") return L"ico";
+  if (lower == "image/tiff") return L"tiff";
+
+  // Documents
+  if (lower == "application/pdf") return L"pdf";
+  if (lower == "application/zip" || lower == "application/x-zip-compressed") return L"zip";
+  if (lower == "application/x-7z-compressed") return L"7z";
+  if (lower == "application/x-rar-compressed" || lower == "application/vnd.rar") return L"rar";
+  if (lower == "application/x-tar") return L"tar";
+  if (lower == "application/gzip") return L"gz";
+
+  if (lower == "text/plain") return L"txt";
+  if (lower == "text/html") return L"html";
+  if (lower == "text/csv") return L"csv";
+  if (lower == "text/markdown" || lower == "text/x-markdown") return L"md";
+  if (lower == "application/json") return L"json";
+  if (lower == "application/xml" || lower == "text/xml") return L"xml";
+  if (lower == "application/rtf" || lower == "text/rtf") return L"rtf";
+
+  if (lower == "application/msword") return L"doc";
+  if (lower == "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return L"docx";
+  if (lower == "application/vnd.ms-excel") return L"xls";
+  if (lower == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return L"xlsx";
+  if (lower == "application/vnd.ms-powerpoint") return L"ppt";
+  if (lower == "application/vnd.openxmlformats-officedocument.presentationml.presentation") return L"pptx";
+  if (lower == "application/epub+zip") return L"epub";
+
+  // Audio / Video
+  if (lower == "audio/mpeg" || lower == "audio/mp3") return L"mp3";
+  if (lower == "audio/wav" || lower == "audio/x-wav") return L"wav";
+  if (lower == "audio/flac" || lower == "audio/x-flac") return L"flac";
+  if (lower == "audio/aac") return L"aac";
+  if (lower == "audio/ogg") return L"ogg";
+  if (lower == "audio/webm") return L"weba";
+
+  if (lower == "video/mp4") return L"mp4";
+  if (lower == "video/webm") return L"webm";
+  if (lower == "video/ogg") return L"ogv";
+  if (lower == "video/quicktime") return L"mov";
+  if (lower == "video/x-matroska") return L"mkv";
+  if (lower == "video/x-msvideo") return L"avi";
+  return {};
+}
+
 Decision Evaluate(const std::string& url, const std::wstring& suggested_name,
                   const std::string& mime_type, Mode mode) {
   // Address safety is never relaxed by the download mode: a blocked site cannot
@@ -217,7 +389,30 @@ Decision Evaluate(const std::string& url, const std::wstring& suggested_name,
 
   // File name hardening also applies in both modes: it prevents writes outside
   // the download folder, not a category of content.
-  std::wstring file_name = SanitizeFileName(suggested_name);
+  const std::wstring cleaned_suggested = CleanSuggestedPrefixes(suggested_name);
+  std::wstring file_name = SanitizeFileName(cleaned_suggested);
+  if (ExtensionOf(file_name).empty()) {
+    std::wstring mime_ext = ExtensionFromMime(mime_type);
+    if (mime_ext.empty() && !url.empty()) {
+      // Fallback: check if the URL path contains a valid extension before query/hash
+      const size_t q = url.find_first_of("?#");
+      const std::string path_only = (q != std::string::npos) ? url.substr(0, q) : url;
+      const size_t slash = path_only.find_last_of("/\\");
+      const std::string segment = (slash != std::string::npos) ? path_only.substr(slash + 1) : path_only;
+      const size_t dot = segment.find_last_of('.');
+      if (dot != std::string::npos && dot + 1 < segment.size()) {
+        const std::string raw_ext = segment.substr(dot + 1);
+        if (raw_ext.size() >= 1 && raw_ext.size() <= 8 &&
+            std::all_of(raw_ext.begin(), raw_ext.end(), [](unsigned char c) { return std::isalnum(c); })) {
+          mime_ext = ToLower(std::wstring(raw_ext.begin(), raw_ext.end()));
+        }
+      }
+    }
+    if (!mime_ext.empty()) {
+      if (file_name.empty()) file_name = L"download";
+      file_name += L"." + mime_ext;
+    }
+  }
   if (file_name.empty()) {
     if (mode == Mode::kSafe) {
       return {false, L"This download has no usable file name.", {}, false};
@@ -283,6 +478,214 @@ std::wstring UniqueTargetPath(const std::wstring& file_name) {
                 L")" + extension;
   }
   return FileExists(candidate) ? std::wstring{} : candidate;
+}
+
+static std::wstring g_last_download_directory;
+
+bool PromptDownloadLocation(HWND owner, const std::wstring& suggested_name,
+                            std::wstring* out_full_path,
+                            std::wstring* out_file_name) {
+  if (out_full_path == nullptr || out_file_name == nullptr) return false;
+
+  std::wstring initial_dir = g_last_download_directory;
+  if (initial_dir.empty() || !FileExists(initial_dir)) {
+    initial_dir = DownloadDirectory();
+  }
+
+  wchar_t file_path[MAX_PATH * 2]{};
+  wcsncpy_s(file_path, suggested_name.c_str(), _TRUNCATE);
+
+  // Build dynamic filter based on file extension
+  std::wstring filter;
+  const std::wstring ext = ExtensionOf(suggested_name);
+  if (!ext.empty()) {
+    std::wstring upper_ext = ext;
+    for (auto& ch : upper_ext) {
+      ch = static_cast<wchar_t>(towupper(ch));
+    }
+    filter += upper_ext + L" Files (*." + ext + L")";
+    filter.push_back(L'\0');
+    filter += L"*." + ext;
+    filter.push_back(L'\0');
+  }
+  filter += L"All Files (*.*)";
+  filter.push_back(L'\0');
+  filter += L"*.*";
+  filter.push_back(L'\0');
+  filter.push_back(L'\0');
+
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = owner;
+  ofn.lpstrFilter = filter.data();
+  ofn.lpstrFile = file_path;
+  ofn.nMaxFile = static_cast<DWORD>(std::size(file_path));
+  ofn.lpstrInitialDir = initial_dir.empty() ? nullptr : initial_dir.c_str();
+  ofn.lpstrTitle = L"Save As";
+  ofn.lpstrDefExt = ext.empty() ? nullptr : ext.c_str();
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+
+  if (!GetSaveFileNameW(&ofn)) {
+    return false;
+  }
+
+  *out_full_path = file_path;
+  const size_t slash = out_full_path->find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    *out_file_name = out_full_path->substr(slash + 1);
+    g_last_download_directory = out_full_path->substr(0, slash);
+  } else {
+    *out_file_name = *out_full_path;
+  }
+
+  // If the user did not specify an extension in Save As, preserve the suggested extension
+  if (ExtensionOf(*out_file_name).empty() && !ext.empty()) {
+    *out_file_name += L"." + ext;
+    *out_full_path += L"." + ext;
+  }
+  return true;
+}
+
+std::wstring SuggestPdfFileName(const std::wstring& page_title) {
+  std::wstring base = page_title;
+  if (base.ends_with(L".html") || base.ends_with(L".htm") ||
+      base.ends_with(L".php") || base.ends_with(L".asp") ||
+      base.ends_with(L".aspx")) {
+    const size_t dot = base.find_last_of(L'.');
+    if (dot != std::wstring::npos) base = base.substr(0, dot);
+  }
+  std::wstring sanitized = SanitizeFileName(base);
+  if (sanitized.empty()) sanitized = L"Saved page";
+  if (!sanitized.ends_with(L".pdf") && !sanitized.ends_with(L".PDF")) {
+    sanitized += L".pdf";
+  }
+  return sanitized;
+}
+
+std::wstring SuggestScreenshotFileName(const std::wstring& page_title) {
+  std::wstring base = page_title;
+  if (base.ends_with(L".html") || base.ends_with(L".htm") ||
+      base.ends_with(L".php") || base.ends_with(L".asp") ||
+      base.ends_with(L".aspx")) {
+    const size_t dot = base.find_last_of(L'.');
+    if (dot != std::wstring::npos) base = base.substr(0, dot);
+  }
+  std::wstring sanitized = SanitizeFileName(base);
+  if (sanitized.empty()) sanitized = L"Webpage";
+
+  const size_t dot = sanitized.find_last_of(L'.');
+  if (dot != std::wstring::npos) sanitized = sanitized.substr(0, dot);
+  if (sanitized.size() > 40) sanitized.resize(40);
+  for (auto& ch : sanitized) {
+    if (ch == L' ') ch = L'_';
+  }
+  while (!sanitized.empty() && (sanitized.back() == L' ' || sanitized.back() == L'_' || sanitized.back() == L'.')) {
+    sanitized.pop_back();
+  }
+  if (sanitized.empty()) sanitized = L"Webpage";
+
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t time_suffix[64]{};
+  swprintf_s(time_suffix, L"_%04d-%02d-%02d_%02d%02d%02d.png",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+  return L"Screenshot_" + sanitized + time_suffix;
+}
+
+bool SaveBitmapToPng(HBITMAP hbitmap, const std::wstring& file_path) {
+  if (!hbitmap || file_path.empty()) return false;
+
+  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+  Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+  HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&factory));
+  if (FAILED(hr)) return false;
+
+  Microsoft::WRL::ComPtr<IWICBitmap> wic_bitmap;
+  hr = factory->CreateBitmapFromHBITMAP(hbitmap, nullptr, WICBitmapIgnoreAlpha, &wic_bitmap);
+  if (FAILED(hr)) return false;
+
+  Microsoft::WRL::ComPtr<IWICStream> stream;
+  hr = factory->CreateStream(&stream);
+  if (FAILED(hr)) return false;
+
+  hr = stream->InitializeFromFilename(file_path.c_str(), GENERIC_WRITE);
+  if (FAILED(hr)) return false;
+
+  Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+  hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+  if (FAILED(hr)) return false;
+
+  hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+  if (FAILED(hr)) return false;
+
+  Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+  hr = encoder->CreateNewFrame(&frame, nullptr);
+  if (FAILED(hr)) return false;
+
+  hr = frame->Initialize(nullptr);
+  if (FAILED(hr)) return false;
+
+  UINT width = 0, height = 0;
+  wic_bitmap->GetSize(&width, &height);
+  frame->SetSize(width, height);
+
+  WICPixelFormatGUID format = GUID_WICPixelFormatDontCare;
+  frame->SetPixelFormat(&format);
+
+  hr = frame->WriteSource(wic_bitmap.Get(), nullptr);
+  if (FAILED(hr)) return false;
+
+  hr = frame->Commit();
+  if (FAILED(hr)) return false;
+
+  hr = encoder->Commit();
+  return SUCCEEDED(hr);
+}
+
+bool CopyBitmapToClipboard(HWND owner, HBITMAP hbitmap) {
+  if (!hbitmap) return false;
+  if (!OpenClipboard(owner)) return false;
+  EmptyClipboard();
+
+  BITMAP bm{};
+  if (!GetObject(hbitmap, sizeof(BITMAP), &bm)) {
+    CloseClipboard();
+    return false;
+  }
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) {
+    CloseClipboard();
+    return false;
+  }
+  HDC src_dc = CreateCompatibleDC(screen_dc);
+  HDC dst_dc = CreateCompatibleDC(screen_dc);
+  if (!src_dc || !dst_dc) {
+    if (src_dc) DeleteDC(src_dc);
+    if (dst_dc) DeleteDC(dst_dc);
+    ReleaseDC(nullptr, screen_dc);
+    CloseClipboard();
+    return false;
+  }
+
+  HBITMAP hbm_copy = CreateCompatibleBitmap(screen_dc, bm.bmWidth, bm.bmHeight);
+  HBITMAP old_src = static_cast<HBITMAP>(SelectObject(src_dc, hbitmap));
+  HBITMAP old_dst = static_cast<HBITMAP>(SelectObject(dst_dc, hbm_copy));
+
+  BitBlt(dst_dc, 0, 0, bm.bmWidth, bm.bmHeight, src_dc, 0, 0, SRCCOPY);
+
+  SelectObject(src_dc, old_src);
+  SelectObject(dst_dc, old_dst);
+  DeleteDC(src_dc);
+  DeleteDC(dst_dc);
+  ReleaseDC(nullptr, screen_dc);
+
+  SetClipboardData(CF_BITMAP, hbm_copy);
+  CloseClipboard();
+  return true;
 }
 
 namespace {
@@ -487,6 +890,10 @@ bool Manager::Flush() {
   if (!dirty_) return true;
   std::string content = kDownloadsHeader;
   for (const auto& item : items_) {
+    // Private downloads originate in Private Windows and must never be written
+    // to the persistent profile on disk.
+    if (item.is_private) continue;
+
     // Active callbacks are not resumable across a process restart; Load marks
     // these records as interrupted while preserving the history row.
     content += "D\t" + std::to_string(static_cast<int>(item.state)) + "\t" +
@@ -549,6 +956,21 @@ size_t Manager::ActiveCount() const {
 }
 
 const std::vector<Item>& Manager::items() const { return items_; }
+
+size_t Manager::ClearPrivateDownloads() {
+  const size_t before = items_.size();
+  items_.erase(std::remove_if(items_.begin(), items_.end(),
+                              [](const Item& item) { return item.is_private; }),
+               items_.end());
+  return before - items_.size();
+}
+
+Item* Manager::FindItem(uint64_t id) {
+  for (auto& item : items_) {
+    if (item.id == id) return &item;
+  }
+  return nullptr;
+}
 
 std::wstring DescribeItem(const Item& item) {
   std::wstring text = item.file_name;

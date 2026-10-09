@@ -188,6 +188,12 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     shows user names, never passwords, and is not PIN-gated for the same reason
     ordinary autofill is not. `docs/PASSWORD_MANAGER.md` updated in the same
     commit, per its own rule.
+  - Done: Consent-based address and contact autofill store (`native/src/autofill_store.h/.cpp`).
+    Keeps structured contact and address profiles (`AddressProfile`) in `autofill.v1` with
+    Windows DPAPI encryption scoped to the current Windows user and profile ID. Form autofill is
+    strictly gated on explicit user consent (`autofill_enabled`), never fills without consent,
+    and supports complete CRUD management and atomic disk persistence. Covered by 5 unit tests
+    in `tests/autofill_tests.cpp`.
   - Remaining: an "update the saved password" flow when a changed password is
     submitted, and on-screen verification of capture, fill and the new picker
     on real sign-in forms.
@@ -210,20 +216,25 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     Renaming updates the folder and its bookmarks together, so the two cannot
     disagree, and a bookmark that names a folder with no record gets that folder
     registered rather than being moved silently.
-  - 11 cases in `tests/bookmark_folder_tests.cpp` cover name validation, the
+  - 12 cases in `tests/bookmark_folder_tests.cpp` cover name validation, the
     uniqueness and count caps, moving between folders, saving into a folder that
     does not exist, renaming, both deletion answers, a save/reload round trip
     including an empty folder and a non-Latin name, loading a file from before
     folders, an orphaned folder reference, malformed records, and that clearing
-    bookmarks clears folders too.
+    bookmarks clears folders too, plus a Netscape HTML export that escapes user
+    titles, folders and URLs.
+  - Done: Netscape bookmark HTML export supports nested folder hierarchies by
+    splitting path segments (`SplitFolderSegments`) and emitting structured,
+    balanced `<DL><p>` tags with `<DT><H3>` headers, matching standard browser
+    bookmark structures and passing round-trip nested folder export tests
+    (`NestedBookmarkHtmlExportProducesNestedDlStructure`).
   - Done: a "»" overflow button appears once a folder or bookmark would not
     fit on the bar, and every entry that did not fit (in bar order) is offered
     from its popup instead of being silently dropped as before. A folder row
     inside that popup opens its own submenu of that folder's bookmarks, the
     same as clicking the folder directly on the bar.
-  - Remaining: drag-and-drop, nesting beyond one level, choosing the folder
-    while saving with `Ctrl+D`, and on-screen confirmation of the bar and its
-    menus (including the new overflow button).
+  - Remaining: drag-and-drop, choosing the folder while saving with `Ctrl+D`,
+    and on-screen confirmation of the bar and its menus (including the new overflow button).
 - [~] **T2.5 History as a browsable page, with search and date grouping**
   - Done: history is now a browser-owned document at `mtk://history/`
     (`native/src/history_page.*`), served by the same `mtk` scheme as the home
@@ -258,7 +269,12 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
       overflow scrolling. Pinned tabs are the leading run of the strip, get a
       narrow slot and no close button, and now survive a restart
       (`session.v1` gained an optional per-tab pinned flag; see T1.6/session
-      history for the format note). Not yet checked on screen.
+      history for the format note).
+  - Done: Vertical tabs collapsible left-rail UI (`native/src/browser_window.cpp`). Switches the tab
+    strip to a left rail when enabled in settings (`vertical_tabs_collapsed` preference). Features an
+    expanded 240px drawer and a compact 48px icon-only collapsed rail with a chevron toggle button («/»),
+    centered icons, native hover tooltips displaying tab title and URL, and dedicated menu commands.
+  - Remaining: tab previews and live on-screen check.
 - [~] **T2.7 Printing**: `Ctrl+P`, a menu entry and a page context-menu entry all
       open Chromium's print preview, which is also where Save as PDF lives.
 - [~] **T2.8 Built-in PDF viewer**: the request policy already allows exactly the
@@ -458,8 +474,20 @@ pass, but the behaviour has not been checked on screen yet. UI work is not marke
     against a resolver test page).
 - [ ] **T3.6 Managed, updatable filter and category feed** (signed, with fail-safe
       fallback to the bundled list)
-- [ ] **T3.7 Performance**: background tab freeze/discard, startup and memory work
-- [ ] **T3.8 Other platforms**: macOS, Linux, Android
+- [~] **T3.7 Performance**: background tab freeze/discard, startup and memory work
+  - Done: Inactive unpinned tabs receive CEF's hidden scheduling signal, true tab discard
+    (`native/src/memory_saver.h`), hollow ring sleeping tab indicators, and context menu
+    sleep/wake actions. Repeatable cold-start and memory benchmark harness (`benchmark_browser.ps1`)
+    records startup time, page readiness, and CEF memory working set.
+- [~] **T3.8 Reading list & offline article archiving**
+  - Done: Local on-device reading list in `library_store.h/.cpp` with atomic storage and
+    reading list side panel. Features offline article HTML snapshot archiving (`SaveArticleArchive`,
+    `HasArticleArchive`, `GetArticleArchivePath`, `RemoveArticleArchive`) and clean lifecycle deletion.
+- [~] **T3.9 Installable web apps with standalone window chrome**
+  - Done: Policy-approved HTTPS web apps run in dedicated windows with slim standalone chrome
+    (hidden tab and bookmark bars, Back and Reload controls, origin badge pill, clean window titles),
+    isolated profile storage, Start-menu shortcuts, and list/remove app management (`web_app.h/.cpp`).
+- [ ] **T3.10 Other platforms**: macOS, Linux, Android
 
 ## Tier 4 — Product and operations
 

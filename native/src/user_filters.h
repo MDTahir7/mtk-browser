@@ -33,6 +33,18 @@ enum class Decision {
 constexpr size_t kMaxRules = 500;
 constexpr size_t kMaxRuleLength = 200;
 
+// The editor calls this while the person types, and Save calls it again before
+// touching disk. Keeping syntax in one place means a rule cannot look valid in
+// the UI but later be ignored by the request matcher.
+struct Validation {
+  bool valid = true;
+  size_t line = 0;  // One-based when valid is false.
+  size_t active_rule_count = 0;
+  std::wstring error;
+};
+
+Validation Validate(const std::vector<std::wstring>& lines);
+
 // Reads the rules for the active profile. Call once at startup.
 void Load();
 

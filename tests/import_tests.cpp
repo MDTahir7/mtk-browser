@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <string>
 
 #include "bookmark_import.h"
@@ -15,7 +16,13 @@ std::wstring TempJsonPath(const wchar_t* name) {
   wchar_t directory[MAX_PATH]{};
   const DWORD length = GetTempPathW(MAX_PATH, directory);
   if (length == 0 || length > MAX_PATH) return {};
-  return std::wstring(directory) + L"mtk_import_test_" + name + L".json";
+  // A fixed temp filename can remain momentarily locked by an antivirus/indexer
+  // after the previous suite run. Make each parser fixture unique instead of
+  // converting that harmless external timing into a flaky CI failure.
+  static std::atomic<unsigned long> counter{0};
+  return std::wstring(directory) + L"mtk_import_test_" +
+         std::to_wstring(GetCurrentProcessId()) + L"_" +
+         std::to_wstring(++counter) + L"_" + name + L".json";
 }
 
 bool WriteText(const std::wstring& path, const std::string& content) {

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <shellapi.h>
 
 #include <algorithm>
 
@@ -39,6 +40,48 @@ bool DirectoryExists(const std::wstring& path) {
          (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+std::wstring DirectoryForId(const std::wstring& id) {
+  return id == kDefaultId ? InstallationRoot() : ProfilesRoot() + L"\\" + id;
+}
+
+std::wstring DisplayNamePath(const std::wstring& id) {
+  return DirectoryForId(id) + L"\\profile_name.txt";
+}
+
+bool WriteDisplayName(const std::wstring& path, const std::wstring& name) {
+  const std::wstring temporary = path + L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  const DWORD bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
+  DWORD written = 0;
+  const bool ok = WriteFile(file, name.data(), bytes, &written, nullptr) != FALSE &&
+                  written == bytes && FlushFileBuffers(file) != FALSE;
+  CloseHandle(file);
+  if (!ok) { DeleteFileW(temporary.c_str()); return false; }
+  if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temporary.c_str());
+    return false;
+  }
+  return true;
+}
+
+std::wstring ReadDisplayName(const std::wstring& path) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  const DWORD size = GetFileSize(file, nullptr);
+  if (size == INVALID_FILE_SIZE || size == 0 ||
+      size > kMaxDisplayNameLength * sizeof(wchar_t) ||
+      size % sizeof(wchar_t) != 0) { CloseHandle(file); return {}; }
+  std::wstring value(size / sizeof(wchar_t), L'\0');
+  DWORD read = 0;
+  const bool ok = ReadFile(file, value.data(), size, &read, nullptr) != FALSE && read == size;
+  CloseHandle(file);
+  return ok && IsValidDisplayName(value) ? value : std::wstring();
+}
+
 }  // namespace
 
 bool IsValidId(const std::wstring& id) {
@@ -53,6 +96,13 @@ bool IsValidId(const std::wstring& id) {
            (character >= L'0' && character <= L'9') || character == L'-' ||
            character == L'_';
   });
+}
+
+bool IsValidDisplayName(const std::wstring& name) {
+  return !name.empty() && name.size() <= kMaxDisplayNameLength &&
+         std::all_of(name.begin(), name.end(), [](wchar_t character) {
+           return character >= L' ' && character != 0x7f;
+         });
 }
 
 bool Initialize(const std::wstring& id) {
@@ -108,6 +158,37 @@ bool Create(const std::wstring& id) {
   if (!IsValidId(id) || id == kDefaultId) return false;
   return EnsureDirectory(InstallationRoot()) && EnsureDirectory(ProfilesRoot()) &&
          EnsureDirectory(ProfilesRoot() + L"\\" + id);
+}
+
+std::wstring DisplayName(const std::wstring& id) {
+  if (!IsValidId(id)) return {};
+  const std::wstring stored = ReadDisplayName(DisplayNamePath(id));
+  return stored.empty() ? id : stored;
+}
+
+bool SetDisplayName(const std::wstring& id, const std::wstring& name) {
+  if (!IsValidId(id) || !IsValidDisplayName(name)) return false;
+  if (!DirectoryExists(DirectoryForId(id))) return false;
+  return WriteDisplayName(DisplayNamePath(id), name);
+}
+
+bool Delete(const std::wstring& id) {
+  if (!IsValidId(id) || id == kDefaultId || id == g_active_id) return false;
+  const std::wstring directory = ProfilesRoot() + L"\\" + id;
+  if (!DirectoryExists(directory)) return false;
+  // SHFileOperation requires a double-null terminated source list. `id` is
+  // validated before composing the path, so this cannot expand deletion scope
+  // outside the dedicated Profiles directory.
+  std::wstring source = directory;
+  source.append(2, L'\0');
+  SHFILEOPSTRUCTW operation{};
+  operation.wFunc = FO_DELETE;
+  operation.pFrom = source.c_str();
+  operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI |
+                     FOF_SILENT;
+  const int result = SHFileOperationW(&operation);
+  return result == 0 && !operation.fAnyOperationsAborted &&
+         !DirectoryExists(directory);
 }
 
 void SetRootForTesting(const std::wstring& root) { g_root_override = root; }

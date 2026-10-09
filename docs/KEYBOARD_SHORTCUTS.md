@@ -8,6 +8,13 @@ The in-product reference is `Alt+/`, which opens this same list as a page. That
 page and this document are the two places these keys are written down, and the
 page is generated from a single table in `BrowserWindow::ShowShortcutsPage()`.
 
+When Settings → Familiar shortcuts is enabled, the following additional
+browser keys are available. Ordinary text-editing `Ctrl+A` remains untouched.
+
+| Keys | Action |
+|---|---|
+| `Ctrl+Shift+A` | Search open tabs |
+
 ## Navigation
 
 | Keys | Action |
@@ -29,6 +36,7 @@ page is generated from a single table in `BrowserWindow::ShowShortcutsPage()`.
 | `Alt+9` | Go to the last tab |
 | `Alt+Shift+P` | Pin or unpin tab |
 | `Alt+M` | Mute or unmute tab |
+| `Alt+Shift+V` | Show or hide vertical tabs |
 
 ## Windows
 
@@ -43,24 +51,26 @@ page is generated from a single table in `BrowserWindow::ShowShortcutsPage()`.
 |---|---|
 | `Alt+A` | Select the address bar |
 | `Alt+F` | Find on page |
+| `Alt+Shift+F` | Toggle Focus Mode (distraction-free YouTube) |
 | `Alt+G` / `Alt+Shift+G` | Next / previous match |
 | `Alt+P` | Print |
 | `Alt+Enter` | Full screen |
 | `Alt+=` / `Alt+-` | Zoom in / out |
 | `Alt+0` | Reset zoom |
+| `Ctrl+Shift+S` | Take screenshot (saves PNG to Downloads & copies to Clipboard) |
 
 ## Library
 
 | Keys | Action |
 |---|---|
 | `Alt+B` | Save this page as a bookmark |
-| `Alt+Shift+B` | Show or hide the bookmarks bar |
 | `Alt+O` | Bookmarks |
 | `Alt+H` | History |
 | `Alt+J` | Downloads |
 | `Alt+K` | Saved passwords |
 | `Alt+S` | Settings for this site |
 | `Alt+Y` | Your filter rules |
+| `Shift+Esc` | Browser task manager |
 | `Alt+/` | This list, in a tab |
 
 ## What is left alone, and why

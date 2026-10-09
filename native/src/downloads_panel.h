@@ -18,6 +18,8 @@ struct Callbacks {
   std::function<bool(uint64_t)> pause;
   std::function<bool(uint64_t)> resume;
   std::function<bool(uint64_t)> cancel;
+  // Starts a new, policy-checked request for a failed or canceled item.
+  std::function<bool(uint64_t)> retry;
   // True while a live download can still be controlled in this process.
   std::function<bool(uint64_t)> controllable;
   // Opens the full downloads window.
@@ -27,7 +29,7 @@ struct Callbacks {
 // Opens the panel under `anchor`, or closes it when it is already open for that
 // anchor, so the toolbar button toggles.
 void TogglePanel(HINSTANCE instance, HWND owner, HWND anchor,
-                 Callbacks callbacks);
+                 Callbacks callbacks, bool is_private = false);
 void ClosePanel();
 bool IsOpen();
 

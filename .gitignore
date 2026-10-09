@@ -9,3 +9,6 @@ out/
 vendor/cef-sdk/
 vendor/*.tar.bz2
 .playwright-mcp/
+*.obj
+scratch/
+

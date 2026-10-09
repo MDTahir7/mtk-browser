@@ -18,12 +18,14 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "download_manager.h"
 #include "filter_engine.h"
+#include "focus_mode.h"
 #include "home_page.h"
 #include "inline_asset.h"
 #include "password_bridge.h"
 #include "policy.h"
 #include "preferences.h"
 #include "site_settings.h"
+#include "strings.h"
 #include "user_filters.h"
 
 namespace {
@@ -32,6 +34,8 @@ constexpr int kOpenLinkInNewTabId = MENU_ID_USER_FIRST;
 constexpr int kCopyLinkAddressId = MENU_ID_USER_FIRST + 1;
 constexpr int kSaveImageId = MENU_ID_USER_FIRST + 2;
 constexpr int kPrintPageId = MENU_ID_USER_FIRST + 3;
+constexpr int kOpenLinkInSplitPaneId = MENU_ID_USER_FIRST + 4;
+constexpr int kTakeScreenshotId = MENU_ID_USER_FIRST + 5;
 
 // Chromium exposes at most five spelling suggestions per word.
 constexpr size_t kMaxSpellSuggestions = 5;
@@ -134,9 +138,13 @@ constexpr char kCollapseScript[] = R"JS(
   if (window.__mtkCollapse) { window.__mtkCollapse(); return; }
 
   const AD_HINTS = [
-    'ins.adsbygoogle', '[id^="div-gpt-ad"]', '[id^="google_ads"]',
-    '[id^="google_ads_iframe"]', '[data-ad-slot]', '[data-ad-client]',
-    '[data-google-query-id]', '[class*="adsbygoogle"]',
+    'ins.adsbygoogle', '[id^="div-gpt-ad"]', '[id^="gpt_ad"]', '[id*="gpt_ad"]',
+    '[id^="google_ads"]', '[id^="google_ads_iframe"]', '[data-ad-slot]',
+    '[data-ad-client]', '[data-ad-unit]', '[data-google-query-id]',
+    '[class*="adsbygoogle"]', '[class*="ad-slot"]', '[class*="ad_slot"]',
+    '.adboxtop', '.adsizes', '.ie-adtext', '.ad-slot', '.story-ad',
+    '[class*="ad-container"]', '[class*="ad-wrapper"]', '[class*="ads-wrapper"]',
+    '[class*="ad-banner"]', '[class*="advertisement"]',
     'iframe[title*="advertisement" i]',
     'iframe[src*="doubleclick.net"]', 'iframe[src*="googlesyndication"]',
     'iframe[src*="adnxs.com"]', 'iframe[src*="amazon-adsystem"]',
@@ -147,19 +155,23 @@ constexpr char kCollapseScript[] = R"JS(
   // Wrapper labels that sites print above a reserved ad box. AD_CHROME also
   // accepts the small share/opt-out controls some publishers attach to an ad;
   // it is used only while walking upward from an already-identified ad seed.
-  const LABEL = /^(advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928)$/i;
-  const AD_CHROME = /^(?:(?:advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928\s+\u0939\u091f\u093e\u090f\u0902|\u0938\u093f\u0930\u094d\u092b\s+\u0916\u092c\u0930\s+\u092a\u0922\u093c\u0947\u0902|\u0936\u0947\u092f\u0930\s+\u0915\u0930\u0947\u0902|share)(?:\s+|$))+$/i;
+  const LABEL = /^(?:advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|story\s+continues\s+below(?:\s+this\s+ad)?|scroll\s+to\s+continue\s+reading|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928)$/i;
+  const AD_CHROME = /^(?:(?:advertisement|advertisements|advertisment|advt|sponsored|sponsored\s+links?|ads?|story\s+continues\s+below(?:\s+this\s+ad)?|scroll\s+to\s+continue\s+reading|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928|\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928\s+\u0939\u091f\u093e\u090f\u0902|\u0938\u093f\u0930\u094d\u092b\s+\u0916\u092c\u0930\s+\u092a\u0922\u093c\u0947\u0902|\u0936\u0947\u092f\u0930\s+\u0915\u0930\u0947\u0902|share)(?:\s+|$))+$/i;
   const KEEP = /^(body|html|head|main|nav|header|footer|article|form|table|tbody|tr)$/;
   const CONTENT =
     'img,video,canvas,picture,svg,input,select,textarea,button,a[href]';
-  // Interactive surfaces that must never be collapsed. A hidden in-player ad
-  // marker used to seed an upward walk that removed YouTube's seek bar, so
-  // media players and widget roles are excluded from collapsing entirely.
+  // Interactive surfaces and rich content embeds that must never be collapsed.
+  // Video players, widget roles, and social media embeds (Twitter/X, YouTube)
+  // are strictly protected so real content never gets hidden.
   const PROTECT = [
     'video', 'audio', '.html5-video-player', '.ytp-chrome-bottom',
     '.ytp-chrome-top', '[role="slider"]', '[role="progressbar"]',
     '[role="toolbar"]', '[role="menu"]', '[role="menubar"]',
-    '[role="tablist"]', '[role="dialog"]', '[role="navigation"]'
+    '[role="tablist"]', '[role="dialog"]', '[role="navigation"]',
+    '.twitter-tweet', 'blockquote.twitter-tweet', '[data-tweet-id]',
+    '[id^="twitter-widget"]', 'iframe[src*="twitter.com"]',
+    'iframe[src*="x.com"]', 'iframe[src*="youtube"]',
+    'iframe[src*="youtu.be"]', 'iframe[src*="vimeo"]'
   ].join(',');
 
   const hide = element => {
@@ -169,14 +181,30 @@ constexpr char kCollapseScript[] = R"JS(
 
   // True when the element still shows something a reader would care about.
   // While collapseFrom walks upward from a known ad seed, publisher ad chrome
-  // such as "ADVERTISEMENT · शेयर करें" is not meaningful reader content.
-  // innerText is used deliberately: it ignores hidden subtrees.
+  // such as "ADVERTISEMENT · शेयर करें" or "Story continues below this ad" is
+  // not meaningful reader content. Social embeds (Twitter cards, videos) are
+  // always recognized as meaningful.
   const meaningful = element => {
+    if (element.matches(PROTECT) ||
+        element.querySelector('.twitter-tweet, blockquote.twitter-tweet, [data-tweet-id], [id^="twitter-widget"]')) {
+      return true;
+    }
     const text = (element.innerText || '').replace(/\s+/g, ' ').trim();
     if (text.length > 2 && !AD_CHROME.test(text)) return true;
     for (const node of element.querySelectorAll(CONTENT)) {
       const box = node.getBoundingClientRect();
       if (box.width > 4 && box.height > 4) return true;
+    }
+    for (const frame of element.querySelectorAll('iframe')) {
+      const src = (frame.getAttribute('src') || '').toLowerCase();
+      const id = (frame.getAttribute('id') || '').toLowerCase();
+      const cls = (frame.className || '').toLowerCase();
+      if (src.includes('twitter') || src.includes('x.com') ||
+          src.includes('youtube') || src.includes('youtu.be') ||
+          src.includes('vimeo') || id.includes('twitter') ||
+          cls.includes('twitter')) {
+        return true;
+      }
     }
     return false;
   };
@@ -199,7 +227,21 @@ constexpr char kCollapseScript[] = R"JS(
     }
   };
 
+  const ensureEmbedPermissions = () => {
+    for (const frame of document.querySelectorAll(
+        'iframe[src*="twitter.com"],iframe[src*="x.com"],iframe[id^="twitter-widget"],iframe.twitter-tweet')) {
+      const currentAllow = frame.getAttribute('allow') || '';
+      if (!currentAllow.includes('autoplay')) {
+        frame.setAttribute('allow', (currentAllow ? currentAllow + '; ' : '') + 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+      }
+      if (!frame.hasAttribute('allowfullscreen')) {
+        frame.setAttribute('allowfullscreen', 'true');
+      }
+    }
+  };
+
   const run = () => {
+    ensureEmbedPermissions();
     const seeds = [];
     for (const element of document.querySelectorAll(AD_HINTS)) {
       if (!element.hasAttribute('data-mtk-collapsed')) hide(element);
@@ -210,15 +252,16 @@ constexpr char kCollapseScript[] = R"JS(
     for (const element of document.querySelectorAll('[data-mtk-hidden-ad]')) {
       seeds.push(element);
     }
-    // Leaf "ADVERTISEMENT" captions: hiding the caption alone would leave the
-    // gap, so it seeds an upward collapse as well.
+    // Leaf "ADVERTISEMENT" and "Story continues below this ad" captions:
+    // hiding the caption alone would leave the gap, so it seeds an upward
+    // collapse as well.
     let scanned = 0;
     for (const element of document.querySelectorAll(
              'div,span,p,ins,section,aside,h2,h3,h4,h5,strong,small,font')) {
       if (++scanned > 4000) break;
       if (element.children.length > 0) continue;
       const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!text || text.length > 24 || !LABEL.test(text)) continue;
+      if (!text || text.length > 45 || !LABEL.test(text)) continue;
       if (!element.hasAttribute('data-mtk-collapsed')) hide(element);
       seeds.push(element);
     }
@@ -303,8 +346,12 @@ mtk::policy::ResourceType MapResourceType(CefRequest::ResourceType type) {
 
 }  // namespace
 
-BrowserClient::BrowserClient(BrowserClientDelegate* delegate)
-    : delegate_(delegate) {}
+BrowserClient::BrowserClient(BrowserClientDelegate* delegate, bool is_private)
+    : delegate_(delegate), is_private_(is_private) {}
+
+void BrowserClient::SetDelegate(BrowserClientDelegate* delegate) {
+  delegate_ = delegate;
+}
 
 CefRefPtr<CefContextMenuHandler> BrowserClient::GetContextMenuHandler() {
   return this;
@@ -312,6 +359,7 @@ CefRefPtr<CefContextMenuHandler> BrowserClient::GetContextMenuHandler() {
 CefRefPtr<CefDisplayHandler> BrowserClient::GetDisplayHandler() { return this; }
 CefRefPtr<CefDownloadHandler> BrowserClient::GetDownloadHandler() { return this; }
 CefRefPtr<CefFindHandler> BrowserClient::GetFindHandler() { return this; }
+CefRefPtr<CefFocusHandler> BrowserClient::GetFocusHandler() { return this; }
 CefRefPtr<CefKeyboardHandler> BrowserClient::GetKeyboardHandler() { return this; }
 CefRefPtr<CefLifeSpanHandler> BrowserClient::GetLifeSpanHandler() { return this; }
 CefRefPtr<CefLoadHandler> BrowserClient::GetLoadHandler() { return this; }
@@ -319,6 +367,12 @@ CefRefPtr<CefPermissionHandler> BrowserClient::GetPermissionHandler() {
   return this;
 }
 CefRefPtr<CefRequestHandler> BrowserClient::GetRequestHandler() { return this; }
+
+void BrowserClient::OnGotFocus(CefRefPtr<CefBrowser>) {
+  if (delegate_) {
+    delegate_->OnBrowserGotFocus(this);
+  }
+}
 
 bool BrowserClient::OnProcessMessageReceived(
     CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
@@ -353,9 +407,14 @@ void BrowserClient::OnBeforeContextMenu(
   if (!link.empty()) {
     model->AddSeparator();
     model->AddItem(kOpenLinkInNewTabId, L"Open link in new tab");
+    model->AddItem(kOpenLinkInSplitPaneId,
+                   delegate_ && delegate_->IsSplitViewActive()
+                       ? L"Open link in other pane"
+                       : L"Open link in split pane");
     model->AddItem(kCopyLinkAddressId, L"Copy link address");
     const bool allowed = mtk::policy::EvaluateNavigation(link).allow;
     model->SetEnabled(kOpenLinkInNewTabId, allowed);
+    model->SetEnabled(kOpenLinkInSplitPaneId, allowed);
     model->SetEnabled(kCopyLinkAddressId, allowed);
   }
 
@@ -395,11 +454,11 @@ void BrowserClient::OnBeforeContextMenu(
     if (can_select_all) model->AddItem(MENU_ID_SELECT_ALL, L"Select all");
   }
 
-  // Printing is offered on ordinary pages only. It opens Chromium's own print
-  // dialog, which is also where "Save as PDF" lives.
+  // Screenshot and printing offered on ordinary pages.
   if (browser && link.empty() && !params->IsEditable()) {
     model->AddSeparator();
-    model->AddItem(kPrintPageId, L"Print…");
+    model->AddItem(kTakeScreenshotId, mtk::strings::Get(mtk::strings::Id::kTakeScreenshot));
+    model->AddItem(kPrintPageId, mtk::strings::Get(mtk::strings::Id::kPrint));
   }
 }
 
@@ -407,11 +466,25 @@ bool BrowserClient::OnContextMenuCommand(
     CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>,
     CefRefPtr<CefContextMenuParams> params, int command_id, EventFlags) {
   if (!params) return false;
+  if (command_id == kTakeScreenshotId) {
+    if (delegate_) {
+      delegate_->TakeActivePageScreenshot();
+    }
+    return true;
+  }
   if (command_id == kOpenLinkInNewTabId) {
     const auto decision =
         mtk::policy::EvaluateNavigation(params->GetLinkUrl().ToString());
     if (decision.allow && delegate_) {
       delegate_->OnBrowserPopupRequested(this, decision.url);
+    }
+    return true;
+  }
+  if (command_id == kOpenLinkInSplitPaneId) {
+    const auto decision =
+        mtk::policy::EvaluateNavigation(params->GetLinkUrl().ToString());
+    if (decision.allow && delegate_) {
+      delegate_->OpenLinkInOtherPane(decision.url);
     }
     return true;
   }
@@ -455,23 +528,23 @@ bool BrowserClient::CanDownload(CefRefPtr<CefBrowser>, const CefString& url,
   // reach the download manager. The file-type rules run in OnBeforeDownload,
   // where the real suggested name and MIME type are known.
   const std::string method = request_method.ToString();
-  if (method != "GET" && method != "get" && !method.empty()) return false;
+  if (!method.empty() && method != "GET" && method != "get" && method != "POST" && method != "post") return false;
   const auto decision = mtk::policy::EvaluateNavigation(url.ToString());
   return decision.allow && (decision.url.starts_with("http://") ||
                             decision.url.starts_with("https://"));
 }
 
 bool BrowserClient::OnBeforeDownload(
-    CefRefPtr<CefBrowser>, CefRefPtr<CefDownloadItem> download_item,
+    CefRefPtr<CefBrowser> browser, CefRefPtr<CefDownloadItem> download_item,
     const CefString& suggested_name,
     CefRefPtr<CefBeforeDownloadCallback> callback) {
   if (!download_item || !download_item->IsValid() || !callback) return false;
 
   const std::string url = download_item->GetURL();
+  const std::string mime_type = download_item->GetMimeType().ToString();
   const mtk::downloads::Mode mode = mtk::downloads::CurrentMode();
-  const auto decision = mtk::downloads::Evaluate(
-      url, suggested_name.ToWString(), download_item->GetMimeType().ToString(),
-      mode);
+  mtk::downloads::Decision decision =
+      mtk::downloads::Evaluate(url, suggested_name.ToWString(), mime_type, mode);
   if (!decision.allow) {
     // Returning false cancels the download with the Alloy runtime style.
     MessageBoxW(nullptr, decision.reason.c_str(),
@@ -480,24 +553,71 @@ bool BrowserClient::OnBeforeDownload(
   }
 
   const int64_t total_bytes = download_item->GetTotalBytes();
-  // Large files are never blocked. Safe mode only points the size out inside
-  // the confirmation it already shows.
   const bool large_and_known =
       total_bytes > mtk::downloads::kLargeDownloadBytes;
 
-  const std::wstring target = mtk::downloads::UniqueTargetPath(decision.file_name);
-  if (target.empty()) {
-    MessageBoxW(nullptr,
-                L"MTK Browser could not prepare a download location.",
-                L"MTK Browser", MB_OK | MB_ICONERROR);
-    return false;
+  HWND owner = nullptr;
+  if (browser && browser->GetHost()) {
+    owner = browser->GetHost()->GetWindowHandle();
+    if (owner) {
+      HWND root = GetAncestor(owner, GA_ROOT);
+      if (root) owner = root;
+    }
+  }
+  if (!owner) owner = GetActiveWindow();
+
+  std::wstring target;
+  std::wstring chosen_file_name = decision.file_name;
+
+  const bool ask_location =
+      mtk::preferences::Store::Get().values().download_ask_location;
+
+  if (ask_location) {
+    // Prompt the user for the download location and filename via the standard
+    // Windows "Save As" common dialog, exactly like mainstream browsers do.
+    if (!mtk::downloads::PromptDownloadLocation(owner, decision.file_name,
+                                                &target, &chosen_file_name)) {
+      // User clicked Cancel in the Save As dialog
+      return false;
+    }
+
+    // Safety policy check: re-evaluate in case the user edited the extension in Save As
+    const auto chosen_decision =
+        mtk::downloads::Evaluate(url, chosen_file_name, mime_type, mode);
+    if (!chosen_decision.allow) {
+      MessageBoxW(owner,
+                  chosen_decision.reason.empty()
+                      ? L"This download is not allowed."
+                      : chosen_decision.reason.c_str(),
+                  L"MTK Browser", MB_OK | MB_ICONWARNING);
+      return false;
+    }
+    decision.risky = chosen_decision.risky;
+    decision.file_name = chosen_decision.file_name;
+  } else {
+    target = mtk::downloads::UniqueTargetPath(decision.file_name);
+    if (target.empty()) {
+      MessageBoxW(owner,
+                  L"MTK Browser could not prepare a download location.",
+                  L"MTK Browser", MB_OK | MB_ICONERROR);
+      return false;
+    }
   }
 
   const std::string host = mtk::policy::HostOf(url);
-  if (mode == mtk::downloads::Mode::kSafe) {
-    // Safe mode never starts a download silently: the user confirms the file
-    // name and destination first.
-    std::wstring question = L"Save this file?\n\nName: " + decision.file_name;
+  if (decision.risky || mtk::downloads::IsRiskyFileName(chosen_file_name)) {
+    decision.risky = true;
+    std::wstring warning =
+        L"This file can run programs on your computer.\n\nName: " +
+        chosen_file_name;
+    if (!host.empty()) warning += L"\nFrom: " + AsciiToWide(host);
+    warning += L"\n\nKeep this file?";
+    if (MessageBoxW(owner, warning.c_str(), L"MTK Browser download warning",
+                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+      return false;
+    }
+  } else if (!ask_location && mode == mtk::downloads::Mode::kSafe) {
+    std::wstring question = L"Save this file?\n\nName: " + chosen_file_name;
     if (!host.empty()) question += L"\nFrom: " + AsciiToWide(host);
     question += L"\nTo: " + target;
     if (large_and_known) {
@@ -505,34 +625,22 @@ bool BrowserClient::OnBeforeDownload(
           L"\n\nWarning: this file is larger than 2 GB and may take a long "
           L"time and a lot of disk space.";
     }
-    if (MessageBoxW(nullptr, question.c_str(), L"MTK Browser download",
+    if (MessageBoxW(owner, question.c_str(), L"MTK Browser download",
                     MB_YESNO | MB_ICONQUESTION) != IDYES) {
-      return false;
-    }
-  } else if (decision.risky) {
-    // Standard mode saves without asking, except for files that can execute
-    // code, where a mainstream browser also warns.
-    std::wstring warning =
-        L"This file can run programs on your computer.\n\nName: " +
-        decision.file_name;
-    if (!host.empty()) warning += L"\nFrom: " + AsciiToWide(host);
-    warning += L"\n\nKeep this file?";
-    if (MessageBoxW(nullptr, warning.c_str(), L"MTK Browser download warning",
-                    MB_YESNO | MB_ICONWARNING) != IDYES) {
       return false;
     }
   }
 
   mtk::downloads::Item item;
   item.id = download_item->GetId();
-  item.file_name = decision.file_name;
+  item.file_name = chosen_file_name;
   item.full_path = target;
   item.url = url;
   item.state = mtk::downloads::State::kStarting;
   item.total_bytes = total_bytes;
   item.risky = decision.risky;
-  // A size the user already acknowledged is not warned about again.
-  item.size_warned = large_and_known && mode == mtk::downloads::Mode::kSafe;
+  item.is_private = is_private_;
+  item.size_warned = large_and_known;
   if (large_and_known) item.detail = L"large file, over 2 GB";
   mtk::downloads::Manager::Get().Upsert(item);
   if (delegate_) delegate_->OnBrowserDownloadsChanged(this);
@@ -691,6 +799,11 @@ void BrowserClient::OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
       mtk::filters::Engine::Get().CssSelectorsForHost(host);
   const std::string script = CosmeticScript(selectors);
   if (!script.empty()) frame->ExecuteJavaScript(script, url, 0);
+
+  if (mtk::preferences::Store::Get().values().focus_mode &&
+      host.find("youtube.com") != std::string::npos) {
+    frame->ExecuteJavaScript(mtk::focus::kEnableScript, url, 0);
+  }
 }
 
 bool BrowserClient::OnPreKeyEvent(CefRefPtr<CefBrowser>,
@@ -712,10 +825,15 @@ bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
   if (!frame || !frame->IsMain() || !request) return false;
   const std::string requested_url = request->GetURL();
 
-  // The built-in home document is served by this application from a registered
-  // scheme, so it is allowed past the http(s)-only navigation gate. Only the
-  // exact document URL qualifies; every other mtk: address still fails closed.
-  if (mtk::home::IsHomeUrl(requested_url)) return false;
+  // Built-in documents (home, history, passkeys, downloads, settings) are served by this application from a
+  // registered scheme, so they are allowed past the http(s)-only navigation gate.
+  if (mtk::home::IsHomeUrl(requested_url) ||
+      mtk::history::IsHistoryUrl(requested_url) ||
+      mtk::passkeys::IsPasskeyUrl(requested_url) ||
+      mtk::downloads_page::IsDownloadsUrl(requested_url) ||
+      mtk::settings_page::IsSettingsUrl(requested_url)) {
+    return false;
+  }
 
   // Internal action URLs are commands, never documents, and they are only obeyed
   // when the page issuing them is the matching built-in document. Anything else
@@ -726,7 +844,7 @@ bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
           : std::string();
 
   if (const auto action = mtk::home::ParseActionUrl(requested_url);
-      action != mtk::home::Action::kNone) {
+      action.kind != mtk::home::ActionKind::kNone) {
     if (delegate_ && mtk::home::IsHomeUrl(current_url)) {
       delegate_->OnBrowserHomeAction(this, action);
     }
@@ -737,6 +855,30 @@ bool BrowserClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
       action.kind != mtk::history::ActionKind::kNone) {
     if (delegate_ && mtk::history::IsHistoryUrl(current_url)) {
       delegate_->OnBrowserHistoryAction(this, action);
+    }
+    return true;
+  }
+
+  if (const auto action = mtk::passkeys::ParseActionUrl(requested_url);
+      action != mtk::passkeys::Action::kNone) {
+    if (delegate_ && mtk::passkeys::IsPasskeyUrl(current_url)) {
+      delegate_->OnBrowserPasskeyAction(this, action);
+    }
+    return true;
+  }
+
+  if (const auto action = mtk::downloads_page::ParseActionUrl(requested_url);
+      action.kind != mtk::downloads_page::ActionKind::kNone) {
+    if (delegate_ && mtk::downloads_page::IsDownloadsUrl(current_url)) {
+      delegate_->OnBrowserDownloadsAction(this, action);
+    }
+    return true;
+  }
+
+  if (const auto action = mtk::settings_page::ParseActionUrl(requested_url);
+      action.kind != mtk::settings_page::ActionKind::kNone) {
+    if (delegate_ && mtk::settings_page::IsSettingsUrl(current_url)) {
+      delegate_->OnBrowserSettingsAction(this, action);
     }
     return true;
   }
@@ -786,7 +928,10 @@ CefRefPtr<CefResourceRequestHandler> BrowserClient::GetResourceRequestHandler(
   if (!request) return this;
   const std::string url = request->GetURL();
   if (request->GetResourceType() == RT_MAIN_FRAME &&
-      (url.starts_with("data:text/html") || mtk::home::IsHomeUrl(url))) {
+      (url.starts_with("data:text/html") || mtk::home::IsHomeUrl(url) ||
+       mtk::history::IsHistoryUrl(url) || mtk::passkeys::IsPasskeyUrl(url) ||
+       mtk::downloads_page::IsDownloadsUrl(url) ||
+       mtk::settings_page::IsSettingsUrl(url))) {
     return this;
   }
   // The Chromium PDF renderer is packaged as one internal extension. Permit
@@ -834,21 +979,27 @@ void BrowserClient::CountBlockedRequest(bool from_user_rule) const {
   g_blocked_count.fetch_add(1, std::memory_order_relaxed);
   // Also counted per site, so the Shields panel can say what was blocked on the
   // page in front of you rather than only a session total.
-  if (!browser_) return;
-  auto frame = browser_->GetMainFrame();
-  if (!frame) return;
-  const std::string origin = mtk::sites::OriginOf(frame->GetURL().ToString());
-  if (origin.empty()) return;
-  std::lock_guard<std::mutex> lock(g_site_block_mutex);
-  // Bounded: an origin that is no longer open is not worth remembering, and this
-  // is only a display counter. Both maps are cleared together so they never
-  // disagree about which origins they still know about.
-  if (g_site_blocks.size() > 200 && !g_site_blocks.contains(origin)) {
-    g_site_blocks.clear();
-    g_site_user_rule_blocks.clear();
+  if (browser_) {
+    auto frame = browser_->GetMainFrame();
+    if (frame) {
+      const std::string origin = mtk::sites::OriginOf(frame->GetURL().ToString());
+      if (!origin.empty()) {
+        std::lock_guard<std::mutex> lock(g_site_block_mutex);
+        // Bounded: an origin that is no longer open is not worth remembering, and this
+        // is only a display counter. Both maps are cleared together so they never
+        // disagree about which origins they still know about.
+        if (g_site_blocks.size() > 200 && !g_site_blocks.contains(origin)) {
+          g_site_blocks.clear();
+          g_site_user_rule_blocks.clear();
+        }
+        ++g_site_blocks[origin];
+        if (from_user_rule) ++g_site_user_rule_blocks[origin];
+      }
+    }
   }
-  ++g_site_blocks[origin];
-  if (from_user_rule) ++g_site_user_rule_blocks[origin];
+  if (delegate_) {
+    delegate_->OnBrowserRequestBlocked(const_cast<BrowserClient*>(this));
+  }
 }
 
 unsigned long BrowserClient::blocked_count_for_origin(const std::string& origin) {
@@ -1037,4 +1188,58 @@ void BrowserClient::OnAddressChange(CefRefPtr<CefBrowser>,
 void BrowserClient::OnTitleChange(CefRefPtr<CefBrowser>,
                                   const CefString& title) {
   if (delegate_) delegate_->OnBrowserTitleChanged(this, title.ToWString());
+}
+
+void BrowserClient::OnFaviconURLChange(CefRefPtr<CefBrowser>,
+                                      const std::vector<CefString>& icon_urls) {
+  if (delegate_ && !icon_urls.empty()) {
+    std::vector<std::string> urls;
+    urls.reserve(icon_urls.size());
+    for (const auto& u : icon_urls) {
+      if (!u.empty()) {
+        urls.push_back(u.ToString());
+      }
+    }
+    if (!urls.empty()) {
+      delegate_->OnBrowserFaviconUrlsChanged(this, urls);
+    }
+  }
+}
+
+bool BrowserClient::OnRequestMediaAccessPermission(
+    CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+    const CefString& requesting_origin,
+    uint32_t requested_permissions,
+    CefRefPtr<CefMediaAccessCallback> callback) {
+  if (!callback) return false;
+  const auto rule =
+      mtk::sites::Store::Get().For(mtk::sites::OriginOf(requesting_origin));
+  const bool allow_camera =
+      (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) == 0 ||
+      rule.camera == mtk::sites::Permission::kAllow;
+  const bool allow_mic =
+      (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) == 0 ||
+      rule.microphone == mtk::sites::Permission::kAllow;
+  if (allow_camera && allow_mic) {
+    callback->Continue(requested_permissions);
+  } else {
+    callback->Cancel();
+  }
+  return true;
+}
+
+void BrowserClient::OnMediaAccessChange(CefRefPtr<CefBrowser>,
+                                        bool has_video_access,
+                                        bool has_audio_access) {
+  if (delegate_) {
+    delegate_->OnBrowserMediaAccessChanged(this, has_video_access,
+                                          has_audio_access);
+  }
+}
+
+void BrowserClient::OnFullscreenModeChange(CefRefPtr<CefBrowser>,
+                                           bool fullscreen) {
+  if (delegate_) {
+    delegate_->OnBrowserFullscreenModeChange(this, fullscreen);
+  }
 }

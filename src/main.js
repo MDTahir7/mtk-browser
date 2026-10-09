@@ -1,9 +1,12 @@
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, WebContentsView, ipcMain, session } = require('electron');
 const { classifyInput, inspectRequest, enforceSafeSearch } = require('./security');
 
 const HOME_URL = 'https://www.google.com/?safe=active';
-const TOOLBAR_HEIGHT = 76;
+const NEW_TAB_URL = pathToFileURL(path.join(__dirname, 'ui', 'newtab.html')).href;
+// Keep this in sync with the 40 px tab strip, 48 px toolbar and 1 px header border.
+const TOOLBAR_HEIGHT = 89;
 const PARTITION = 'safe-session';
 let window;
 let blockedRequests = 0;
@@ -225,6 +228,8 @@ function createWindow() {
       devTools: false
     }
   });
+  // Open into a usable page area on every launch, including after a bad resize.
+  window.maximize();
   
   window.loadFile(path.join(__dirname, 'ui', 'index.html'));
   window.on('resize', resizeContent);
@@ -232,7 +237,8 @@ function createWindow() {
   window.on('unmaximize', resizeContent);
   window.on('closed', () => { window = null; });
   
-  createTab(HOME_URL);
+  // Local startup avoids making the browser UI wait on Google's network response.
+  createTab(NEW_TAB_URL);
 }
 
 function stateSnapshot() {

@@ -73,6 +73,38 @@ std::string Load(const std::wstring& file_name) {
   return url;
 }
 
+std::string LoadWebp(const std::wstring& file_name) {
+  const std::wstring directory = ModuleDirectory();
+  if (directory.empty()) return {};
+  std::ifstream file(directory + L'\\' + file_name,
+                     std::ios::binary | std::ios::ate);
+  if (!file.is_open()) return {};
+  const std::streamoff size = file.tellg();
+  if (size <= 0 || static_cast<size_t>(size) > kMaxInlineWebpBytes) return {};
+  std::string bytes(static_cast<size_t>(size), '\0');
+  file.seekg(0);
+  if (!file.read(bytes.data(), size)) return {};
+  // WebP files start with "RIFF....WEBP"
+  if (bytes.size() < 12 || bytes.compare(0, 4, "RIFF", 4) != 0 ||
+      bytes.compare(8, 4, "WEBP", 4) != 0) {
+    return {};
+  }
+
+  const std::string encoded = Base64(bytes);
+  if (encoded.empty()) return {};
+
+  std::string url(kWebpDataUrlPrefix);
+  url.reserve(url.size() + encoded.size() + encoded.size() / 32);
+  for (const char character : encoded) {
+    if (character == '+') {
+      url += "%2B";
+    } else {
+      url += character;
+    }
+  }
+  return url;
+}
+
 }  // namespace
 
 const std::string& WebmDataUrl(const std::wstring& file_name) {
@@ -85,6 +117,15 @@ const std::string& WebmDataUrl(const std::wstring& file_name) {
   const auto existing = cache.find(file_name);
   if (existing != cache.end()) return existing->second;
   return cache.emplace(file_name, Load(file_name)).first->second;
+}
+
+const std::string& WebpDataUrl(const std::wstring& file_name) {
+  static std::mutex mutex;
+  static std::map<std::wstring, std::string> cache;
+  const std::lock_guard<std::mutex> guard(mutex);
+  const auto existing = cache.find(file_name);
+  if (existing != cache.end()) return existing->second;
+  return cache.emplace(file_name, LoadWebp(file_name)).first->second;
 }
 
 }  // namespace mtk::assets

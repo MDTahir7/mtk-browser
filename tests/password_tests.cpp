@@ -160,6 +160,32 @@ MTK_TEST(PasswordsStorableUrlFollowsTheSafetyPolicy) {
   MTK_EXPECT_FALSE(mtk::passwords::IsStorableUrl("about:blank"));
 }
 
+MTK_TEST(GeneratedPasswordsHaveStrengthBasicsAndStayInMemoryOnly) {
+  std::wstring password;
+  MTK_EXPECT_TRUE(mtk::passwords::GeneratePassword(
+      mtk::passwords::kGeneratedPasswordLength, &password));
+  MTK_EXPECT_EQ_INT(password.size(), mtk::passwords::kGeneratedPasswordLength);
+  bool lower = false;
+  bool upper = false;
+  bool digit = false;
+  bool symbol = false;
+  for (const wchar_t character : password) {
+    lower = lower || (character >= L'a' && character <= L'z');
+    upper = upper || (character >= L'A' && character <= L'Z');
+    digit = digit || (character >= L'0' && character <= L'9');
+    symbol = symbol || !(character >= L'a' && character <= L'z') &&
+                        !(character >= L'A' && character <= L'Z') &&
+                        !(character >= L'0' && character <= L'9');
+  }
+  MTK_EXPECT_TRUE(lower);
+  MTK_EXPECT_TRUE(upper);
+  MTK_EXPECT_TRUE(digit);
+  MTK_EXPECT_TRUE(symbol);
+  mtk::passwords::Scrub(&password);
+  MTK_EXPECT_TRUE(password.empty());
+  MTK_EXPECT_FALSE(mtk::passwords::GeneratePassword(11, &password));
+}
+
 MTK_TEST(PasswordsScrubEmptiesTheBuffer) {
   std::wstring secret = L"not-a-real-password";
   mtk::passwords::Scrub(&secret);

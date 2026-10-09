@@ -156,6 +156,58 @@ bool WriteAtomically(const std::string& content) {
 
 }  // namespace
 
+Validation Validate(const std::vector<std::wstring>& lines) {
+  Validation validation;
+  if (lines.size() > kMaxRules) {
+    validation.valid = false;
+    validation.line = kMaxRules + 1;
+    validation.error = L"There can be at most " + std::to_wstring(kMaxRules) +
+                       L" lines.";
+    return validation;
+  }
+
+  for (size_t index = 0; index < lines.size(); ++index) {
+    const std::wstring& line = lines[index];
+    const size_t line_number = index + 1;
+    if (line.size() > kMaxRuleLength) {
+      validation.valid = false;
+      validation.line = line_number;
+      validation.error = L"A line can be at most " +
+                         std::to_wstring(kMaxRuleLength) + L" characters.";
+      return validation;
+    }
+    const std::string narrow = Trim(WideToUtf8(line));
+    if (!line.empty() && narrow.empty()) {
+      validation.valid = false;
+      validation.line = line_number;
+      validation.error = L"This rule cannot be converted to UTF-8.";
+      return validation;
+    }
+    if (narrow.empty() || narrow.front() == '#') continue;
+
+    const bool allow = narrow.starts_with("@@");
+    const std::string_view pattern = allow ? std::string_view(narrow).substr(2)
+                                           : std::string_view(narrow);
+    if (pattern.empty()) {
+      validation.valid = false;
+      validation.line = line_number;
+      validation.error = allow ? L"@@ needs an address pattern after it."
+                               : L"A rule needs an address pattern.";
+      return validation;
+    }
+    if (std::any_of(pattern.begin(), pattern.end(), [](unsigned char character) {
+          return character < 0x21 || character > 0x7E;
+        })) {
+      validation.valid = false;
+      validation.line = line_number;
+      validation.error = L"Use visible ASCII characters only; web addresses use ASCII.";
+      return validation;
+    }
+    ++validation.active_rule_count;
+  }
+  return validation;
+}
+
 void Load() {
   std::string content;
   std::vector<std::wstring> lines;
@@ -182,22 +234,16 @@ void ApplyWithoutSaving(const std::vector<std::wstring>& lines) {
 }
 
 bool Save(const std::vector<std::wstring>& lines, std::wstring* error) {
-  if (lines.size() > kMaxRules) {
+  const Validation validation = Validate(lines);
+  if (!validation.valid) {
     if (error) {
-      *error = L"That is more than " + std::to_wstring(kMaxRules) +
-               L" lines, which is the limit.";
+      *error = L"Line " + std::to_wstring(validation.line) + L": " +
+               validation.error;
     }
     return false;
   }
   std::string content;
   for (const std::wstring& line : lines) {
-    if (line.size() > kMaxRuleLength) {
-      if (error) {
-        *error = L"One line is longer than " + std::to_wstring(kMaxRuleLength) +
-                 L" characters:\n\n" + line.substr(0, 80) + L"...";
-      }
-      return false;
-    }
     content += WideToUtf8(line);
     content += "\r\n";
   }

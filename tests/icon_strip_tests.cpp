@@ -15,6 +15,84 @@ MTK_TEST(ShieldStripLoadsAsSquareFrames) {
   MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
 }
 
+MTK_TEST(HomeStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_home_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting (no smoke), frames 1..29 looping smoke.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(StoreStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_store_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting, frames 1..29 looping animated store hover.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(NotesStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_notes_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting (clean pad, docked pencil), frames 1..29 looping handwriting.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(DownloadStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_download_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting (clean cloud & arrow), frames 1..29 looping plunge & ripples.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(HistoryStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_history_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting, frames 1..29 looping rewind spin and temporal ripples.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(SettingsStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_settings_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting, frames 1..29 looping meshing gear spin.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(FocusStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_focus_strip.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting (clean target), frames 1..29 target lock-on & arrow hit.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(RefreshStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_refresh_strip.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting, frames 1..29 3D iridescent arrow loop.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+}
+
+MTK_TEST(ScreenshotStripLoadsAsSquareFrames) {
+  mtk::icons::Strip strip;
+  MTK_EXPECT_TRUE(strip.Load(L"mtk_screenshot_hover.png"));
+  MTK_EXPECT_TRUE(strip.valid());
+  // 30 frames: Frame 0 resting 3D camera, frames 1..10 float anticipation,
+  // frames 11..13 shutter snap + specular flash, frames 14..29 damping recoil loop.
+  MTK_EXPECT_EQ_INT(strip.frame_count(), 30);
+
+  mtk::icons::Strip strip_fallback;
+  MTK_EXPECT_TRUE(strip_fallback.Load(L"mtk_screenshot_strip.png"));
+  MTK_EXPECT_TRUE(strip_fallback.valid());
+  MTK_EXPECT_EQ_INT(strip_fallback.frame_count(), 30);
+}
+
 MTK_TEST(MissingStripLeavesLoaderInvalid) {
   mtk::icons::Strip strip;
   MTK_EXPECT_FALSE(strip.Load(L"mtk_no_such_icon_strip.png"));

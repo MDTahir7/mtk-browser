@@ -113,7 +113,7 @@ constexpr auto kTrackerHosts = std::to_array<std::string_view>({
 
 constexpr auto kAdPaths = std::to_array<std::string_view>({
     "/ads/", "/ad/", "/adserver/", "/advert/", "/advertising/",
-    "/sponsor/", "/sponsored/", "/promoted/", "/prebid/", "/gpt/",
+    "/sponsor/", "/sponsored/", "/promoted/", "/prebid/", "/gpt.js",
     "/vast/", "/vpaid/", "popunder", "ad_frame", "ad-frame", "pagead",
     "/ads.js", "/ad.js", "google_ads", "googleads", "banner_ad",
     "banner-ad", "adunit", "ad-unit", "adslot", "ad-slot"});
@@ -196,6 +196,20 @@ bool HasHostToken(std::string_view host, std::string_view word) {
     start = end + 1;
   }
   return false;
+}
+
+bool IsSearchEngineHost(std::string_view host) {
+  if (host.empty()) return false;
+  if (HostMatches(host, "google.com") || HostMatches(host, "bing.com") ||
+      HostMatches(host, "duckduckgo.com") || HostMatches(host, "yahoo.com") ||
+      HostMatches(host, "yandex.com") || HostMatches(host, "ecosia.org") ||
+      HostMatches(host, "youtube.com") || HostMatches(host, "baidu.com") ||
+      HostMatches(host, "startpage.com") || HostMatches(host, "brave.com") ||
+      HostMatches(host, "qwant.com")) {
+    return true;
+  }
+  return HasHostLabel(host, "google") || HasHostLabel(host, "bing") ||
+         HasHostLabel(host, "duckduckgo");
 }
 
 std::string SiteKey(std::string_view host) {
@@ -427,8 +441,11 @@ bool IsAdOrTracker(const std::string& raw_url, ResourceType type,
   if (youtube_family) return ContainsAny(path, kYouTubeAdPaths);
 
   const bool functional_host = HostMatches(host, "googleapis.com") ||
-                               HostMatches(host, "gstatic.com");
-  if (functional_host) return false;
+                               HostMatches(host, "gstatic.com") ||
+                               HostMatches(host, "twimg.com") ||
+                               HostMatches(host, "twitter.com") ||
+                               HostMatches(host, "x.com");
+  if (functional_host && !HostMatches(host, "ads-twitter.com")) return false;
 
   if (!IsThirdParty(host, request_initiator)) return false;
 
@@ -538,7 +555,16 @@ RequestDecision EvaluateRequest(const std::string& raw_url,
   if (const wchar_t* host_reason = ClassifyBlockedHost(host)) {
     return {false, host_reason};
   }
-  if (resource_type == ResourceType::kMainFrame && HasBlockedSearchTerm(url)) {
+  const bool search_engine_context =
+      (resource_type == ResourceType::kMainFrame) ||
+      ((resource_type == ResourceType::kXhr ||
+        resource_type == ResourceType::kSubFrame ||
+        resource_type == ResourceType::kScript ||
+        resource_type == ResourceType::kOther) &&
+       (IsSearchEngineHost(host) ||
+        IsSearchEngineHost(ExtractHost(Lower(request_initiator)))));
+
+  if (search_engine_context && HasBlockedSearchTerm(url)) {
     return {false, L"Adult or illegal search term blocked"};
   }
   if (IsSocialPlatformNsfw(url)) {
@@ -591,7 +617,49 @@ NavigationDecision EvaluateNavigation(const std::string& raw_url) {
   return {true, EnforceSafeSearch(raw_url), {}};
 }
 
-NavigationDecision ResolveInput(const std::string& raw_input) {
+bool IsQuestionQuery(std::string_view text) {
+  if (text.empty()) return false;
+  if (text.find('?') != std::string_view::npos) return true;
+
+  auto starts_with_ci = [](std::string_view str, std::string_view prefix) {
+    if (str.size() < prefix.size()) return false;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(str[i])) !=
+          std::tolower(static_cast<unsigned char>(prefix[i]))) return false;
+    }
+    if (str.size() == prefix.size()) return true;
+    return std::isspace(static_cast<unsigned char>(str[prefix.size()])) != 0;
+  };
+
+  static constexpr const char* kStarters[] = {
+      "who", "what", "when", "where", "why", "which", "how",
+      "is", "are", "can", "could", "will", "would", "should", "does", "do", "did",
+      "kaisa", "kaise", "kaisi", "kya", "kab", "kahan", "kaha",
+      "kyun", "kyu", "kaun", "kon", "kitna", "kitne", "kitni"
+  };
+  for (const char* starter : kStarters) {
+    if (starts_with_ci(text, starter)) return true;
+  }
+
+  std::string lower;
+  lower.reserve(text.size());
+  for (char c : text) {
+    lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+
+  static constexpr const char* kPhrases[] = {
+      "kaisa h", "kaisa hai", "kaise h", "kaise hai", "kya h", "kya hai",
+      "kyun h", "kyu h", "kab h", "kab hai", "weather in", "mausam"
+  };
+  for (const char* phrase : kPhrases) {
+    if (lower.find(phrase) != std::string::npos) return true;
+  }
+
+  return false;
+}
+
+NavigationDecision ResolveInput(const std::string& raw_input,
+                                std::string_view search_engine) {
   std::string input = raw_input;
   input.erase(input.begin(), std::find_if(input.begin(), input.end(), [](unsigned char c) {
                 return !std::isspace(c);
@@ -608,9 +676,47 @@ NavigationDecision ResolveInput(const std::string& raw_input) {
     return EvaluateNavigation(has_scheme ? input : "https://" + input);
   }
 
+  std::string effective_engine(search_engine);
+  std::string query = input;
+  const auto check_prefix = [&](std::string_view prefix, std::string_view engine) {
+    if (query == prefix || query.starts_with(std::string(prefix) + " ")) {
+      effective_engine = engine;
+      if (query == prefix) {
+        query.clear();
+      } else {
+        query = query.substr(prefix.size() + 1);
+        const auto first_non_space = query.find_first_not_of(" \t");
+        if (first_non_space != std::string::npos) {
+          query = query.substr(first_non_space);
+        } else {
+          query.clear();
+        }
+      }
+      return true;
+    }
+    return false;
+  };
+
+  if (!check_prefix("@g", "google") && !check_prefix(":g", "google") &&
+      !check_prefix("@ai", "ai") && !check_prefix(":ai", "ai") &&
+      !check_prefix("@gemini", "ai") &&
+      !check_prefix("@b", "bing") && !check_prefix(":b", "bing") &&
+      !check_prefix("@d", "duckduckgo") && !check_prefix(":d", "duckduckgo") &&
+      !check_prefix("@ddg", "duckduckgo") &&
+      !check_prefix("@w", "wikipedia") && !check_prefix(":w", "wikipedia")) {
+    // No shortcut prefix matched.
+  }
+
+  if (query.empty()) {
+    if (effective_engine == "bing") return EvaluateNavigation("https://www.bing.com/?adlt=strict");
+    if (effective_engine == "duckduckgo") return EvaluateNavigation("https://duckduckgo.com/?kp=1");
+    if (effective_engine == "wikipedia") return EvaluateNavigation("https://en.wikipedia.org/");
+    return EvaluateNavigation("https://www.google.com/?safe=active");
+  }
+
   static constexpr char kHex[] = "0123456789ABCDEF";
   std::string encoded;
-  for (const unsigned char character : input) {
+  for (const unsigned char character : query) {
     if (std::isalnum(character) || character == '-' || character == '_' ||
         character == '.' || character == '~') {
       encoded.push_back(static_cast<char>(character));
@@ -622,7 +728,18 @@ NavigationDecision ResolveInput(const std::string& raw_input) {
       encoded.push_back(kHex[character & 0x0F]);
     }
   }
-  return EvaluateNavigation("https://www.google.com/search?safe=active&q=" + encoded);
+
+  std::string prefix = "https://www.google.com/search?safe=active&q=";
+  if (effective_engine == "ai" || (effective_engine == "google" && IsQuestionQuery(query))) {
+    prefix = "https://www.google.com/search?safe=active&udm=50&q=";
+  } else if (effective_engine == "bing") {
+    prefix = "https://www.bing.com/search?adlt=strict&q=";
+  } else if (effective_engine == "duckduckgo") {
+    prefix = "https://duckduckgo.com/?kp=1&q=";
+  } else if (effective_engine == "wikipedia") {
+    prefix = "https://en.wikipedia.org/w/index.php?search=";
+  }
+  return EvaluateNavigation(prefix + encoded);
 }
 
 // Chromium sends a handful of these unconditionally (Sec-CH-UA,

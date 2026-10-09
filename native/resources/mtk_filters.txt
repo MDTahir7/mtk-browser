@@ -207,13 +207,25 @@
 ##iframe[src*="outbrain"]
 ##iframe[title="Advertisement" i]
 ##[id^="div-gpt-ad-"]
+##[id^="gpt_ad"]
+##[id*="gpt_ad"]
 ##[data-ad-client]
 ##[data-ad-slot]
+##[data-ad-unit]
 ##[aria-label="Ad" i]
 ##[aria-label="Advertisement" i]
+##.ad-slot
+##[class*="ad-slot"]
+##[class*="ad_slot"]
+##.adboxtop
+##.adsizes
 ##.ad-banner
+##.ad-box
+##.ad-container
 ##.ad-wrapper
 ##.ads-wrapper
+##.story-ad
+##.ie-adtext
 ##.advertisement
 ##.advertising-container
 ##.sponsored-post
@@ -268,3 +280,11 @@ instagram.com##a[href="/explore/locations/"]
 jagran.com##.webAds.advertiseTxt
 jagran.com##.taboolaads
 jagran.com###taboola-below-home-thumbnails
+
+! -------------------------------------------- Indian Express ad-space collapse
+indianexpress.com##.adboxtop
+indianexpress.com##.ie-adtext
+indianexpress.com##.adsizes
+indianexpress.com##[id^="gpt_ad"]
+indianexpress.com##.ad-slot
+indianexpress.com##.story-ad

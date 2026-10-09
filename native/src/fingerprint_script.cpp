@@ -64,10 +64,26 @@ std::string BuildScript(bool enabled, uint64_t seed) {
   // resulting samples.
   static constexpr char kTemplate[] = R"JS(
 (() => {
-  if (window.__mtkFingerprint) return;
-  Object.defineProperty(window, '__mtkFingerprint', {
-    value: true, configurable: false, enumerable: false
-  });
+  const host = (window.location && window.location.hostname) || '';
+  const path = (window.location && window.location.pathname) || '';
+  if (host.endsWith('openai.com') || host.endsWith('chatgpt.com') ||
+      host.endsWith('cloudflare.com') || host.endsWith('live.com') ||
+      host.endsWith('microsoft.com') || host.endsWith('google.com') ||
+      host.endsWith('oaistatic.com') || host.endsWith('oaiusercontent.com') ||
+      host.includes('.within.website') || host.includes('techaro') ||
+      path.includes('.within.website')) {
+    return;
+  }
+
+  const makeNative = (fn, original) => {
+    try {
+      if (original && original.name) {
+        Object.defineProperty(fn, 'name', { value: original.name });
+        fn.toString = () => `function ${original.name}() { [native code] }`;
+      }
+    } catch (_) {}
+    return fn;
+  };
 
   let state = (__MTK_SEED__ >>> 0) || 0x9e3779b9;
   const rand32 = () => {
@@ -93,11 +109,11 @@ std::string BuildScript(bool enabled, uint64_t seed) {
   const patchGetImageData = (proto) => {
     if (!proto || !proto.getImageData) return;
     const original = proto.getImageData;
-    proto.getImageData = function (...args) {
+    proto.getImageData = makeNative(function (...args) {
       const result = original.apply(this, args);
       try { perturb(result.data); } catch (_) {}
       return result;
-    };
+    }, original);
   };
   if (window.CanvasRenderingContext2D) {
     patchGetImageData(CanvasRenderingContext2D.prototype);
@@ -110,13 +126,13 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     if (!proto) return;
     if (proto.toDataURL) {
       const original = proto.toDataURL;
-      proto.toDataURL = function (...args) {
+      proto.toDataURL = makeNative(function (...args) {
         try {
           const ctx = this.getContext && this.getContext('2d');
           if (ctx) perturb(ctx.getImageData(0, 0, this.width, this.height).data);
         } catch (_) {}
         return original.apply(this, args);
-      };
+      }, original);
     }
   };
   if (window.HTMLCanvasElement) {
@@ -127,14 +143,14 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     const patchGetParameter = (proto) => {
       if (!proto || !proto.getParameter) return;
       const original = proto.getParameter;
-      proto.getParameter = function (parameter) {
+      proto.getParameter = makeNative(function (parameter) {
         // 37445/37446 are UNMASKED_VENDOR_WEBGL/UNMASKED_RENDERER_WEBGL from
         // the WEBGL_debug_renderer_info extension; the numeric literals avoid
         // depending on that extension object existing to read the constants.
         if (parameter === 37445) return 'Google Inc. (Generic)';
         if (parameter === 37446) return 'ANGLE (Generic Renderer)';
         return original.call(this, parameter);
-      };
+      }, original);
     };
     if (window.WebGLRenderingContext) {
       patchGetParameter(WebGLRenderingContext.prototype);
@@ -146,7 +162,7 @@ std::string BuildScript(bool enabled, uint64_t seed) {
 
   if (window.AudioBuffer && AudioBuffer.prototype.getChannelData) {
     const original = AudioBuffer.prototype.getChannelData;
-    AudioBuffer.prototype.getChannelData = function (channel) {
+    AudioBuffer.prototype.getChannelData = makeNative(function (channel) {
       const data = original.call(this, channel);
       try {
         let local = rand32();
@@ -156,8 +172,23 @@ std::string BuildScript(bool enabled, uint64_t seed) {
         }
       } catch (_) {}
       return data;
-    };
+    }, original);
   }
+
+  try {
+    if (window.Navigator && Navigator.prototype) {
+      Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+        get: function () { return 4; },
+        configurable: true,
+        enumerable: true
+      });
+      Object.defineProperty(Navigator.prototype, 'deviceMemory', {
+        get: function () { return 8; },
+        configurable: true,
+        enumerable: true
+      });
+    }
+  } catch (_) {}
 })();
 )JS";
 

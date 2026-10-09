@@ -117,6 +117,7 @@ char PermissionCode(Permission value) {
   switch (value) {
     case Permission::kAllow: return 'a';
     case Permission::kBlock: return 'b';
+    case Permission::kSession:
     case Permission::kAsk: break;
   }
   return '?';
@@ -247,6 +248,7 @@ Store& Store::Get() {
 
 void Store::Load() {
   rules_.clear();
+  temporary_rules_.clear();
   dirty_ = false;
   std::string content;
   if (!ReadFileBounded(SitesPath(), &content)) return;
@@ -297,10 +299,26 @@ Rule Store::For(const std::string& origin) const {
   const auto match = std::find_if(
       rules_.begin(), rules_.end(),
       [&origin](const Rule& rule) { return rule.origin == origin; });
-  if (match != rules_.end()) return *match;
-  Rule rule;
-  rule.origin = origin;
-  return rule;
+  Rule result;
+  if (match != rules_.end()) result = *match;
+  else result.origin = origin;
+  const auto temporary = std::find_if(
+      temporary_rules_.begin(), temporary_rules_.end(),
+      [&origin](const Rule& rule) { return rule.origin == origin; });
+  if (temporary == temporary_rules_.end()) return result;
+  if (temporary->camera == Permission::kSession) {
+    result.camera = Permission::kSession;
+  }
+  if (temporary->microphone == Permission::kSession) {
+    result.microphone = Permission::kSession;
+  }
+  if (temporary->location == Permission::kSession) {
+    result.location = Permission::kSession;
+  }
+  if (temporary->notifications == Permission::kSession) {
+    result.notifications = Permission::kSession;
+  }
+  return result;
 }
 
 bool Store::HasRule(const std::string& origin) const {
@@ -312,10 +330,54 @@ bool Store::HasRule(const std::string& origin) const {
 
 bool Store::Set(const Rule& rule) {
   if (rule.origin.empty() || OriginOf(rule.origin) != rule.origin) return false;
+  Rule persistent = rule;
+  Rule temporary;
+  temporary.origin = rule.origin;
+  const auto move_session_decision = [&temporary](Permission source,
+                                                    Permission* destination) {
+    if (source == Permission::kSession) {
+      *destination = Permission::kSession;
+      return Permission::kAsk;
+    }
+    return source;
+  };
+  persistent.camera = move_session_decision(rule.camera, &temporary.camera);
+  persistent.microphone =
+      move_session_decision(rule.microphone, &temporary.microphone);
+  persistent.location = move_session_decision(rule.location, &temporary.location);
+  persistent.notifications =
+      move_session_decision(rule.notifications, &temporary.notifications);
+  // Replacing an existing setting with Ask cancels its temporary overlay too.
+  const auto existing_temporary = std::find_if(
+      temporary_rules_.begin(), temporary_rules_.end(),
+      [&rule](const Rule& value) { return value.origin == rule.origin; });
+  const bool has_temporary = temporary.camera == Permission::kSession ||
+      temporary.microphone == Permission::kSession ||
+      temporary.location == Permission::kSession ||
+      temporary.notifications == Permission::kSession;
+  if (has_temporary) {
+    if (existing_temporary != temporary_rules_.end()) *existing_temporary = temporary;
+    else temporary_rules_.push_back(temporary);
+  } else if (existing_temporary != temporary_rules_.end()) {
+    temporary_rules_.erase(existing_temporary);
+  }
   // A rule that says nothing is removed instead of stored, so the file only
   // ever holds real decisions.
-  if (IsDefault(rule)) return Forget(rule.origin);
-  Rule stored = rule;
+  if (IsDefault(persistent)) {
+    // Do not call Forget here: that public operation intentionally clears the
+    // session overlay too, while this path is precisely how a session-only
+    // allow is installed. Remove just the durable part, if it existed.
+    const auto persistent_match = std::find_if(
+        rules_.begin(), rules_.end(), [&persistent](const Rule& value) {
+          return value.origin == persistent.origin;
+        });
+    if (persistent_match != rules_.end()) {
+      rules_.erase(persistent_match);
+      dirty_ = true;
+    }
+    return true;
+  }
+  Rule stored = persistent;
   stored.zoom_percent =
       std::clamp(stored.zoom_percent, kMinZoomPercent, kMaxZoomPercent);
   const auto match = std::find_if(
@@ -332,6 +394,10 @@ bool Store::Set(const Rule& rule) {
 }
 
 bool Store::Forget(const std::string& origin) {
+  temporary_rules_.erase(
+      std::remove_if(temporary_rules_.begin(), temporary_rules_.end(),
+                     [&origin](const Rule& rule) { return rule.origin == origin; }),
+      temporary_rules_.end());
   const auto match = std::find_if(
       rules_.begin(), rules_.end(),
       [&origin](const Rule& rule) { return rule.origin == origin; });
@@ -342,6 +408,7 @@ bool Store::Forget(const std::string& origin) {
 }
 
 bool Store::Clear() {
+  temporary_rules_.clear();
   if (rules_.empty()) return true;
   rules_.clear();
   dirty_ = true;

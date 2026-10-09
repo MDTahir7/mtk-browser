@@ -21,6 +21,9 @@ inline constexpr wchar_t kDefaultId[] = L"Default";
 constexpr size_t kMaxIdLength = 32;
 bool IsValidId(const std::wstring& id);
 
+constexpr size_t kMaxDisplayNameLength = 64;
+bool IsValidDisplayName(const std::wstring& name);
+
 // Selects the active profile for this process. An empty, invalid or unknown id
 // falls back to the default profile. Returns false when `id` was rejected, in
 // which case the default profile is active. Must be called before any store is
@@ -41,6 +44,14 @@ std::vector<std::wstring> List();
 // Creates the directory for `id`. Returns false when the id is invalid or the
 // directory could not be created.
 bool Create(const std::wstring& id);
+
+std::wstring DisplayName(const std::wstring& id);
+bool SetDisplayName(const std::wstring& id, const std::wstring& name);
+
+// Moves an inactive, non-default profile directory to the Windows Recycle Bin.
+// The active profile is never eligible, so an open process cannot lose the
+// files it is currently using.
+bool Delete(const std::wstring& id);
 
 // Reads --profile=<id> out of a command line. Returns an empty string when the
 // switch is absent.

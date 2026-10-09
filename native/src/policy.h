@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -35,7 +36,8 @@ struct RequestDecision {
 };
 
 NavigationDecision EvaluateNavigation(const std::string& raw_url);
-NavigationDecision ResolveInput(const std::string& raw_input);
+NavigationDecision ResolveInput(const std::string& raw_input,
+                                std::string_view search_engine = "google");
 // `apply_ad_filtering` false skips only the ad/tracker rules, which is what a
 // per-site "Shields off" choice means. Everything else this function refuses is
 // a safety rule (scheme, private network, adult or unsafe host, adult search
@@ -61,6 +63,6 @@ std::string HostOf(const std::string& raw_url);
 bool IsAdOrTracker(const std::string& raw_url, ResourceType type,
                    const std::string& request_initiator = {});
 bool IsSocialPlatformNsfw(const std::string& raw_url);
+bool IsQuestionQuery(std::string_view text);
 
 }  // namespace mtk::policy
-

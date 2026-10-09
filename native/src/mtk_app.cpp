@@ -22,6 +22,56 @@ namespace {
 // response, which a late OnLoadEnd script would see only after the ad player
 // was already built. V8 extension registration is deliberately not used here;
 // it stalled the renderer in this CEF build.
+// Guard against proof-of-work challenge scripts (such as Anubis / BotStopper)
+// that query progress/status elements before the HTML streaming parser has reached
+// them in the DOM. When scripts execute from cache, premature document.getElementById
+// lookups return null, causing an unhandled TypeError that halts execution on
+// "Calculating... Difficulty: X". Providing fallback elements ensures the challenge
+// computes its proof-of-work immediately and redirects seamlessly to the target site.
+constexpr char kBotChallengeCompatScript[] = R"JS(
+(() => {
+  if (window.__mtkBotCompat) return;
+  Object.defineProperty(window, '__mtkBotCompat', {
+    value: true, configurable: false, enumerable: false
+  });
+
+  const originalGetById = Document.prototype.getElementById;
+  Document.prototype.getElementById = function(id) {
+    const element = originalGetById.call(this, id);
+    if (element) return element;
+    if (id === 'progress' || id === 'status') {
+      const path = (location && location.pathname) || '';
+      const host = (location && location.hostname) || '';
+      if (path.includes('.within.website') || host.includes('.within.website') ||
+          path.includes('anubis') || host.includes('anubis') ||
+          originalGetById.call(this, 'anubis_challenge') ||
+          originalGetById.call(this, 'anubis_version') ||
+          originalGetById.call(this, 'anubis-main')) {
+        if (id === 'progress') {
+          const fallback = document.createElement('div');
+          fallback.id = 'progress';
+          fallback.setAttribute('role', 'progressbar');
+          const inner = document.createElement('div');
+          inner.className = 'bar-inner';
+          fallback.appendChild(inner);
+          return fallback;
+        }
+        if (id === 'status') {
+          const fallback = document.createElement('p');
+          fallback.id = 'status';
+          return fallback;
+        }
+      }
+    }
+    return null;
+  };
+  try {
+    Document.prototype.getElementById.toString = () =>
+        'function getElementById() { [native code] }';
+  } catch (_) {}
+})();
+)JS";
+
 constexpr char kShieldsPageScript[] = R"JS(
 (() => {
   if (window.__mtkShields) return;
@@ -297,8 +347,16 @@ void ConfigureSecureDns() {
 
 }  // namespace
 
-MtkApp::MtkApp(HINSTANCE instance, int show_command)
-    : instance_(instance), show_command_(show_command) {}
+MtkApp::MtkApp(HINSTANCE instance, int show_command,
+               std::vector<std::string> startup_urls,
+               bool app_mode)
+    // A browser started in a very short window has almost no page area. Start
+    // the primary window maximized so even a stale shell show-state opens fully.
+    : instance_(instance), show_command_(SW_SHOWMAXIMIZED),
+      startup_urls_(std::move(startup_urls)),
+      app_mode_(app_mode) {
+  (void)show_command;
+}
 
 MtkApp::~MtkApp() = default;
 
@@ -321,12 +379,12 @@ void MtkApp::OnBeforeCommandLineProcessing(
   // need from it.
   if (!command_line || !process_type.empty()) return;
 
-  // Media that starts playing on its own, with sound, is the single most
-  // disruptive default on the web. Requiring a gesture matches what Chrome does
-  // for sound and is stricter for muted video.
+  // Allow embedded media players (such as Twitter/X tweet video embeds, muted
+  // previews and custom media elements) to initialize and play without crashing
+  // with "The media could not be played".
   if (!command_line->HasSwitch("autoplay-policy")) {
     command_line->AppendSwitchWithValue("autoplay-policy",
-                                        "user-gesture-required");
+                                        "no-user-gesture-required");
   }
 
   // Picture-in-picture and the hardware media keys are Chromium features that
@@ -388,7 +446,8 @@ void MtkApp::OnContextInitialized() {
   }
   // Windows own themselves and end the message loop when the last one closes,
   // so nothing is held here.
-  if (!BrowserWindow::Open(instance_, show_command_, {})) {
+  if (!BrowserWindow::Open(instance_, show_command_, startup_urls_, false, false,
+                           app_mode_)) {
     CefQuitMessageLoop();
   }
 }
@@ -403,6 +462,7 @@ void MtkApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
   // Run in the freshly-created page context. All these scripts are
   // intentionally bounded and check the page themselves: no mutation observer
   // and no periodic page-data traversal.
+  frame->ExecuteJavaScript(kBotChallengeCompatScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kShieldsPageScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kInstagramGuardScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(mtk::password_bridge::PageScript(), frame->GetURL(), 0);

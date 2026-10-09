@@ -18,48 +18,37 @@ namespace mtk::shields {
 namespace {
 
 constexpr wchar_t kPanelClassName[] = L"MtkShieldsPanel";
-constexpr wchar_t kBeaconFile[] = L"mtk_siren_alert.webm";
-// Sized for the real markup with a little slack, so rounding the type up to whole
-// pixels cannot clip the last row. Verified against the live panel.
-constexpr int kPanelLogicalWidth = 344;
-constexpr int kPanelLogicalHeight = 540;
+
+constexpr int kPanelLogicalWidth = 354;
+constexpr int kPanelLogicalHeight = 525;
 constexpr int kAnchorGapLogical = 6;
-// Kept as channels so both the GDI brush and CEF's background colour are built
-// without casting a constant through GetRValue and friends.
-constexpr BYTE kPanelRed = 0x11;
-constexpr BYTE kPanelGreen = 0x18;
-constexpr BYTE kPanelBlue = 0x2b;
+
+constexpr BYTE kPanelRed = 0x0f;
+constexpr BYTE kPanelGreen = 0x17;
+constexpr BYTE kPanelBlue = 0x2a;
 constexpr COLORREF kPanelBackground = RGB(kPanelRed, kPanelGreen, kPanelBlue);
-// Posted by the client once CEF has finished tearing the browser down, which is
-// when the popup may safely be destroyed.
+
 constexpr UINT kBrowserClosedMessage = WM_APP + 41;
-// Posted once the hosted browser exists, which is when dismissal may be armed.
 constexpr UINT kBrowserReadyMessage = WM_APP + 42;
 
-// Only one panel exists at a time, so its window and client are tracked here
-// rather than threaded through the caller.
 HWND g_panel = nullptr;
 CefRefPtr<CefClient> g_client;
-// Activation arrives before CEF has finished creating the hosted browser, and an
-// early WA_INACTIVE used to tear the popup down while the browser was still
-// starting. That left a live browser with no window, which is why the panel
-// could not be dismissed afterwards. Dismissal is therefore armed only once the
-// browser exists.
 bool g_dismiss_armed = false;
-// A click on the shield button first deactivates the panel, so the watchdog
-// closes it a moment before the button command arrives. Without this the command
-// would immediately reopen what the user meant to close.
 ULONGLONG g_closed_tick = 0;
 constexpr ULONGLONG kReopenGuardMs = 450;
-// Polling the foreground window is what makes "click outside" reliable: it works
-// whether the click lands on our own window, another application, or the shell.
 constexpr UINT_PTR kDismissTimer = 1;
 constexpr UINT kDismissPollMs = 150;
 
-// A data: URL ends at the first '#', and a stray '%' would be read as the start
-// of an escape, so those two characters are encoded. Everything else is written
-// as plain markup at the call site. HTML entities survive this: "&#10003;"
-// becomes "&%2310003;" in the URL and decodes back before the parser sees it.
+Actions g_actions;
+
+// Action URLs intercepted by OnBeforeBrowse
+constexpr char kToggleShieldActionUrl[] = "mtk://shields/action/toggle-shield";
+constexpr char kToggleCookiesActionUrl[] = "mtk://shields/action/toggle-cookies";
+constexpr char kToggleDownloadsActionUrl[] = "mtk://shields/action/toggle-downloads";
+constexpr char kOpenSiteSettingsActionUrl[] = "mtk://shields/action/open-site-settings";
+constexpr char kOpenUserFiltersActionUrl[] = "mtk://shields/action/open-user-filters";
+constexpr char kManageSitesActionUrl[] = "mtk://shields/action/manage-sites";
+
 std::string EscapeForDataUrl(const std::string& markup) {
   std::string escaped;
   escaped.reserve(markup.size() + markup.size() / 8);
@@ -75,9 +64,6 @@ std::string EscapeForDataUrl(const std::string& markup) {
   return escaped;
 }
 
-// Escapes the few characters that could break out of text content. The site is
-// derived from the page's own address, so it is not arbitrary markup, but it is
-// still page-controlled text going into a document.
 std::string EscapeHtmlText(const std::string& value) {
   std::string escaped;
   escaped.reserve(value.size() + 8);
@@ -93,117 +79,185 @@ std::string EscapeHtmlText(const std::string& value) {
   return escaped;
 }
 
-// One line naming the current site, what was blocked on it, and whether its own
-// filtering switch is off. The panel stays read-only: the switch itself lives in
-// the site settings dialog, and saying where it is beats a control this
-// presentation-only surface would need a script bridge to operate.
-std::string SiteLine(const SiteState& state) {
-  if (state.site.empty()) {
-    return "<div class=site>This page has no site settings of its own</div>";
-  }
-  std::string line = "<div class=site><b>" + EscapeHtmlText(state.site) + "</b> ";
-  if (!state.site_filtering) {
-    line += "&middot; <span class=off>ad and tracker filtering is off here</span>";
-  } else {
-    line += "&middot; " + std::to_string(state.site_blocked_count) +
-            " blocked on this page";
-  }
-  if (state.custom_rule_count > 0) {
-    line += " &middot; " + std::to_string(state.custom_rule_count) +
-            " blocked by your own rules";
-  }
-  line += "</div>";
-  return line;
-}
-
 std::string PanelUrl(unsigned long blocked_count, bool standard_downloads,
                      const SiteState& site_state) {
-  const std::string& beacon = mtk::assets::WebmDataUrl(kBeaconFile);
-  // The glyph stays in the markup as the fallback for a missing asset and for
-  // readers who ask the platform to reduce motion.
-  std::string art = "<div class=beacon>&#9678;</div>";
-  if (!beacon.empty()) {
-    // The asset URL is already percent-safe, so it is spliced in after escaping
-    // rather than being run through EscapeForDataUrl with the markup.
-    art = "<video class=anim autoplay loop muted playsinline "
-          "disablepictureinpicture aria-hidden=true src=\x01></video>" + art;
+  const bool is_protecting = site_state.site_filtering || site_state.site.empty();
+
+  std::string art_class = is_protecting ? "shield-art" : "shield-art paused";
+  std::string art =
+      "<svg id=mtk-shield-art class=\"" + art_class + "\" viewBox=\"0 0 64 64\" fill=none>"
+      "<defs>"
+      "<linearGradient id=sg x1=0% y1=0% x2=100% y2=100%>"
+      "<stop offset=0% stop-color=#a855f7/>"
+      "<stop offset=50% stop-color=#6366f1/>"
+      "<stop offset=100% stop-color=#10b981/>"
+      "</linearGradient>"
+      "<filter id=glow x=-20% y=-20% width=140% height=140%>"
+      "<feDropShadow dx=0 dy=3 stdDeviation=4 flood-color=#6366f1 flood-opacity=0.55/>"
+      "</filter>"
+      "</defs>"
+      "<path d=\"M32 6 L52 14 C52 36 32 54 32 54 C32 54 12 36 12 14 Z\" fill=\"url(#sg)\" filter=\"url(#glow)\"/>"
+      "<path d=\"M32 10 L48 16.5 C48 34.5 32 49 32 49 C32 49 16 34.5 16 16.5 Z\" fill=#0f172a opacity=0.45/>"
+      "<path d=\"M24 32 L29.5 37.5 L40.5 24\" stroke=#ffffff stroke-width=3.6 stroke-linecap=round stroke-linejoin=round/>"
+      "</svg>";
+
+  std::string pill_html;
+  if (site_state.site.empty() || site_state.site_filtering) {
+    pill_html = "<div id=mtk-pill class=\"pill on\"><span class=dot></span>SHIELDS UP</div>";
+  } else {
+    pill_html = "<div id=mtk-pill class=\"pill off\"><span class=dot></span>SHIELDS DOWN</div>";
   }
 
-  const std::string downloads =
+  std::string site_line_html;
+  if (site_state.site.empty()) {
+    site_line_html = "<div id=mtk-site-line class=site>This page has no site settings of its own</div>";
+  } else {
+    site_line_html = "<div id=mtk-site-line class=site><b>" + EscapeHtmlText(site_state.site) + "</b> ";
+    if (!site_state.site_filtering) {
+      site_line_html += "&middot; <span class=off>blocking paused on this site</span>";
+    } else {
+      site_line_html += "&middot; " + std::to_string(site_state.site_blocked_count) + " blocked here";
+    }
+    if (site_state.custom_rule_count > 0) {
+      site_line_html += " &middot; " + std::to_string(site_state.custom_rule_count) + " by your rules";
+    }
+    site_line_html += "</div>";
+  }
+
+  // Row 1: Ad & tracker blocking
+  std::string ad_ctrl;
+  std::string ad_sub;
+  if (!site_state.site.empty()) {
+    const std::string sw_class = site_state.site_filtering ? "switch on" : "switch off";
+    ad_ctrl = "<a id=mtk-ad-switch class=\"" + sw_class + "\" href=\"" + kToggleShieldActionUrl +
+              "\" title=\"Toggle ad & tracker blocking for this site\"><span class=knob></span></a>";
+    ad_sub = site_state.site_filtering ? "Blocking ads, tracking &amp; telemetry"
+                                       : "Paused on this site";
+  } else {
+    ad_ctrl = "<span class=\"badge blue\">ACTIVE</span>";
+    ad_sub = "Global filters active";
+  }
+
+  // Row 2: Cookies & site storage
+  std::string cookie_ctrl;
+  std::string cookie_sub;
+  if (!site_state.site.empty()) {
+    const std::string sw_class = site_state.cookies ? "switch on" : "switch off";
+    cookie_ctrl = "<a id=mtk-cookie-switch class=\"" + sw_class + "\" href=\"" + kToggleCookiesActionUrl +
+                  "\" title=\"Toggle cookies for this site\"><span class=knob></span></a>";
+    cookie_sub = site_state.cookies ? "Cookies &amp; site data allowed"
+                                    : "Cookies blocked on this site";
+  } else {
+    cookie_ctrl = "<span class=\"badge blue\">ALLOWED</span>";
+    cookie_sub = "Standard browser storage";
+  }
+
+  // Row 3: Download protection
+  std::string dl_ctrl =
       standard_downloads
-          ? "<li><i>&#10003;</i><div>Standard downloads<small>Any file type is "
-            "saved</small></div></li>"
-          : "<li><i>&#10003;</i><div>Safe downloads<small>Programs and scripts "
-            "are blocked</small></div></li>";
+          ? "<a id=mtk-dl-btn class=\"badge-btn warn\" href=\"" + std::string(kToggleDownloadsActionUrl) +
+            "\" title=\"Standard mode: click to switch to Safe mode\">STANDARD</a>"
+          : "<a id=mtk-dl-btn class=\"badge-btn safe\" href=\"" + std::string(kToggleDownloadsActionUrl) +
+            "\" title=\"Safe mode: click to switch to Standard mode\">SAFE</a>";
+
+  std::string dl_desc =
+      standard_downloads
+          ? "Any file saved (prompts on risky)"
+          : "Programs &amp; scripts blocked";
 
   const std::string markup =
       "<meta charset=utf-8><title>MTK Shields</title><style>"
       ":root{color-scheme:dark}"
       "html,body{margin:0;height:100%;overflow:hidden}"
-      "body{font-family:Segoe UI,sans-serif;background:#11182b;color:#f0f4ff;"
-      "border:1px solid #2a3350;box-sizing:border-box;display:flex;"
+      "body{font-family:Segoe UI,-apple-system,BlinkMacSystemFont,Roboto,sans-serif;background:#0f172a;color:#f8fafc;"
+      "border:1px solid rgba(148,163,184,0.22);box-sizing:border-box;display:flex;"
       "flex-direction:column;-webkit-user-select:none;user-select:none}"
-      ".hero{flex:0 0 auto;display:flex;flex-direction:column;"
-      "align-items:center;padding:14px 18px 12px;"
-      "background:radial-gradient(120px 74px at 50% 6px,#241a52,#11182b)}"
-      ".anim{width:104px;height:104px;display:block;pointer-events:none}"
-      ".anim~.beacon{display:none}"
-      "@media (prefers-reduced-motion:reduce){.anim{display:none}"
-      ".anim~.beacon{display:block}}"
-      ".beacon{font-size:46px;line-height:104px;color:#7c5cff}"
-      "h1{margin:2px 0 0;font-size:15px;font-weight:600}"
-      ".pill{margin-top:7px;font-size:10px;font-weight:700;letter-spacing:1px;"
-      "color:#4ade80;background:rgba(74,222,128,.14);"
-      "border:1px solid rgba(74,222,128,.36);border-radius:99px;padding:3px 10px}"
-      ".count{flex:0 0 auto;display:flex;align-items:baseline;"
-      "justify-content:center;gap:8px;padding:11px 18px;background:#161f38;"
-      "border-top:1px solid #2a3350;border-bottom:1px solid #2a3350}"
-      ".count b{font-size:26px;font-weight:700;color:#60a5fa}"
-      ".count span{font-size:12px;color:#96a2be}"
-      "ul{flex:1 1 auto;list-style:none;margin:0;padding:9px 18px 12px;"
-      "overflow:hidden}"
-      // Every length here is a whole CSS pixel on purpose. Half pixels land
-      // between device pixels at 125% and 150% scaling, and the resulting
-      // antialiasing is what made this panel look soft next to the page.
-      "li{display:flex;gap:9px;align-items:flex-start;padding:5px 0;"
-      "font-size:12px;line-height:1.4}"
-      "li i{flex:0 0 12px;color:#4ade80;font-style:normal;font-weight:700;"
-      "font-size:11px}"
-      "li small{display:block;color:#96a2be;font-size:11px}"
-      ".hint{flex:0 0 auto;padding:0 18px 11px;font-size:11px;color:#6d7ba0;"
-      "text-align:center}"
-      ".site{flex:0 0 auto;padding:9px 18px;background:#131b31;"
-      "border-bottom:1px solid #2a3350;font-size:11px;color:#96a2be;"
-      "text-align:center;overflow:hidden;text-overflow:ellipsis;"
-      "white-space:nowrap}"
-      ".site b{color:#f0f4ff;font-weight:600}"
-      ".site .off{color:#fbbf24}"
-      ".manage{flex:0 0 auto;display:block;padding:8px 18px;font-size:11px;"
-      "text-align:center;color:#94b7ff;text-decoration:none;"
-      "border-top:1px solid #2a3350}"
-      ".manage:hover{color:#c3d6ff;text-decoration:underline}"
-      "</style><div class=hero>" + art +
-      "<h1>MTK Shields are active</h1><div class=pill>PROTECTING</div></div>"
-      "<div class=count><b>" + std::to_string(blocked_count) +
-      "</b><span>requests blocked this session</span></div>" +
-      SiteLine(site_state) + "<ul>"
-      "<li><i>&#10003;</i><div>Ad, tracker and telemetry requests blocked"
-      "</div></li>"
-      "<li><i>&#10003;</i><div>Adult and piracy domains blocked</div></li>"
-      "<li><i>&#10003;</i><div>Adult search terms blocked</div></li>"
-      "<li><i>&#10003;</i><div>SafeSearch and HTTPS upgrade enforced</div></li>" +
-      downloads +
-      "<li><i>&#10003;</i><div>Popups and risky permissions denied</div></li>"
-      "</ul><div class=hint>Alt+S for this site &middot; Alt+Y for your own "
-      "filters &middot; Esc to close</div>"
-      "<a class=manage href=\"mtk://shields/action/manage-sites\">Manage all "
-      "sites with stored settings</a>";
+      ".hero{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;"
+      "padding:12px 16px 8px;background:radial-gradient(160px 90px at 50% 8px,rgba(99,102,241,0.22),transparent 95%)}"
+      ".shield-art{width:56px;height:56px;display:block;transition:all 0.25s ease}"
+      ".shield-art.paused{filter:grayscale(0.9) opacity(0.45)}"
+      "h1{margin:6px 0 0;font-size:16px;font-weight:700;letter-spacing:0.2px;color:#f8fafc}"
+      ".pill{margin-top:6px;font-size:10px;font-weight:700;letter-spacing:1px;"
+      "border-radius:99px;padding:3px 10px;display:inline-flex;align-items:center;gap:6px}"
+      ".pill.on{color:#34d399;background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.38)}"
+      ".pill.off{color:#fbbf24;background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.38)}"
+      ".pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}"
+      ".count{flex:0 0 auto;display:flex;align-items:baseline;justify-content:center;"
+      "gap:8px;padding:8px 16px;background:rgba(30,41,59,0.7);border-top:1px solid rgba(148,163,184,0.15);border-bottom:1px solid rgba(148,163,184,0.15)}"
+      ".count b{font-size:22px;font-weight:800;color:#38bdf8}"
+      ".count span{font-size:11px;color:#94a3b8;font-weight:500}"
+      ".site{flex:0 0 auto;padding:7px 16px;background:rgba(15,23,42,0.6);border-bottom:1px solid rgba(148,163,184,0.15);"
+      "font-size:11px;color:#94a3b8;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+      ".site b{color:#f8fafc;font-weight:600}"
+      ".site .off{color:#fbbf24;font-weight:600}"
+      ".rows{flex:1 1 auto;display:flex;flex-direction:column;gap:1px;padding:6px 14px;overflow:hidden}"
+      ".row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;"
+      "border-bottom:1px solid rgba(148,163,184,0.12)}"
+      ".row:last-child{border-bottom:none}"
+      ".row-main{flex:1 1 auto;min-width:0;padding-right:8px}"
+      ".row-title{font-size:12px;font-weight:600;color:#f8fafc;line-height:1.25}"
+      ".row-sub{font-size:10px;color:#94a3b8;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+      ".row-ctrl{flex:0 0 auto;display:flex;align-items:center}"
+      ".switch{display:inline-flex;align-items:center;width:36px;height:20px;background:#334155;"
+      "border-radius:99px;padding:2px;box-sizing:border-box;text-decoration:none;cursor:pointer;transition:background 0.2s ease}"
+      ".switch.on{background:#10b981}"
+      ".switch .knob{width:16px;height:16px;background:#ffffff;border-radius:50%;"
+      "box-shadow:0 1px 3px rgba(0,0,0,0.4);transform:translateX(0);transition:transform 0.18s cubic-bezier(0.4, 0, 0.2, 1)}"
+      ".switch.on .knob{transform:translateX(16px)}"
+      ".badge{display:inline-block;padding:2px 7px;font-size:9px;font-weight:700;"
+      "letter-spacing:0.5px;border-radius:4px;text-transform:uppercase}"
+      ".badge.blue{background:rgba(56,189,248,.14);color:#38bdf8;border:1px solid rgba(56,189,248,.3)}"
+      ".badge.cyan{background:rgba(6,182,212,.14);color:#22d3ee;border:1px solid rgba(6,182,212,.3)}"
+      ".badge.purple{background:rgba(168,85,247,.14);color:#c084fc;border:1px solid rgba(168,85,247,.3)}"
+      ".badge.slate{background:rgba(148,163,184,.14);color:#94a3b8;border:1px solid rgba(148,163,184,.3)}"
+      ".badge-btn{display:inline-block;padding:2px 7px;font-size:9px;font-weight:700;"
+      "letter-spacing:0.5px;border-radius:4px;text-transform:uppercase;text-decoration:none;cursor:pointer;transition:all 0.15s ease}"
+      ".badge-btn.safe{background:rgba(16,185,129,.16);color:#34d399;border:1px solid rgba(16,185,129,.4)}"
+      ".badge-btn.safe:hover{background:rgba(16,185,129,.28)}"
+      ".badge-btn.warn{background:rgba(245,158,11,.16);color:#fbbf24;border:1px solid rgba(245,158,11,.4)}"
+      ".badge-btn.warn:hover{background:rgba(245,158,11,.28)}"
+      ".footer-btns{flex:0 0 auto;display:flex;gap:8px;padding:7px 14px;background:rgba(15,23,42,0.8);border-top:1px solid rgba(148,163,184,0.15)}"
+      ".fbtn{flex:1 1 50%;display:flex;align-items:center;justify-content:space-between;"
+      "padding:6px 10px;background:#1e293b;border:1px solid rgba(148,163,184,0.22);border-radius:6px;"
+      "color:#cbd5e1;text-decoration:none;font-size:11px;font-weight:500;box-sizing:border-box;transition:all 0.15s ease}"
+      ".fbtn:hover{background:#334155;color:#ffffff;border-color:rgba(148,163,184,0.4)}"
+      ".fbtn kbd{background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1px 5px;font-size:9px;color:#94a3b8}"
+      ".manage{flex:0 0 auto;display:block;padding:8px 14px;font-size:11px;"
+      "text-align:center;color:#60a5fa;text-decoration:none;border-top:1px solid rgba(148,163,184,0.15);transition:color 0.15s ease}"
+      ".manage:hover{color:#93c5fd;text-decoration:underline}"
+      "</style>"
+      "<div class=hero>" + art + "<h1>MTK Shields</h1>" + pill_html + "</div>"
+      "<div class=count><b id=mtk-total-count>" + std::to_string(blocked_count) + "</b><span>trackers &amp; ads blocked this session</span></div>" +
+      site_line_html +
+      "<div class=rows>"
+      "<div class=row><div class=row-main><div class=row-title>Trackers &amp; ads blocking</div><div id=mtk-ad-sub class=row-sub>" + ad_sub + "</div></div><div class=row-ctrl>" + ad_ctrl + "</div></div>"
+      "<div class=row><div class=row-main><div class=row-title>Cookies &amp; storage</div><div id=mtk-cookie-sub class=row-sub>" + cookie_sub + "</div></div><div class=row-ctrl>" + cookie_ctrl + "</div></div>"
+      "<div class=row><div class=row-main><div class=row-title>Download protection</div><div id=mtk-dl-sub class=row-sub>" + dl_desc + "</div></div><div class=row-ctrl>" + dl_ctrl + "</div></div>"
+      "<div class=row><div class=row-main><div class=row-title>SafeSearch &amp; HTTPS</div><div class=row-sub>Strict search &amp; upgraded connection</div></div><div class=row-ctrl><span class=\"badge cyan\">ENFORCED</span></div></div>"
+      "<div class=row><div class=row-main><div class=row-title>Adult &amp; piracy domains</div><div class=row-sub>Restricted domains &amp; terms blocked</div></div><div class=row-ctrl><span class=\"badge purple\">BLOCKED</span></div></div>"
+      "<div class=row><div class=row-main><div class=row-title>Popups &amp; permissions</div><div class=row-sub>Popups in tabs; risky permissions denied</div></div><div class=row-ctrl><span class=\"badge slate\">PROTECTED</span></div></div>"
+      "</div>"
+      "<div class=footer-btns>"
+      "<a class=fbtn href=\"" + std::string(kOpenSiteSettingsActionUrl) + "\" title=\"Site Settings (Alt+S)\"><span>Site Settings</span><kbd>Alt+S</kbd></a>"
+      "<a class=fbtn href=\"" + std::string(kOpenUserFiltersActionUrl) + "\" title=\"Your Filters (Alt+Y)\"><span>Your Filters</span><kbd>Alt+Y</kbd></a>"
+      "</div>"
+      "<a class=manage href=\"" + std::string(kManageSitesActionUrl) + "\">Manage all sites with stored settings</a>"
+      "<script>"
+      "window.__mtkUpdate=function(total,dlStd,site,siteBlocked,siteFilter,cookies,customRules){"
+      "var t=document.getElementById('mtk-total-count');if(t)t.textContent=total;"
+      "var p=document.getElementById('mtk-pill');if(p){if(!site||siteFilter){p.className='pill on';p.innerHTML='<span class=dot></span>SHIELDS UP';}else{p.className='pill off';p.innerHTML='<span class=dot></span>SHIELDS DOWN';}}"
+      "var s=document.getElementById('mtk-site-line');if(s){if(!site){s.textContent='This page has no site settings of its own';}else{var h='<b>'+site+'</b> ';if(!siteFilter){h+='&middot; <span class=off>blocking paused on this site</span>';}else{h+='&middot; '+siteBlocked+' blocked here';}if(customRules>0){h+=' &middot; '+customRules+' by your rules';}s.innerHTML=h;}}"
+      "var as=document.getElementById('mtk-ad-switch');if(as)as.className=siteFilter?'switch on':'switch off';"
+      "var asub=document.getElementById('mtk-ad-sub');if(asub)asub.textContent=siteFilter?'Blocking ads, tracking & telemetry':'Paused on this site';"
+      "var cs=document.getElementById('mtk-cookie-switch');if(cs)cs.className=cookies?'switch on':'switch off';"
+      "var csub=document.getElementById('mtk-cookie-sub');if(csub)csub.textContent=cookies?'Cookies & site data allowed':'Cookies blocked on this site';"
+      "var db=document.getElementById('mtk-dl-btn');if(db){db.className=dlStd?'badge-btn warn':'badge-btn safe';db.textContent=dlStd?'STANDARD':'SAFE';}"
+      "var dsub=document.getElementById('mtk-dl-sub');if(dsub)dsub.textContent=dlStd?'Any file saved (prompts on risky)':'Programs & scripts blocked';"
+      "var art=document.getElementById('mtk-shield-art');if(art){art.className=(!site||siteFilter)?'shield-art':'shield-art paused';}"
+      "};"
+      "</script>";
 
-  std::string url = "data:text/html," + EscapeForDataUrl(markup);
-  // Restore the placeholder with the already-encoded asset URL.
-  const size_t slot = url.find('\x01');
-  if (slot != std::string::npos) url.replace(slot, 1, beacon);
-  return url;
+  return "data:text/html," + EscapeForDataUrl(markup);
 }
 
 void ShowFallbackSummary(HWND owner, unsigned long blocked_count,
@@ -214,27 +268,13 @@ void ShowFallbackSummary(HWND owner, unsigned long blocked_count,
       L"\n\n"
       L"\u2022 Ad, tracker and telemetry requests blocked\n"
       L"\u2022 Adult and piracy domains blocked\n"
-      L"\u2022 Adult search terms blocked\n"
       L"\u2022 SafeSearch and HTTPS upgrade enforced\n" +
       (standard_downloads
-           ? std::wstring(L"\u2022 Downloads: standard mode, any file type is "
-                          L"saved\n")
-           : std::wstring(L"\u2022 Downloads: safe mode, programs and scripts "
-                          L"blocked\n")) +
-      L"\u2022 Popups and risky permissions denied";
-  MessageBoxW(owner, summary.c_str(), L"MTK Shields",
-              MB_OK | MB_ICONINFORMATION);
+           ? std::wstring(L"\u2022 Downloads: standard mode, any file type is saved\n")
+           : std::wstring(L"\u2022 Downloads: safe mode, programs and scripts blocked\n")) +
+      L"\u2022 Popups isolated to tabs; risky permissions denied";
+  MessageBoxW(owner, summary.c_str(), L"MTK Shields", MB_OK | MB_ICONINFORMATION);
 }
-
-// Presentation only: no script bridge, no downloads, no navigation. Everything
-// the panel needs is already inside the one data: URL it is given, so every
-// other request is refused.
-// Reuses the "mtk" custom scheme already registered for the home and history
-// pages, under a host no scheme factory answers for. Caught by exact string
-// match in OnBeforeBrowse before CEF would ever ask a factory for it, the same
-// way those two pages' own action links are caught; no factory registration
-// is needed for a link that is always cancelled before it gets that far.
-constexpr char kManageSitesActionUrl[] = "mtk://shields/action/manage-sites";
 
 class PanelClient final : public CefClient,
                           public CefLifeSpanHandler,
@@ -243,20 +283,15 @@ class PanelClient final : public CefClient,
                           public CefRequestHandler,
                           public CefResourceRequestHandler {
  public:
-  PanelClient(HWND panel, OnManageSites on_manage_sites)
-      : panel_(panel), on_manage_sites_(std::move(on_manage_sites)) {}
+  explicit PanelClient(HWND panel) : panel_(panel) {}
 
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
-  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
-    return this;
-  }
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_ = browser;
-    // The popup was already dismissed while this browser was starting, so it has
-    // no host window to live in and is closed at once instead of being orphaned.
     if (!panel_) {
       browser->GetHost()->CloseBrowser(true);
       return;
@@ -264,10 +299,6 @@ class PanelClient final : public CefClient,
     PostMessageW(panel_, kBrowserReadyMessage, 0, 0);
   }
 
-  // Returning false lets CEF continue the close, and CEF then sends WM_CLOSE to
-  // this browser's host window. That second WM_CLOSE must not call CloseBrowser
-  // again, or the popup and CEF hand the same close back and forth forever and
-  // the panel never goes away, so the state is recorded here.
   bool DoClose(CefRefPtr<CefBrowser>) override {
     closing_ = true;
     return false;
@@ -282,15 +313,27 @@ class PanelClient final : public CefClient,
 
   bool OnPreKeyEvent(CefRefPtr<CefBrowser>, const CefKeyEvent& event,
                      CefEventHandle, bool*) override {
-    if (event.type == KEYEVENT_RAWKEYDOWN &&
-        event.windows_key_code == VK_ESCAPE) {
-      if (panel_) PostMessageW(panel_, WM_CLOSE, 0, 0);
-      return true;
+    if (event.type == KEYEVENT_RAWKEYDOWN) {
+      if (event.windows_key_code == VK_ESCAPE) {
+        if (panel_) PostMessageW(panel_, WM_CLOSE, 0, 0);
+        return true;
+      }
+      if ((event.modifiers & EVENTFLAG_ALT_DOWN) != 0) {
+        if (event.windows_key_code == 'S') {
+          if (panel_) PostMessageW(panel_, WM_CLOSE, 0, 0);
+          if (g_actions.on_open_site_settings) g_actions.on_open_site_settings();
+          return true;
+        }
+        if (event.windows_key_code == 'Y') {
+          if (panel_) PostMessageW(panel_, WM_CLOSE, 0, 0);
+          if (g_actions.on_open_user_filters) g_actions.on_open_user_filters();
+          return true;
+        }
+      }
     }
     return false;
   }
 
-  // A summary panel has nothing to inspect, copy or reload.
   void OnBeforeContextMenu(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                            CefRefPtr<CefContextMenuParams>,
                            CefRefPtr<CefMenuModel> model) override {
@@ -300,22 +343,39 @@ class PanelClient final : public CefClient,
   bool OnBeforeBrowse(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                       CefRefPtr<CefRequest> request, bool, bool) override {
     const std::string url = request->GetURL().ToString();
-    // One internal action link, the same navigation-intercept pattern the home
-    // and history pages already use: a fixed address is caught here and turned
-    // into a call on the browser side, never into a script bridge. Everything
-    // else about the panel stays exactly as presentation-only as before.
-    if (url == kManageSitesActionUrl) {
-      if (on_manage_sites_) on_manage_sites_();
+
+    if (url == kToggleShieldActionUrl) {
+      if (g_actions.on_toggle_shield) g_actions.on_toggle_shield();
       return true;
     }
-    // Returning true cancels. Only the panel's own document may ever load.
+    if (url == kToggleCookiesActionUrl) {
+      if (g_actions.on_toggle_cookies) g_actions.on_toggle_cookies();
+      return true;
+    }
+    if (url == kToggleDownloadsActionUrl) {
+      if (g_actions.on_toggle_downloads) g_actions.on_toggle_downloads();
+      return true;
+    }
+    if (url == kOpenSiteSettingsActionUrl) {
+      if (g_actions.on_open_site_settings) g_actions.on_open_site_settings();
+      return true;
+    }
+    if (url == kOpenUserFiltersActionUrl) {
+      if (g_actions.on_open_user_filters) g_actions.on_open_user_filters();
+      return true;
+    }
+    if (url == kManageSitesActionUrl) {
+      if (g_actions.on_manage_sites) g_actions.on_manage_sites();
+      return true;
+    }
+
     return !IsPanelDocument(url);
   }
 
   bool OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                         const CefString&, cef_window_open_disposition_t,
                         bool) override {
-    return true;  // handled, meaning discarded
+    return true;
   }
 
   CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(
@@ -328,10 +388,7 @@ class PanelClient final : public CefClient,
                                    CefRefPtr<CefRequest> request,
                                    CefRefPtr<CefCallback>) override {
     const std::string url = request->GetURL().ToString();
-    // The document and its inlined loop both carry their own bytes and reach no
-    // network. Anything else is refused, so the panel cannot be made to fetch.
-    if (IsPanelDocument(url) ||
-        url.starts_with(mtk::assets::kWebmDataUrlPrefix)) {
+    if (IsPanelDocument(url) || url.starts_with(mtk::assets::kWebmDataUrlPrefix)) {
       return RV_CONTINUE;
     }
     return RV_CANCEL;
@@ -348,7 +405,6 @@ class PanelClient final : public CefClient,
   HWND panel_ = nullptr;
   bool closing_ = false;
   CefRefPtr<CefBrowser> browser_;
-  OnManageSites on_manage_sites_;
 
   IMPLEMENT_REFCOUNTING(PanelClient);
 };
@@ -360,6 +416,7 @@ PanelClient* CurrentClient() {
 void DestroyPanel() {
   if (auto* client = CurrentClient()) client->Detach();
   g_client = nullptr;
+  g_actions = {};
   g_dismiss_armed = false;
   g_closed_tick = GetTickCount64();
   if (g_panel) {
@@ -370,7 +427,6 @@ void DestroyPanel() {
   }
 }
 
-// True while the panel, or the CEF child inside it, owns the foreground.
 bool PanelHoldsForeground(HWND panel) {
   const HWND foreground = GetForegroundWindow();
   if (!foreground) return false;
@@ -381,38 +437,28 @@ LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
                            LPARAM l_param) {
   switch (message) {
     case kBrowserReadyMessage:
-      // The hosted browser exists, so losing activation now genuinely means the
-      // user clicked away.
       g_dismiss_armed = true;
       SetTimer(window, kDismissTimer, kDismissPollMs, nullptr);
       return 0;
     case WM_ACTIVATE:
-      // Clicking anywhere outside activates another window, which is the
-      // dismissal gesture users expect from a toolbar popup.
       if (g_dismiss_armed && LOWORD(w_param) == WA_INACTIVE) {
         PostMessageW(window, WM_CLOSE, 0, 0);
         return 0;
       }
       break;
     case WM_TIMER:
-      // Activation messages alone are not dependable here: the click may land on
-      // the CEF child of another window, or on the shell, and some of those
-      // paths never deliver WA_INACTIVE to this popup.
       if (w_param == kDismissTimer && g_dismiss_armed &&
           !PanelHoldsForeground(window)) {
         PostMessageW(window, WM_CLOSE, 0, 0);
       }
       return 0;
     case WM_KEYDOWN:
-      // Esc reaches the popup itself when focus has not moved into the browser.
       if (w_param == VK_ESCAPE) {
         PostMessageW(window, WM_CLOSE, 0, 0);
         return 0;
       }
       break;
     case WM_CLOSE: {
-      // First close: ask CEF to unwind and wait. Once DoClose has run, CEF sends
-      // WM_CLOSE here again, and that is the pass that tears the popup down.
       auto* client = CurrentClient();
       if (client && client->browser() && !client->closing()) {
         client->browser()->GetHost()->CloseBrowser(true);
@@ -425,7 +471,7 @@ LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
       DestroyPanel();
       return 0;
     case WM_ERASEBKGND:
-      return 1;  // the hosted browser paints the whole client area
+      return 1;
     case WM_NCDESTROY:
       if (g_panel == window) g_panel = nullptr;
       break;
@@ -455,22 +501,45 @@ void ClosePanel() {
   if (g_panel) PostMessageW(g_panel, WM_CLOSE, 0, 0);
 }
 
+bool IsPanelOpen() {
+  return g_panel != nullptr;
+}
+
+void UpdatePanel(unsigned long blocked_count, bool standard_downloads,
+                 const SiteState& site_state) {
+  if (!g_panel) return;
+  auto* client = CurrentClient();
+  if (client && client->browser() && client->browser()->GetMainFrame()) {
+    std::string js =
+        "if(window.__mtkUpdate){window.__mtkUpdate(" +
+        std::to_string(blocked_count) + "," +
+        (standard_downloads ? "true" : "false") + ",\"" +
+        EscapeHtmlText(site_state.site) + "\"," +
+        std::to_string(site_state.site_blocked_count) + "," +
+        (site_state.site_filtering ? "true" : "false") + "," +
+        (site_state.cookies ? "true" : "false") + "," +
+        std::to_string(site_state.custom_rule_count) +
+        ");}else{location.href=\"" +
+        PanelUrl(blocked_count, standard_downloads, site_state) + "\";}";
+    client->browser()->GetMainFrame()->ExecuteJavaScript(
+        js, "mtk://shields/update", 0);
+  }
+}
+
 void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
                unsigned long blocked_count, bool standard_downloads,
-               const SiteState& site_state, OnManageSites on_manage_sites) {
-  // A second click on the shield button should dismiss the open panel rather
-  // than stack another one.
+               const SiteState& site_state, Actions actions) {
   if (g_panel) {
     ClosePanel();
     return;
   }
-  // The same click that reaches this command is what deactivated an open panel a
-  // moment ago, so treat it as the closing half of the toggle.
   if (GetTickCount64() - g_closed_tick < kReopenGuardMs) return;
   if (!EnsureClassRegistered(instance)) {
     ShowFallbackSummary(owner, blocked_count, standard_downloads);
     return;
   }
+
+  g_actions = std::move(actions);
 
   const UINT dpi = GetDpiForWindow(owner) ? GetDpiForWindow(owner) : 96;
   const int width = MulDiv(kPanelLogicalWidth, static_cast<int>(dpi), 96);
@@ -480,10 +549,7 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
   if (!anchor || !GetWindowRect(anchor, &anchor_rect)) {
     GetWindowRect(owner, &anchor_rect);
   }
-  // Right-aligning under the button is the usual toolbar-popup placement, but the
-  // shield sits near the left edge, where that would push most of the panel off
-  // screen and the clamp would drop it in the corner away from its button. Left
-  // alignment is used whenever the right-aligned edge would not fit.
+
   MONITORINFO monitor{sizeof(monitor)};
   const bool have_monitor = GetMonitorInfoW(
       MonitorFromRect(&anchor_rect, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE;
@@ -491,7 +557,6 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
   if (have_monitor && x < monitor.rcWork.left) x = anchor_rect.left;
   int y = anchor_rect.bottom + MulDiv(kAnchorGapLogical, static_cast<int>(dpi), 96);
 
-  // Keep the whole panel on the monitor the button lives on.
   if (have_monitor) {
     x = std::max<int>(monitor.rcWork.left, std::min<int>(x, monitor.rcWork.right - width));
     y = std::max<int>(monitor.rcWork.top, std::min<int>(y, monitor.rcWork.bottom - height));
@@ -504,20 +569,18 @@ void ShowPanel(HINSTANCE instance, HWND owner, HWND anchor,
     ShowFallbackSummary(owner, blocked_count, standard_downloads);
     return;
   }
-  // Win11 rounds the popup; on Win10 this attribute is ignored.
+
   const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
   DwmSetWindowAttribute(g_panel, DWMWA_WINDOW_CORNER_PREFERENCE, &corner,
                         sizeof(corner));
 
-  CefRefPtr<PanelClient> client =
-      new PanelClient(g_panel, std::move(on_manage_sites));
+  CefRefPtr<PanelClient> client = new PanelClient(g_panel);
   g_client = client;
 
   CefWindowInfo info;
   info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   info.SetAsChild(g_panel, CefRect(0, 0, width, height));
   CefBrowserSettings settings;
-  // Matches the page background so the panel never flashes white while loading.
   settings.background_color =
       CefColorSetARGB(255, kPanelRed, kPanelGreen, kPanelBlue);
   if (!CefBrowserHost::CreateBrowser(info, client,

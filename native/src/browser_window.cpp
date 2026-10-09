@@ -2,6 +2,7 @@
 
 #include <windowsx.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <uxtheme.h>
@@ -37,6 +38,16 @@
 #include "session_store.h"
 #include "shields_panel.h"
 #include "updater.h"
+#include "tab_search.h"
+#include "task_manager_dialog.h"
+#include "translation.h"
+#include "web_app.h"
+#include "passkey_page.h"
+#include "downloads_page.h"
+#include "settings_page.h"
+#include "focus_mode.h"
+#include "include/cef_version.h"
+#include <set>
 
 namespace {
 
@@ -81,7 +92,11 @@ constexpr UINT_PTR kSessionSaveTimer = 4;
 // Hover playback for the rendered shield: one pass at the rate the strip was
 // rendered at, then it holds. 33 ms is one frame at 30 fps.
 constexpr UINT_PTR kShieldAnimTimer = 7;
+constexpr UINT_PTR kHomeAnimTimer = 8;
+constexpr UINT_PTR kReloadAnimTimer = 9;
+constexpr UINT_PTR kDownloadAnimTimer = 10;
 constexpr UINT kShieldFrameMs = 33;
+constexpr UINT kToolbarFrameMs = 33;
 constexpr wchar_t kShieldStripFile[] = L"mtk_shield_hover.png";
 // First automatic update check runs shortly after startup so it never competes
 // with loading the first page, then repeats twice a day.
@@ -258,9 +273,12 @@ std::wstring Utf8ToWide(const std::string& value) {
 // Republishes the built-in documents from the profile stores. The stores are only
 // read on this UI thread; the CEF IO thread sees the finished snapshots.
 void RefreshHomeSnapshot() {
+  const bool light = mtk::preferences::ShouldUseLightAppearance(
+      mtk::preferences::Store::Get().values().theme_mode);
   mtk::home::RefreshSnapshot(mtk::library::Store::Get().history(),
                              mtk::library::Store::Get().bookmarks(),
-                             mtk::downloads::Manager::Get().items());
+                             mtk::downloads::Manager::Get().items(),
+                             light);
   mtk::history::RefreshSnapshot(mtk::library::Store::Get().history());
 }
 
@@ -1767,9 +1785,10 @@ int PinnedSlotWidth() { return Scaled(kBasePinnedTabWidth); }
 // readable minimum, after which the strip scrolls instead.
 int TabSlotWidth(int width, size_t count, size_t pinned) {
   const size_t unpinned = count > pinned ? count - pinned : 0;
+  const int caption_reserve = Scaled(46) * 3;
   const int available =
       std::max(Scaled(200),
-               width - TabStripReserve() - Scaled(kBaseTabStripInset) -
+               width - caption_reserve - TabStripReserve() - Scaled(kBaseTabStripInset) -
                    static_cast<int>(pinned) * PinnedSlotWidth());
   return std::clamp(available / static_cast<int>(std::max<size_t>(unpinned, 1)),
                     Scaled(150), Scaled(256));
@@ -2002,43 +2021,52 @@ void BrowserWindow::ShowBrowserMenu() {
   if (!popup) return;
   auto* tab = ActiveTab();
   const auto decision = tab ? mtk::policy::EvaluateNavigation(WideToUtf8(tab->url))
-                             : mtk::policy::NavigationDecision{false, {}, L""};
+                            : mtk::policy::NavigationDecision{false, {}, L""};
   const bool can_bookmark = decision.allow && !tab->url.starts_with(L"data:");
   const bool bookmarked = can_bookmark &&
       mtk::library::Store::Get().IsBookmarked(decision.url);
   using Text = mtk::strings::Id;
-  // Menu labels are translated; the accelerator hint after the tab is not, since
-  // key names are the same in both languages.
   const auto label = [](Text id, const wchar_t* accelerator = nullptr) {
     std::wstring text = mtk::strings::Get(id);
     if (accelerator) text += accelerator;
     return text;
   };
+  const bool hindi = mtk::strings::IsHindi();
 
+  AppendMenuW(popup, MF_STRING, IDM_TAB_SEARCH,
+              hindi ? L"टैब खोजें\tAlt+Q" : L"Search tabs\tAlt+Q");
   AppendMenuW(popup, MF_STRING | (can_bookmark ? MF_ENABLED : MF_GRAYED),
               IDM_ADD_BOOKMARK,
               label(bookmarked ? Text::kRemoveBookmark : Text::kAddBookmark,
-                    L"\tAlt+B")
-                  .c_str());
+                    L"\tCtrl+D").c_str());
   AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS,
               label(Text::kBookmarks, L"\tAlt+O").c_str());
-  AppendMenuW(popup, MF_STRING, IDM_BOOKMARKS_BAR,
-              label(mtk::preferences::Store::Get().values().show_bookmarks_bar
-                        ? Text::kHideBookmarksBar
-                        : Text::kShowBookmarksBar,
-                    L"\tAlt+Shift+B")
-                  .c_str());
+  AppendMenuW(popup, MF_STRING, IDM_VERTICAL_TABS,
+              hindi ? (mtk::preferences::Store::Get().values().vertical_tabs
+                          ? L"वर्टिकल टैब छिपाएँ\tAlt+Shift+V"
+                          : L"वर्टिकल टैब दिखाएँ\tAlt+Shift+V")
+                    : (mtk::preferences::Store::Get().values().vertical_tabs
+                          ? L"Hide vertical tabs\tAlt+Shift+V"
+                          : L"Show vertical tabs\tAlt+Shift+V"));
+  if (mtk::preferences::Store::Get().values().vertical_tabs) {
+    AppendMenuW(popup, MF_STRING, IDM_VERTICAL_TABS_COLLAPSE,
+                hindi ? (mtk::preferences::Store::Get().values().vertical_tabs_collapsed
+                            ? L"वर्टिकल टैब फैलाएँ"
+                            : L"वर्टिकल टैब समेटें")
+                      : (mtk::preferences::Store::Get().values().vertical_tabs_collapsed
+                            ? L"Expand vertical tabs"
+                            : L"Collapse vertical tabs"));
+  }
   AppendMenuW(popup, MF_STRING, IDM_IMPORT_BOOKMARKS,
               label(Text::kImportBookmarks).c_str());
   AppendMenuW(popup, MF_STRING, IDM_HISTORY,
-              label(Text::kHistory, L"\tAlt+H").c_str());
+              label(Text::kHistory, L"\tCtrl+H").c_str());
   AppendMenuW(popup, MF_STRING, IDM_PASSWORDS,
               label(Text::kSavedPasswords, L"\tAlt+K").c_str());
+
   const size_t active_downloads = mtk::downloads::Manager::Get().ActiveCount();
   std::wstring downloads_label = label(Text::kDownloads, L"\tAlt+J");
   if (active_downloads > 0) {
-    // The count is spliced into the translated pattern, so each language keeps
-    // the number where it belongs in the sentence.
     std::wstring pattern = mtk::strings::Get(Text::kDownloadsActive);
     if (const size_t placeholder = pattern.find(L"%d");
         placeholder != std::wstring::npos) {
@@ -2048,6 +2076,7 @@ void BrowserWindow::ShowBrowserMenu() {
   }
   AppendMenuW(popup, MF_STRING, IDM_DOWNLOADS, downloads_label.c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+
   AppendMenuW(popup, MF_STRING, IDM_NEW_WINDOW,
               label(Text::kNewWindow, L"\tAlt+W").c_str());
   AppendMenuW(popup, MF_STRING, IDM_NEW_PRIVATE_WINDOW,
@@ -2058,10 +2087,58 @@ void BrowserWindow::ShowBrowserMenu() {
               label(Text::kReopenClosedTab, L"\tAlt+Shift+T").c_str());
   AppendMenuW(popup, MF_STRING, IDM_FULL_SCREEN,
               label(full_screen_ ? Text::kExitFullScreen : Text::kFullScreen,
-                    L"\tAlt+Enter")
-                  .c_str());
+                    L"\tAlt+Enter").c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_PRINT,
-              label(Text::kPrint, L"\tAlt+P").c_str());
+              label(Text::kPrint, L"\tCtrl+P").c_str());
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_SAVE_PAGE_PDF,
+              label(Text::kSavePageAsPdf).c_str());
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_TAKE_SCREENSHOT,
+              label(Text::kTakeScreenshot, L"\tCtrl+Shift+S").c_str());
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_READER_MODE,
+              label(tab && tab->reader_mode ? Text::kExitReaderMode : Text::kReaderMode,
+                    L"\tAlt+E").c_str());
+
+  const bool focus_on = tab ? tab->focus_mode : mtk::preferences::Store::Get().values().focus_mode;
+  AppendMenuW(popup, MF_STRING | (focus_on ? MF_CHECKED : MF_UNCHECKED), IDM_FOCUS_MODE,
+              label(focus_on ? Text::kFocusModeOn : Text::kFocusModeOff, L"\tAlt+Shift+F").c_str());
+
+  const bool in_reading_list = decision.allow &&
+      mtk::library::Store::Get().IsInReadingList(decision.url);
+  AppendMenuW(popup, MF_STRING | (decision.allow ? MF_ENABLED : MF_GRAYED),
+              IDM_READING_LIST_TOGGLE,
+              label(in_reading_list ? Text::kRemoveFromReadingList : Text::kSaveToReadingList).c_str());
+  AppendMenuW(popup, MF_STRING, IDM_READING_LIST,
+              label(Text::kReadingList).c_str());
+
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_TRANSLATE_HINDI,
+              label(Text::kTranslateToHindi).c_str());
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_TRANSLATE_ENGLISH,
+              label(Text::kTranslateToEnglish).c_str());
+
+  const bool can_web_app = tab && !tab->url.empty() && tab->url.starts_with(L"https://");
+  AppendMenuW(popup, MF_STRING | (can_web_app ? MF_ENABLED : MF_GRAYED),
+              IDM_OPEN_AS_WEB_APP, label(Text::kInstallWebApp).c_str());
+  AppendMenuW(popup, MF_STRING, IDM_MANAGE_WEB_APPS,
+              label(Text::kManageWebApps).c_str());
+  AppendMenuW(popup, MF_STRING, IDM_PASSKEY_CHECK,
+              label(Text::kPasskeyCheck).c_str());
+  AppendMenuW(popup, MF_STRING, IDM_TASK_MANAGER,
+              label(Text::kTaskManager, L"\tShift+Esc").c_str());
+  AppendMenuW(popup,
+              MF_STRING | (!tabs_.empty() ? MF_ENABLED : MF_GRAYED),
+              IDM_SPLIT_VIEW,
+              label(IsSplitViewActive() ? Text::kExitSplitView : Text::kSplitView,
+                    L"\tAlt+Shift+S").c_str());
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_TAB_GROUP,
+              hindi ? L"टैब समूह बदलें..." : L"Set tab group...");
+  AppendMenuW(popup, MF_STRING, IDM_TAB_GROUPS,
+              hindi ? L"टैब समूह..." : L"Tab groups...");
+  AppendMenuW(popup, MF_STRING, IDM_WORKSPACES_MENU,
+              hindi ? L"वर्कस्पेस..." : L"Workspaces...");
+  AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED), IDM_SET_WORKSPACE,
+              hindi ? L"वर्कस्पेस बदलें..." : L"Set workspace...");
+  AppendMenuW(popup, MF_STRING, IDM_DIAGNOSTICS,
+              hindi ? L"ब्राउज़र जानकारी..." : L"Browser diagnostics...");
   AppendMenuW(popup, MF_STRING, IDM_SHORTCUTS,
               label(Text::kKeyboardShortcuts, L"\tAlt+/").c_str());
   AppendMenuW(popup, MF_STRING | (tab ? MF_ENABLED : MF_GRAYED),
@@ -2071,9 +2148,7 @@ void BrowserWindow::ShowBrowserMenu() {
               label(Text::kUserFilters, L"\tAlt+Y").c_str());
   AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
 
-  // Profiles. Each one is a separate process because the data stores and the
-  // Chromium cache are per-process, so switching opens a window rather than
-  // swapping data underneath this one.
+  // Profiles
   if (HMENU profiles = CreatePopupMenu()) {
     const auto available = mtk::profile::List();
     profile_menu_ids_.clear();
@@ -2104,7 +2179,6 @@ void BrowserWindow::ShowBrowserMenu() {
               label(update_check_running_ ? Text::kCheckingForUpdates
                                           : Text::kCheckForUpdates)
                   .c_str());
-  // The entry says which state you are in, so pressing it is never a surprise.
   const bool is_default = mtk::default_browser::IsDefault();
   AppendMenuW(popup, MF_STRING | (is_default ? MF_GRAYED : MF_ENABLED),
               IDM_MAKE_DEFAULT,
@@ -2112,8 +2186,11 @@ void BrowserWindow::ShowBrowserMenu() {
                                : Text::kMakeDefaultBrowser)
                   .c_str());
   AppendMenuW(popup, MF_STRING, IDM_SETTINGS, label(Text::kSettings).c_str());
-  POINT point{};
-  GetCursorPos(&point);
+
+  RECT menu_rc{};
+  if (menu_) GetWindowRect(menu_, &menu_rc);
+  POINT point{menu_rc.right, menu_rc.bottom};
+  if (!menu_) GetCursorPos(&point);
   const UINT command = TrackPopupMenu(
       popup, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN,
       point.x, point.y, 0, window_, nullptr);
@@ -2217,24 +2294,36 @@ void BrowserWindow::OnBrowserDownloadsChanged(BrowserClient*) {
 }
 
 void BrowserWindow::OnBrowserHomeAction(BrowserClient* client,
-                                        mtk::home::Action action) {
+                                        const mtk::home::Action& action) {
   const auto* active = ActiveTab();
   if (!active || active->client.get() != client) return;
 
-  switch (action) {
-    case mtk::home::Action::kDownloads:
-      ShowDownloadsDialog();
+  switch (action.kind) {
+    case mtk::home::ActionKind::kDownloads:
+      ShowDownloadsPanel();
       break;
-    case mtk::home::Action::kHistory:
+    case mtk::home::ActionKind::kHistory:
       OpenHistoryPage();
       break;
-    case mtk::home::Action::kBookmarks:
+    case mtk::home::ActionKind::kBookmarks:
       ShowLibraryDialog();
       break;
-    case mtk::home::Action::kSettings:
+    case mtk::home::ActionKind::kSettings:
       ShowSettingsDialog();
       break;
-    case mtk::home::Action::kNone:
+    case mtk::home::ActionKind::kDownloadOpen: {
+      if (const auto* item = mtk::downloads::Manager::Get().FindItem(action.download_id)) {
+        OpenDownloadedFile(window_, *item);
+      }
+      break;
+    }
+    case mtk::home::ActionKind::kDownloadShow: {
+      if (const auto* item = mtk::downloads::Manager::Get().FindItem(action.download_id)) {
+        RevealInExplorer(window_, item->full_path);
+      }
+      break;
+    }
+    case mtk::home::ActionKind::kNone:
       break;
   }
 }
@@ -2404,14 +2493,19 @@ BrowserWindow::~BrowserWindow() {
     if (font) DeleteObject(font);
   }
   if (edit_brush_) DeleteObject(edit_brush_);
+  if (edit_brush_light_) DeleteObject(edit_brush_light_);
 }
 
 BrowserWindow* BrowserWindow::Open(HINSTANCE instance, int show_command,
                                    const std::vector<std::string>& startup_urls,
-                                   bool private_session) {
+                                   bool private_session,
+                                   bool defer_initial_tab,
+                                   bool app_mode) {
   auto* window = new BrowserWindow(instance);
   window->startup_urls_ = startup_urls;
   window->private_session_ = private_session;
+  window->defer_initial_tab_ = defer_initial_tab;
+  window->app_mode_ = app_mode;
   if (private_session) {
     // An empty cache_path is what makes the context in-memory: cookies, cache
     // and storage live only as long as this context does.
@@ -2478,12 +2572,23 @@ bool BrowserWindow::Create(int show_command) {
   if (!mtk::profile::ActiveIsDefault()) {
     title += L" [" + mtk::profile::ActiveId() + L"]";
   }
+  const DWORD window_style = WS_OVERLAPPED | WS_THICKFRAME | WS_SYSMENU |
+                             WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN;
   window_ = CreateWindowExW(0, kWindowClass, title.c_str(),
-                            WS_OVERLAPPEDWINDOW,
+                            window_style,
                             offset == 0 ? CW_USEDEFAULT : 60 + offset,
                             offset == 0 ? CW_USEDEFAULT : 40 + offset,
                             1360, 860, nullptr, nullptr, instance_, this);
   if (!window_) return false;
+
+  LONG_PTR current_style = GetWindowLongPtrW(window_, GWL_STYLE);
+  current_style &= ~WS_CAPTION;
+  SetWindowLongPtrW(window_, GWL_STYLE, current_style);
+
+  const MARGINS margins{0, 0, 1, 0};
+  DwmExtendFrameIntoClientArea(window_, &margins);
+  SetWindowPos(window_, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
   const BOOL dark = TRUE;
   DwmSetWindowAttribute(window_, 20, &dark, sizeof(dark));
@@ -2571,8 +2676,6 @@ LRESULT CALLBACK BrowserWindow::ShieldProc(HWND window, UINT message,
   auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
   if (self) {
     if (message == WM_MOUSEMOVE) {
-      // TME_LEAVE has to be re-armed on every entry, otherwise the leave
-      // notification arrives only once and the animation would keep running.
       TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window, 0};
       TrackMouseEvent(&track);
       self->SetShieldHover(true);
@@ -2596,6 +2699,114 @@ void BrowserWindow::SetShieldHover(bool hovering) {
     shield_frame_ = 0;
   }
   if (shield_) InvalidateRect(shield_, nullptr, FALSE);
+}
+
+LRESULT CALLBACK BrowserWindow::HomeProc(HWND window, UINT message,
+                                         WPARAM w_param, LPARAM l_param,
+                                         UINT_PTR, DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  if (self) {
+    if (message == WM_MOUSEMOVE) {
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window, 0};
+      TrackMouseEvent(&track);
+      self->SetHomeHover(true);
+    } else if (message == WM_MOUSELEAVE) {
+      self->SetHomeHover(false);
+    }
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, HomeProc, 4);
+  return DefSubclassProc(window, message, w_param, l_param);
+}
+
+void BrowserWindow::SetHomeHover(bool hovering) {
+  if (home_hovering_ == hovering) return;
+  home_hovering_ = hovering;
+  if (!home_strip_.valid()) return;
+  if (hovering) {
+    home_frame_ = 1;
+    SetTimer(window_, kHomeAnimTimer, kToolbarFrameMs, nullptr);
+  } else {
+    KillTimer(window_, kHomeAnimTimer);
+    home_frame_ = 0;
+  }
+  if (home_) InvalidateRect(home_, nullptr, FALSE);
+}
+
+LRESULT CALLBACK BrowserWindow::ReloadProc(HWND window, UINT message,
+                                           WPARAM w_param, LPARAM l_param,
+                                           UINT_PTR, DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  if (self) {
+    if (message == WM_MOUSEMOVE) {
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window, 0};
+      TrackMouseEvent(&track);
+      self->SetReloadHover(true);
+    } else if (message == WM_MOUSELEAVE) {
+      self->SetReloadHover(false);
+    }
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, ReloadProc, 5);
+  return DefSubclassProc(window, message, w_param, l_param);
+}
+
+void BrowserWindow::SetReloadHover(bool hovering) {
+  if (reload_hovering_ == hovering) return;
+  reload_hovering_ = hovering;
+  if (!reload_strip_.valid()) return;
+  if (hovering) {
+    reload_frame_ = 1;
+    SetTimer(window_, kReloadAnimTimer, kToolbarFrameMs, nullptr);
+  } else {
+    if (!reload_animating_) {
+      KillTimer(window_, kReloadAnimTimer);
+      reload_frame_ = 0;
+    }
+  }
+  if (reload_) InvalidateRect(reload_, nullptr, FALSE);
+}
+
+void BrowserWindow::SetReloadAnimating(bool animating) {
+  if (reload_animating_ == animating) return;
+  reload_animating_ = animating;
+  if (!reload_strip_.valid()) return;
+  if (animating) {
+    SetTimer(window_, kReloadAnimTimer, kToolbarFrameMs, nullptr);
+  } else if (!reload_hovering_) {
+    KillTimer(window_, kReloadAnimTimer);
+    reload_frame_ = 0;
+  }
+  if (reload_) InvalidateRect(reload_, nullptr, FALSE);
+}
+
+LRESULT CALLBACK BrowserWindow::DownloadsProc(HWND window, UINT message,
+                                              WPARAM w_param, LPARAM l_param,
+                                              UINT_PTR, DWORD_PTR reference_data) {
+  auto* self = reinterpret_cast<BrowserWindow*>(reference_data);
+  if (self) {
+    if (message == WM_MOUSEMOVE) {
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window, 0};
+      TrackMouseEvent(&track);
+      self->SetDownloadHover(true);
+    } else if (message == WM_MOUSELEAVE) {
+      self->SetDownloadHover(false);
+    }
+  }
+  if (message == WM_NCDESTROY) RemoveWindowSubclass(window, DownloadsProc, 6);
+  return DefSubclassProc(window, message, w_param, l_param);
+}
+
+void BrowserWindow::SetDownloadHover(bool hovering) {
+  if (download_hovering_ == hovering) return;
+  download_hovering_ = hovering;
+  if (!download_strip_.valid()) return;
+  if (hovering) {
+    download_frame_ = 1;
+    SetTimer(window_, kDownloadAnimTimer, kToolbarFrameMs, nullptr);
+  } else {
+    KillTimer(window_, kDownloadAnimTimer);
+    download_frame_ = 0;
+  }
+  if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
 }
 
 LRESULT CALLBACK BrowserWindow::FindProc(HWND window, UINT message,
@@ -2892,10 +3103,11 @@ bool BrowserWindow::HandleShortcut(int virtual_key, bool control, bool alt,
 }
 
 void BrowserWindow::CreateFonts() {
-  const auto make_font = [](int height, int weight, const wchar_t* face) {
+  const auto make_font = [](int height, int weight, const wchar_t* face,
+                            DWORD quality = CLEARTYPE_QUALITY) {
     return CreateFontW(Scaled(height), 0, 0, 0, weight, FALSE, FALSE, FALSE,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
+                       quality, DEFAULT_PITCH, face);
   };
   for (HFONT* font : {&ui_font_, &tab_font_, &glyph_font_, &badge_font_}) {
     if (*font) {
@@ -2903,10 +3115,10 @@ void BrowserWindow::CreateFonts() {
       *font = nullptr;
     }
   }
-  ui_font_ = make_font(-16, FW_MEDIUM, L"Segoe UI Variable");
-  tab_font_ = make_font(-15, FW_SEMIBOLD, L"Segoe UI Variable");
-  glyph_font_ = make_font(-18, FW_NORMAL, L"Segoe UI Symbol");
-  badge_font_ = make_font(-11, FW_BOLD, L"Segoe UI");
+  ui_font_ = make_font(-15, FW_NORMAL, L"Segoe UI", CLEARTYPE_QUALITY);
+  tab_font_ = make_font(-14, FW_SEMIBOLD, L"Segoe UI", CLEARTYPE_QUALITY);
+  glyph_font_ = make_font(-18, FW_NORMAL, L"Segoe UI Symbol", CLEARTYPE_QUALITY);
+  badge_font_ = make_font(-11, FW_BOLD, L"Segoe UI", CLEARTYPE_QUALITY);
 }
 
 void BrowserWindow::ApplyDpi(UINT dpi) {
@@ -2935,6 +3147,7 @@ void BrowserWindow::CreateControls() {
   g_dpi = dpi_;
   CreateFonts();
   edit_brush_ = CreateSolidBrush(kControlColor);
+  edit_brush_light_ = CreateSolidBrush(RGB(255, 255, 255));
   const DWORD button_style = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
   // Button text is the accessible name, not the drawn glyph: an owner-draw
   // button is announced by its window text, and "←" or "⋮" tells a screen
@@ -2998,16 +3211,28 @@ void BrowserWindow::CreateControls() {
   SetWindowTheme(suggestions_, L"Explorer", nullptr);
   SendMessageW(address_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                MAKELPARAM(Scaled(6), Scaled(10)));
-  SetWindowTheme(address_, L"DarkMode_CFD", nullptr);
-  SetWindowTheme(find_, L"DarkMode_CFD", nullptr);
+  if (!IsLightAppearance()) {
+    SetWindowTheme(address_, L"DarkMode_CFD", nullptr);
+    SetWindowTheme(find_, L"DarkMode_CFD", nullptr);
+  }
   SetWindowSubclass(address_, AddressProc, 1,
                     reinterpret_cast<DWORD_PTR>(this));
   SetWindowSubclass(find_, FindProc, 2,
                     reinterpret_cast<DWORD_PTR>(this));
   SetWindowSubclass(shield_, ShieldProc, 3,
                     reinterpret_cast<DWORD_PTR>(this));
-  // A missing or malformed strip is not an error: the shield keeps its glyph.
+  SetWindowSubclass(home_, HomeProc, 4,
+                    reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(reload_, ReloadProc, 5,
+                    reinterpret_cast<DWORD_PTR>(this));
+  SetWindowSubclass(downloads_, DownloadsProc, 6,
+                    reinterpret_cast<DWORD_PTR>(this));
+  // Load animated / 3D strips for toolbar buttons
   shield_strip_.Load(kShieldStripFile);
+  home_strip_.Load(L"mtk_home_hover.png");
+  reload_strip_.Load(L"mtk_refresh_strip.png");
+  download_strip_.Load(L"mtk_download_hover.png");
+  focus_strip_.Load(L"mtk_focus_strip.png");
 }
 
 bool BrowserWindow::CreateTab(const std::string& initial_url,
@@ -3911,6 +4136,7 @@ void BrowserWindow::UpdateControls() {
 
 void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
   SetBkMode(dc, TRANSPARENT);
+  const bool is_light = IsLightAppearance();
   const size_t pinned_count = PinnedCount();
   for (size_t index = 0; index < tabs_.size(); ++index) {
     const RECT rect =
@@ -3919,22 +4145,31 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
     const bool hovered = index == hovered_tab_;
     const bool pinned = tabs_[index].pinned;
 
-    const int radius = Scaled(14);
+    const int radius = Scaled(12);
     if (active) {
-      RECT body = rect;
-      FillRounded(dc, body, radius, kActiveTabBottom);
-      RECT sheen{rect.left, rect.top, rect.right,
-                 rect.top + (rect.bottom - rect.top) / 2};
-      FillRounded(dc, sheen, radius, kActiveTabTop);
-      RECT foot{rect.left, rect.bottom - radius, rect.right, rect.bottom};
-      HBRUSH brush = CreateSolidBrush(kActiveTabBottom);
-      FillRect(dc, &foot, brush);
-      DeleteObject(brush);
-      RECT accent{rect.left + radius, rect.top, rect.right - radius,
-                  rect.top + Scaled(2)};
-      FillRounded(dc, accent, Scaled(2), kAccentColor);
+      if (is_light) {
+        RECT body = rect;
+        FillRounded(dc, body, radius, RGB(255, 255, 255));
+        RECT foot{rect.left, rect.bottom - radius, rect.right, rect.bottom};
+        HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(dc, &foot, brush);
+        DeleteObject(brush);
+      } else {
+        RECT body = rect;
+        FillRounded(dc, body, radius, kActiveTabBottom);
+        RECT sheen{rect.left, rect.top, rect.right,
+                   rect.top + (rect.bottom - rect.top) / 2};
+        FillRounded(dc, sheen, radius, kActiveTabTop);
+        RECT foot{rect.left, rect.bottom - radius, rect.right, rect.bottom};
+        HBRUSH brush = CreateSolidBrush(kActiveTabBottom);
+        FillRect(dc, &foot, brush);
+        DeleteObject(brush);
+        RECT accent{rect.left + radius, rect.top, rect.right - radius,
+                    rect.top + Scaled(2)};
+        FillRounded(dc, accent, Scaled(2), kAccentColor);
+      }
     } else if (hovered) {
-      FillRounded(dc, rect, radius, kHoverTabColor);
+      FillRounded(dc, rect, radius, is_light ? RGB(236, 240, 248) : kHoverTabColor);
     }
 
     // A pinned tab has no room for a title, so its dot is centred and acts as
@@ -3942,13 +4177,18 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
     const int dot_x = pinned ? (rect.left + rect.right) / 2 - Scaled(6)
                              : rect.left + Scaled(18);
     const int dot_y = (rect.top + rect.bottom) / 2;
-    FillCircle(dc, dot_x, dot_y, pinned ? Scaled(5) : Scaled(4),
-               tabs_[index].loading ? kAccentSoftColor
-                                    : (active ? kAccentColor : kDisabledColor));
+    const COLORREF dot_color = tabs_[index].loading
+        ? kAccentSoftColor
+        : (active ? (is_light ? RGB(62, 117, 237) : kAccentColor)
+                  : (is_light ? RGB(148, 163, 184) : kDisabledColor));
+    FillCircle(dc, dot_x, dot_y, pinned ? Scaled(5) : Scaled(4), dot_color);
 
     if (!pinned) {
       SelectObject(dc, tab_font_);
-      SetTextColor(dc, active ? kTextColor : kMutedColor);
+      const COLORREF text_color = active
+          ? (is_light ? RGB(25, 32, 51) : kTextColor)
+          : (is_light ? RGB(100, 116, 139) : kMutedColor);
+      SetTextColor(dc, text_color);
       RECT text = rect;
       text.left = dot_x + Scaled(12);
       text.right = rect.right - (tabs_[index].muted ? Scaled(62) : Scaled(38));
@@ -3959,7 +4199,8 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
     if (tabs_[index].muted) {
       RECT mute = TabMuteRect(rect, pinned);
       SelectObject(dc, glyph_font_);
-      SetTextColor(dc, active ? kTextColor : kMutedColor);
+      SetTextColor(dc, active ? (is_light ? RGB(25, 32, 51) : kTextColor)
+                              : (is_light ? RGB(100, 116, 139) : kMutedColor));
       DrawTextW(dc, L"\U0001F507", -1, &mute,
                 DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     }
@@ -3968,10 +4209,11 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
       const RECT close = TabCloseRect(rect, pinned);
       if (hovered && hovered_tab_close_) {
         FillRounded(dc, close, (close.bottom - close.top) / 2,
-                    kControlHoverColor);
+                    is_light ? RGB(226, 232, 240) : kControlHoverColor);
       }
       SelectObject(dc, glyph_font_);
-      SetTextColor(dc, hovered || active ? kTextColor : kDisabledColor);
+      SetTextColor(dc, hovered || active ? (is_light ? RGB(71, 85, 105) : kTextColor)
+                                         : (is_light ? RGB(148, 163, 184) : kDisabledColor));
       DrawTextW(dc, L"\u00D7", -1, const_cast<RECT*>(&close),
                 DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     }
@@ -3979,9 +4221,12 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
 
   RECT plus =
       NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_);
-  if (hovered_new_tab_) FillRounded(dc, plus, Scaled(10), kControlHoverColor);
+  if (hovered_new_tab_) {
+    FillRounded(dc, plus, Scaled(10), is_light ? RGB(218, 224, 235) : kControlHoverColor);
+  }
   SelectObject(dc, glyph_font_);
-  SetTextColor(dc, hovered_new_tab_ ? kTextColor : kMutedColor);
+  SetTextColor(dc, hovered_new_tab_ ? (is_light ? RGB(15, 23, 42) : kTextColor)
+                                    : (is_light ? RGB(71, 85, 105) : kMutedColor));
   DrawTextW(dc, L"+", -1, &plus, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 }
 
@@ -3992,18 +4237,24 @@ void BrowserWindow::PaintOmniboxFrame(HDC dc) {
   MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&box), 2);
   InflateRect(&box, Scaled(30), Scaled(9));
 
+  const bool is_light = IsLightAppearance();
   const bool focused = GetFocus() == field;
   const int radius = (box.bottom - box.top) / 2;
-  FillRounded(dc, box, radius, kControlColor);
-  StrokeRounded(dc, box, radius, focused ? kAccentColor : kBorderColor,
-                focused ? Scaled(2) : 1);
+  const COLORREF box_bg = is_light ? RGB(255, 255, 255) : kControlColor;
+  const COLORREF box_border = focused
+      ? (is_light ? RGB(168, 85, 247) : kAccentColor)
+      : (is_light ? RGB(226, 232, 240) : kBorderColor);
+  FillRounded(dc, box, radius, box_bg);
+  StrokeRounded(dc, box, radius, box_border, focused ? Scaled(2) : 1);
 
   auto* tab = ActiveTab();
   const bool secure = tab && tab->url.starts_with(L"https://");
   SelectObject(dc, glyph_font_);
   SetBkMode(dc, TRANSPARENT);
-  SetTextColor(dc, find_visible_ ? kMutedColor
-                                 : (secure ? kShieldColor : kMutedColor));
+  SetTextColor(dc, find_visible_
+      ? (is_light ? RGB(100, 116, 139) : kMutedColor)
+      : (secure ? (is_light ? RGB(22, 163, 74) : kShieldColor)
+                : (is_light ? RGB(100, 116, 139) : kMutedColor)));
   RECT leading{box.left + Scaled(6), box.top, box.left + Scaled(30), box.bottom};
   DrawTextW(dc,
             find_visible_ ? L"\U0001F50D"
@@ -4015,7 +4266,8 @@ void BrowserWindow::PaintProgress(HDC dc, const RECT& client) {
   if (!progress_active_) return;
   const int track_y = ChromeHeight() - ProgressHeight();
   RECT track{0, track_y, client.right, ChromeHeight()};
-  HBRUSH brush = CreateSolidBrush(kControlColor);
+  const bool is_light = IsLightAppearance();
+  HBRUSH brush = CreateSolidBrush(is_light ? RGB(226, 232, 240) : kControlColor);
   FillRect(dc, &track, brush);
   DeleteObject(brush);
 
@@ -4038,11 +4290,19 @@ void BrowserWindow::Paint(HDC dc) {
   RECT tab_bar{0, 0, client.right, TabBarHeight()};
   RECT toolbar{0, TabBarHeight(), client.right,
                TabBarHeight() + ToolbarHeight()};
-  // A private window is drawn darker, so it is obvious at a glance which window
-  // is which. Relying on the title alone would be too easy to miss.
+  const bool is_light = IsLightAppearance();
   if (private_session_) {
     FillGradient(dc, tab_bar, kPrivateBarTop, kPrivateBarBottom);
     FillGradient(dc, toolbar, kPrivateBarBottom, kPrivateBarBottom);
+  } else if (is_light) {
+    const COLORREF kLightTabBar = RGB(226, 232, 240);
+    const COLORREF kLightToolbar = RGB(241, 245, 249);
+    FillGradient(dc, tab_bar, kLightTabBar, kLightTabBar);
+    FillGradient(dc, toolbar, kLightToolbar, kLightToolbar);
+    RECT divider{0, toolbar.bottom - 1, client.right, toolbar.bottom};
+    HBRUSH div_br = CreateSolidBrush(RGB(226, 232, 240));
+    FillRect(dc, &divider, div_br);
+    DeleteObject(div_br);
   } else {
     FillGradient(dc, tab_bar, kTabBarTop, kTabBarBottom);
     FillGradient(dc, toolbar, kToolbarTop, kToolbarBottom);
@@ -4052,6 +4312,7 @@ void BrowserWindow::Paint(HDC dc) {
   PaintBookmarksBar(dc, client);
   PaintOmniboxFrame(dc);
   PaintProgress(dc, client);
+  PaintCaptionButtons(dc, client);
 }
 
 void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
@@ -4059,7 +4320,14 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   if (height == 0) return;
   const int top = TabBarHeight() + ToolbarHeight();
   RECT bar{0, top, client.right, top + height};
-  FillGradient(dc, bar, kToolbarBottom, kToolbarBottom);
+  const bool is_light = IsLightAppearance();
+  if (is_light) {
+    HBRUSH bar_br = CreateSolidBrush(RGB(241, 245, 249));
+    FillRect(dc, &bar, bar_br);
+    DeleteObject(bar_br);
+  } else {
+    FillGradient(dc, bar, kToolbarBottom, kToolbarBottom);
+  }
 
   bookmark_bar_hits_.clear();
   bookmark_overflow_entries_.clear();
@@ -4306,8 +4574,15 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
   const bool pressed = (item.itemState & ODS_SELECTED) != 0;
   const bool hot = (item.itemState & ODS_HOTLIGHT) != 0;
   RECT bounds = item.rcItem;
+  const bool is_light = IsLightAppearance();
 
-  FillGradient(item.hDC, bounds, kToolbarTop, kToolbarBottom);
+  if (is_light) {
+    HBRUSH bg = CreateSolidBrush(RGB(241, 245, 249));
+    FillRect(item.hDC, &bounds, bg);
+    DeleteObject(bg);
+  } else {
+    FillGradient(item.hDC, bounds, kToolbarTop, kToolbarBottom);
+  }
   SetBkMode(item.hDC, TRANSPARENT);
 
   if (!disabled && (hot || pressed)) {
@@ -4315,28 +4590,54 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
     const int center_y = (bounds.top + bounds.bottom) / 2;
     const int radius = std::min(bounds.right - bounds.left,
                                 bounds.bottom - bounds.top) / 2 - Scaled(2);
-    FillCircle(item.hDC, center_x, center_y, radius,
-               pressed ? kBorderColor : kControlHoverColor);
+    COLORREF circle_color;
+    if (is_light) {
+      circle_color = pressed ? RGB(203, 213, 225) : RGB(226, 232, 240);
+    } else {
+      circle_color = pressed ? kBorderColor : kControlHoverColor;
+    }
+    FillCircle(item.hDC, center_x, center_y, radius, circle_color);
   }
 
   bool painted_icon = false;
   if (item.CtlID == kShieldId && shield_strip_.valid()) {
-    // Frame 0 is the resting pose: a bare shield. Hover plays the sequence once
-    // and holds the last frame, where the swords are crossed and the tick is
-    // shown.
     RECT icon = bounds;
     const int inset = Scaled(6);
     InflateRect(&icon, -inset, -inset);
     painted_icon = shield_strip_.Draw(item.hDC, icon,
                                       shield_hovering_ ? shield_frame_ : 0);
+  } else if (item.CtlID == kHomeId && home_strip_.valid()) {
+    RECT icon = bounds;
+    const int inset = Scaled(4);
+    InflateRect(&icon, -inset, -inset);
+    painted_icon = home_strip_.Draw(item.hDC, icon,
+                                    home_hovering_ ? home_frame_ : 0);
+  } else if (item.CtlID == kReloadId && reload_strip_.valid()) {
+    RECT icon = bounds;
+    const int inset = Scaled(5);
+    InflateRect(&icon, -inset, -inset);
+    painted_icon = reload_strip_.Draw(item.hDC, icon,
+                                      reload_hovering_ ? reload_frame_ : 0);
+  } else if (item.CtlID == kDownloadsId && download_strip_.valid()) {
+    RECT icon = bounds;
+    const int inset = Scaled(5);
+    InflateRect(&icon, -inset, -inset);
+    painted_icon = download_strip_.Draw(item.hDC, icon,
+                                        download_hovering_ ? download_frame_ : 0);
   }
 
   if (!painted_icon) {
     const wchar_t* text = ButtonGlyph(item.CtlID);
     SelectObject(item.hDC, glyph_font_);
-    SetTextColor(item.hDC, disabled ? kDisabledColor
-                                    : (item.CtlID == kShieldId ? kShieldColor
-                                                               : kTextColor));
+    COLORREF glyph_color;
+    if (disabled) {
+      glyph_color = is_light ? RGB(148, 163, 184) : kDisabledColor;
+    } else if (item.CtlID == kShieldId) {
+      glyph_color = is_light ? RGB(124, 58, 237) : kShieldColor;
+    } else {
+      glyph_color = is_light ? RGB(51, 65, 85) : kTextColor;
+    }
+    SetTextColor(item.hDC, glyph_color);
     DrawTextW(item.hDC, text, -1, &bounds,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
@@ -4367,6 +4668,13 @@ void BrowserWindow::TrackHover(POINT point) {
     TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
     TrackMouseEvent(&track);
     mouse_tracking_ = true;
+  }
+
+  const CaptionButton previous_caption = hovered_caption_button_;
+  hovered_caption_button_ = HitTestCaptionButton(point);
+  if (previous_caption != hovered_caption_button_) {
+    RECT controls = WindowControlsRect();
+    InvalidateRect(window_, &controls, FALSE);
   }
 
   RECT client{};
@@ -4565,6 +4873,11 @@ void BrowserWindow::ImportBookmarksFromBrowser() {
 
 void BrowserWindow::ClearHover() {
   mouse_tracking_ = false;
+  if (hovered_caption_button_ != CaptionButton::kNone) {
+    hovered_caption_button_ = CaptionButton::kNone;
+    RECT controls = WindowControlsRect();
+    InvalidateRect(window_, &controls, FALSE);
+  }
   if (hovered_tab_ == static_cast<size_t>(-1) && !hovered_new_tab_) return;
   hovered_tab_ = static_cast<size_t>(-1);
   hovered_tab_close_ = false;
@@ -4577,9 +4890,109 @@ void BrowserWindow::ClearHover() {
 
 LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_param) {
   switch (message) {
+    case WM_GETMINMAXINFO: {
+      auto* mmi = reinterpret_cast<MINMAXINFO*>(l_param);
+      HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO info{sizeof(info)};
+      if (GetMonitorInfoW(monitor, &info)) {
+        if (!full_screen_) {
+          mmi->ptMaxPosition.x = info.rcWork.left - info.rcMonitor.left;
+          mmi->ptMaxPosition.y = info.rcWork.top - info.rcMonitor.top;
+          mmi->ptMaxSize.x = info.rcWork.right - info.rcWork.left;
+          mmi->ptMaxSize.y = info.rcWork.bottom - info.rcWork.top;
+          mmi->ptMaxTrackSize.x = mmi->ptMaxSize.x;
+          mmi->ptMaxTrackSize.y = mmi->ptMaxSize.y;
+        } else {
+          mmi->ptMaxPosition.x = 0;
+          mmi->ptMaxPosition.y = 0;
+          mmi->ptMaxSize.x = info.rcMonitor.right - info.rcMonitor.left;
+          mmi->ptMaxSize.y = info.rcMonitor.bottom - info.rcMonitor.top;
+          mmi->ptMaxTrackSize.x = mmi->ptMaxSize.x;
+          mmi->ptMaxTrackSize.y = mmi->ptMaxSize.y;
+        }
+      }
+      return 0;
+    }
+    case WM_NCCALCSIZE: {
+      if (w_param == TRUE) {
+        if (IsZoomed(window_)) {
+          auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(l_param);
+          HMONITOR monitor = MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST);
+          MONITORINFO info{sizeof(info)};
+          if (GetMonitorInfoW(monitor, &info)) {
+            params->rgrc[0] = full_screen_ ? info.rcMonitor : info.rcWork;
+          }
+        }
+        return 0;
+      }
+      return 0;
+    }
+    case WM_NCHITTEST: {
+      if (full_screen_) return HTCLIENT;
+
+      const POINT screen_pt{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      RECT win_rect{};
+      GetWindowRect(window_, &win_rect);
+
+      // Resizing edges when window is not maximized
+      if (!IsZoomed(window_)) {
+        const int border = Scaled(6);
+        const bool top = screen_pt.y >= win_rect.top && screen_pt.y < win_rect.top + border;
+        const bool bottom = screen_pt.y < win_rect.bottom && screen_pt.y >= win_rect.bottom - border;
+        const bool left = screen_pt.x >= win_rect.left && screen_pt.x < win_rect.left + border;
+        const bool right = screen_pt.x < win_rect.right && screen_pt.x >= win_rect.right - border;
+
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+      }
+
+      POINT pt = screen_pt;
+      ScreenToClient(window_, &pt);
+      RECT client{};
+      GetClientRect(window_, &client);
+
+      // Caption buttons area (Minimize, Maximize, Close)
+      if (HitTestCaptionButton(pt) != CaptionButton::kNone) {
+        return HTCLIENT;
+      }
+
+      // Tab strip area
+      if (!full_screen_ && pt.y >= 0 && pt.y < TabBarHeight()) {
+        const size_t pinned_count = PinnedCount();
+        for (size_t i = 0; i < tabs_.size(); ++i) {
+          RECT tab_r = TabRect(i, client.right, tabs_.size(), pinned_count, tab_scroll_);
+          if (IsZoomed(window_)) {
+            tab_r.top = 0;
+          }
+          if (PtInRect(&tab_r, pt)) {
+            return HTCLIENT;
+          }
+        }
+        RECT plus_r = NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_);
+        InflateRect(&plus_r, Scaled(3), Scaled(8));
+        if (IsZoomed(window_)) {
+          plus_r.top = 0;
+        }
+        if (PtInRect(&plus_r, pt)) {
+          return HTCLIENT;
+        }
+        // Empty tab strip space acts as caption (window dragging, Aero Snap, double click)
+        return HTCAPTION;
+      }
+
+      return HTCLIENT;
+    }
     case WM_CREATE:
       CreateControls();
-      CreateStartupTabs();
+      if (!defer_initial_tab_) {
+        CreateStartupTabs();
+      }
       Layout();
       return 0;
     case WM_SIZE:
@@ -4668,15 +5081,39 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       } else if (w_param == kUpdatePeriodicTimer) {
         StartUpdateCheck(false);
       } else if (w_param == kShieldAnimTimer) {
-        // The shield sequence plays once and holds its final pose: the swords
-        // are drawn, they meet, and the tick stays. Looping it would make the
-        // swords retract into the shield again, which reads as a glitch.
         if (shield_hovering_ && shield_strip_.valid() &&
             shield_frame_ + 1 < shield_strip_.frame_count()) {
           ++shield_frame_;
           if (shield_) InvalidateRect(shield_, nullptr, FALSE);
         } else {
           KillTimer(window_, kShieldAnimTimer);
+        }
+      } else if (w_param == kHomeAnimTimer) {
+        if (home_hovering_ && home_strip_.valid() && home_strip_.frame_count() > 1) {
+          home_frame_ = (home_frame_ + 1) % home_strip_.frame_count();
+          if (home_) InvalidateRect(home_, nullptr, FALSE);
+        } else {
+          KillTimer(window_, kHomeAnimTimer);
+          home_frame_ = 0;
+          if (home_) InvalidateRect(home_, nullptr, FALSE);
+        }
+      } else if (w_param == kReloadAnimTimer) {
+        if ((reload_hovering_ || reload_animating_) && reload_strip_.valid() && reload_strip_.frame_count() > 1) {
+          reload_frame_ = (reload_frame_ + 1) % reload_strip_.frame_count();
+          if (reload_) InvalidateRect(reload_, nullptr, FALSE);
+        } else {
+          KillTimer(window_, kReloadAnimTimer);
+          reload_frame_ = 0;
+          if (reload_) InvalidateRect(reload_, nullptr, FALSE);
+        }
+      } else if (w_param == kDownloadAnimTimer) {
+        if (download_hovering_ && download_strip_.valid() && download_strip_.frame_count() > 1) {
+          download_frame_ = (download_frame_ + 1) % download_strip_.frame_count();
+          if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
+        } else {
+          KillTimer(window_, kDownloadAnimTimer);
+          download_frame_ = 0;
+          if (downloads_) InvalidateRect(downloads_, nullptr, FALSE);
         }
       } else if (w_param == kSessionSaveTimer) {
         KillTimer(window_, kSessionSaveTimer);
@@ -4688,6 +5125,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       return TRUE;
     case WM_CTLCOLOREDIT: {
       HDC dc = reinterpret_cast<HDC>(w_param);
+      if (IsLightAppearance()) {
+        SetTextColor(dc, RGB(25, 32, 51));
+        SetBkColor(dc, RGB(255, 255, 255));
+        return reinterpret_cast<LRESULT>(edit_brush_light_);
+      }
       SetTextColor(dc, kTextColor);
       SetBkColor(dc, kControlColor);
       return reinterpret_cast<LRESULT>(edit_brush_);
@@ -4695,6 +5137,11 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     case WM_CTLCOLORSTATIC:
       if (reinterpret_cast<HWND>(l_param) == find_status_) {
         HDC dc = reinterpret_cast<HDC>(w_param);
+        if (IsLightAppearance()) {
+          SetTextColor(dc, RGB(100, 116, 139));
+          SetBkColor(dc, RGB(255, 255, 255));
+          return reinterpret_cast<LRESULT>(edit_brush_light_);
+        }
         SetTextColor(dc, kMutedColor);
         SetBkColor(dc, kControlColor);
         return reinterpret_cast<LRESULT>(edit_brush_);
@@ -4702,6 +5149,14 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       break;
     case WM_LBUTTONDOWN: {
       const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      const CaptionButton clicked_caption = HitTestCaptionButton(point);
+      if (clicked_caption != CaptionButton::kNone) {
+        pressed_caption_button_ = clicked_caption;
+        SetCapture(window_);
+        RECT controls = WindowControlsRect();
+        InvalidateRect(window_, &controls, FALSE);
+        return 0;
+      }
       if (BookmarksBarHeight() > 0) {
         for (const BookmarkHit& hit : bookmark_bar_hits_) {
           if (!PtInRect(&hit.bounds, point)) continue;
@@ -4741,14 +5196,39 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       }
       return 0;
     }
-    case WM_LBUTTONUP:
+    case WM_LBUTTONUP: {
+      if (pressed_caption_button_ != CaptionButton::kNone) {
+        ReleaseCapture();
+        const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+        const CaptionButton released = HitTestCaptionButton(point);
+        const CaptionButton action = pressed_caption_button_;
+        pressed_caption_button_ = CaptionButton::kNone;
+        RECT controls = WindowControlsRect();
+        InvalidateRect(window_, &controls, FALSE);
+
+        if (released == action) {
+          if (action == CaptionButton::kMinimize) {
+            ShowWindow(window_, SW_MINIMIZE);
+          } else if (action == CaptionButton::kMaximize) {
+            ShowWindow(window_, IsZoomed(window_) ? SW_RESTORE : SW_MAXIMIZE);
+          } else if (action == CaptionButton::kClose) {
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+          }
+        }
+        return 0;
+      }
       if (drag_candidate_ != kNoTab) {
         EndTabDrag();
         return 0;
       }
       break;
+    }
     case WM_CAPTURECHANGED:
-      // Losing capture for any other reason must not leave a drag armed.
+      if (pressed_caption_button_ != CaptionButton::kNone) {
+        pressed_caption_button_ = CaptionButton::kNone;
+        RECT controls = WindowControlsRect();
+        InvalidateRect(window_, &controls, FALSE);
+      }
       if (drag_candidate_ != kNoTab) {
         drag_candidate_ = kNoTab;
         dragging_ = false;
@@ -4851,19 +5331,37 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
             if (!state.site.empty()) {
               state.site_blocked_count =
                   BrowserClient::blocked_count_for_origin(state.site);
-              state.site_filtering =
-                  mtk::sites::Store::Get().For(state.site).ad_filtering;
+              auto rule = mtk::sites::Store::Get().For(state.site);
+              state.site_filtering = rule.ad_filtering;
+              state.cookies = rule.cookies;
               state.custom_rule_count =
                   BrowserClient::user_rule_blocked_count_for_origin(state.site);
             }
           }
           HWND window = window_;
+          mtk::shields::Actions actions;
+          actions.on_toggle_shield = [this]() {
+            ToggleShieldForCurrentSite();
+          };
+          actions.on_toggle_cookies = [this]() {
+            ToggleCookiesForCurrentSite();
+          };
+          actions.on_toggle_downloads = [this]() {
+            ToggleDownloadProtection();
+          };
+          actions.on_open_site_settings = [this]() {
+            ShowSiteSettingsDialog();
+          };
+          actions.on_open_user_filters = [this]() {
+            ShowUserFiltersDialog();
+          };
+          actions.on_manage_sites = [window]() {
+            if (window) PostMessageW(window, kShieldsManageSitesMessage, 0, 0);
+          };
           mtk::shields::ShowPanel(
               instance_, window_, shield_, BrowserClient::blocked_count(),
               mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard,
-              state, [window]() {
-                if (window) PostMessageW(window, kShieldsManageSitesMessage, 0, 0);
-              });
+              state, actions);
           break;
         }
         case kDownloadsId:
@@ -4877,8 +5375,89 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         case IDM_ADD_BOOKMARK:
           ToggleBookmark();
           break;
+        case IDM_TAB_SEARCH:
+          ShowTabSearch();
+          break;
         case IDM_BOOKMARKS:
           ShowLibraryDialog();
+          break;
+        case IDM_VERTICAL_TABS:
+          ToggleVerticalTabs();
+          break;
+        case IDM_VERTICAL_TABS_COLLAPSE:
+          ToggleVerticalTabsCollapsed();
+          break;
+        case IDM_SAVE_PAGE_PDF:
+          SaveActivePagePdf();
+          break;
+        case IDM_TAKE_SCREENSHOT:
+          TakeActivePageScreenshot();
+          break;
+        case IDM_READER_MODE:
+          ToggleReaderMode();
+          break;
+        case IDM_FOCUS_MODE:
+          ToggleFocusMode();
+          break;
+        case IDM_READING_LIST_TOGGLE:
+          ToggleReadingList();
+          break;
+        case IDM_READING_LIST:
+          ShowReadingListDialog();
+          break;
+        case IDM_TRANSLATE_HINDI:
+          TranslateActivePage("hi");
+          break;
+        case IDM_TRANSLATE_ENGLISH:
+          TranslateActivePage("en");
+          break;
+        case IDM_OPEN_AS_WEB_APP:
+          OpenActiveSiteAsWebApp();
+          break;
+        case IDM_MANAGE_WEB_APPS:
+          mtk::web_app::ShowAppManager(instance_, window_);
+          break;
+        case IDM_PASSKEY_CHECK:
+          ShowPasskeyCheckPage();
+          break;
+        case IDM_TASK_MANAGER:
+          ShowTaskManager();
+          break;
+        case IDM_SPLIT_VIEW:
+          ToggleSplitView();
+          break;
+        case IDM_TAB_GROUP: {
+          auto* selected = ActiveTab();
+          if (selected) {
+            std::wstring name = selected->group;
+            if (PromptForFolderName(L"Tab group", L"Group name (leave empty to remove):", &name)) {
+              selected->group = name;
+              ScheduleSessionSave();
+              InvalidateRect(window_, nullptr, FALSE);
+            }
+          }
+          break;
+        }
+        case IDM_TAB_GROUPS:
+          ShowTabGroupsMenu();
+          break;
+        case IDM_WORKSPACES_MENU:
+          ShowWorkspacesMenu();
+          break;
+        case IDM_SET_WORKSPACE: {
+          auto* selected = ActiveTab();
+          if (selected) {
+            std::wstring name = selected->workspace;
+            if (PromptForFolderName(L"Workspace", L"Workspace name (leave empty to remove):", &name)) {
+              selected->workspace = name;
+              ScheduleSessionSave();
+              InvalidateRect(window_, nullptr, FALSE);
+            }
+          }
+          break;
+        }
+        case IDM_DIAGNOSTICS:
+          ShowDiagnostics();
           break;
         case IDM_HISTORY:
           OpenHistoryPage();
@@ -5264,7 +5843,10 @@ void BrowserWindow::OnBrowserLoadingChanged(BrowserClient* client, bool loading,
   tabs_[index].loading = loading;
   tabs_[index].can_go_back = can_go_back;
   tabs_[index].can_go_forward = can_go_forward;
-  if (index == active_tab_) UpdateControls();
+  if (index == active_tab_) {
+    SetReloadAnimating(loading);
+    UpdateControls();
+  }
 }
 
 void BrowserWindow::OnBrowserNavigationCompleted(BrowserClient* client,
@@ -5323,4 +5905,797 @@ size_t BrowserWindow::FindTab(BrowserClient* client) const {
 
 BrowserWindow::Tab* BrowserWindow::ActiveTab() {
   return active_tab_ < tabs_.size() ? &tabs_[active_tab_] : nullptr;
+}
+
+void BrowserWindow::ToggleShieldForCurrentSite() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const std::string origin = mtk::sites::OriginOf(WideToUtf8(tab->url));
+  if (origin.empty()) return;
+
+  auto& store = mtk::sites::Store::Get();
+  auto rule = store.For(origin);
+  rule.ad_filtering = !rule.ad_filtering;
+  store.Set(rule);
+  store.Flush();
+
+  if (tab->client && tab->client->browser()) {
+    tab->client->browser()->ReloadIgnoreCache();
+  }
+  UpdateShieldsPanel();
+}
+
+void BrowserWindow::ToggleCookiesForCurrentSite() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const std::string origin = mtk::sites::OriginOf(WideToUtf8(tab->url));
+  if (origin.empty()) return;
+
+  auto& store = mtk::sites::Store::Get();
+  auto rule = store.For(origin);
+  rule.cookies = !rule.cookies;
+  store.Set(rule);
+  store.Flush();
+
+  if (tab->client && tab->client->browser()) {
+    tab->client->browser()->ReloadIgnoreCache();
+  }
+  UpdateShieldsPanel();
+}
+
+void BrowserWindow::ToggleDownloadProtection() {
+  auto& store = mtk::preferences::Store::Get();
+  auto values = store.values();
+  values.download_mode =
+      (values.download_mode == mtk::preferences::DownloadMode::kStandard)
+          ? mtk::preferences::DownloadMode::kSafe
+          : mtk::preferences::DownloadMode::kStandard;
+  store.Save(values);
+  UpdateShieldsPanel();
+}
+
+void BrowserWindow::UpdateShieldsPanel() {
+  auto* tab = ActiveTab();
+  mtk::shields::SiteState state;
+  if (tab) {
+    state.site = mtk::sites::OriginOf(WideToUtf8(tab->url));
+    if (!state.site.empty()) {
+      state.site_blocked_count =
+          BrowserClient::blocked_count_for_origin(state.site);
+      auto rule = mtk::sites::Store::Get().For(state.site);
+      state.site_filtering = rule.ad_filtering;
+      state.cookies = rule.cookies;
+      state.custom_rule_count =
+          BrowserClient::user_rule_blocked_count_for_origin(state.site);
+    }
+  }
+  mtk::shields::UpdatePanel(
+      BrowserClient::blocked_count(),
+      mtk::downloads::CurrentMode() == mtk::downloads::Mode::kStandard,
+      state);
+}
+
+void BrowserWindow::OnBrowserRequestBlocked(BrowserClient* client) {
+  const size_t index = FindTab(client);
+  if (index == active_tab_) {
+    if (mtk::shields::IsPanelOpen()) {
+      UpdateShieldsPanel();
+    }
+    if (shield_) InvalidateRect(shield_, nullptr, FALSE);
+  }
+}
+
+void BrowserWindow::TakeActivePageScreenshot() {
+  CaptureActivePageScreenshot();
+}
+
+void BrowserWindow::CaptureActivePageScreenshot() {
+  const auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return;
+  const auto browser = tab->client->browser();
+  HWND browser_hwnd = browser->GetHost()->GetWindowHandle();
+  if (!browser_hwnd || !IsWindow(browser_hwnd)) return;
+
+  RECT rect{};
+  GetClientRect(browser_hwnd, &rect);
+  const int width = rect.right - rect.left;
+  const int height = rect.bottom - rect.top;
+  if (width <= 0 || height <= 0) return;
+
+  POINT pt = {0, 0};
+  ClientToScreen(browser_hwnd, &pt);
+
+  HDC screen_dc = GetDC(nullptr);
+  if (!screen_dc) return;
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  if (!mem_dc) {
+    ReleaseDC(nullptr, screen_dc);
+    return;
+  }
+  HBITMAP hbm = CreateCompatibleBitmap(screen_dc, width, height);
+  if (!hbm) {
+    DeleteDC(mem_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return;
+  }
+  HGDIOBJ old_bm = SelectObject(mem_dc, hbm);
+  BitBlt(mem_dc, 0, 0, width, height, screen_dc, pt.x, pt.y, SRCCOPY);
+  SelectObject(mem_dc, old_bm);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+
+  mtk::downloads::CopyBitmapToClipboard(window_, hbm);
+
+  const std::wstring suggested_name = mtk::downloads::SuggestScreenshotFileName(tab->title);
+  std::wstring target_path;
+  std::wstring final_file_name = suggested_name;
+
+  const auto& prefs = mtk::preferences::Store::Get().values();
+  if (prefs.download_ask_location) {
+    if (!mtk::downloads::PromptDownloadLocation(window_, suggested_name, &target_path, &final_file_name)) {
+      DeleteObject(hbm);
+      return;
+    }
+  } else {
+    target_path = mtk::downloads::UniqueTargetPath(suggested_name);
+    if (target_path.empty()) {
+      DeleteObject(hbm);
+      return;
+    }
+    const size_t slash = target_path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+      final_file_name = target_path.substr(slash + 1);
+    }
+  }
+
+  const bool saved = mtk::downloads::SaveBitmapToPng(hbm, target_path);
+  DeleteObject(hbm);
+
+  if (saved) {
+    mtk::downloads::Item item;
+    item.id = (static_cast<uint64_t>(GetCurrentProcessId()) << 32) |
+              static_cast<uint64_t>(GetTickCount64() & 0xFFFFFFFF);
+    item.file_name = final_file_name;
+    item.full_path = target_path;
+    item.url = (browser->GetMainFrame() && browser->GetMainFrame()->IsValid())
+                   ? browser->GetMainFrame()->GetURL().ToString()
+                   : "";
+    item.state = mtk::downloads::State::kComplete;
+
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(target_path.c_str(), GetFileExInfoStandard, &fad)) {
+      item.received_bytes = (static_cast<int64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+      item.total_bytes = item.received_bytes;
+    }
+    item.percent = 100;
+    item.is_private = private_session_;
+    mtk::downloads::Manager::Get().Upsert(item);
+
+    const std::wstring message =
+        std::wstring(mtk::strings::Get(mtk::strings::Id::kScreenshotSaved)) + target_path;
+    MessageBoxW(window_, message.c_str(), L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+  } else {
+    MessageBoxW(window_, mtk::strings::Get(mtk::strings::Id::kScreenshotFailed),
+                L"MTK Browser", MB_OK | MB_ICONERROR);
+  }
+}
+
+bool BrowserWindow::RetryDownload(uint64_t id) {
+  const auto& items = mtk::downloads::Manager::Get().items();
+  const auto found = std::find_if(items.begin(), items.end(), [id](const auto& item) {
+    return item.id == id;
+  });
+  if (found == items.end() || !mtk::downloads::CanRetry(*found)) return false;
+
+  const auto decision = mtk::policy::EvaluateNavigation(found->url);
+  if (!decision.allow || (!decision.url.starts_with("https://") &&
+                          !decision.url.starts_with("http://"))) {
+    return false;
+  }
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return false;
+  tab->client->browser()->GetHost()->StartDownload(decision.url);
+  return true;
+}
+
+bool BrowserWindow::ResumeInterruptedDownload(uint64_t id) {
+  auto* item = mtk::downloads::Manager::Get().FindItem(id);
+  if (!item || !mtk::downloads::CanResume(*item)) return false;
+
+  const auto decision = mtk::policy::EvaluateNavigation(item->url);
+  if (!decision.allow || (!decision.url.starts_with("https://") &&
+                          !decision.url.starts_with("http://"))) {
+    return false;
+  }
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return false;
+
+  item->state = mtk::downloads::State::kInProgress;
+  item->detail = L"resuming from " + std::to_wstring(item->received_bytes) + L" bytes";
+  mtk::downloads::Manager::Get().Flush();
+  OnBrowserDownloadsChanged(tab->client.get());
+
+  tab->client->browser()->GetHost()->StartDownload(decision.url);
+  return true;
+}
+
+void BrowserWindow::SetTabMemoryState(Tab& tab, bool hidden) {
+  if (!tab.client || !tab.client->browser()) return;
+  const bool saver_enabled = mtk::preferences::Store::Get().values().memory_saver;
+  tab.client->browser()->GetHost()->WasHidden(hidden && saver_enabled && !tab.pinned);
+}
+
+void BrowserWindow::SyncTabVisibility() {
+  if (split_tab_ >= tabs_.size() || split_tab_ == active_tab_) {
+    split_tab_ = kNoTab;
+    split_focus_pane_ = 0;
+  }
+  for (size_t index = 0; index < tabs_.size(); ++index) {
+    Tab& tab = tabs_[index];
+    if (!tab.client || !tab.client->browser()) continue;
+    const bool visible = index == active_tab_ || index == split_tab_;
+    SetTabMemoryState(tab, !visible);
+    if (visible) {
+      ResizeBrowser(tab);
+      ShowWindow(tab.client->browser()->GetHost()->GetWindowHandle(), SW_SHOW);
+    } else {
+      ShowWindow(tab.client->browser()->GetHost()->GetWindowHandle(), SW_HIDE);
+    }
+  }
+}
+
+RECT BrowserWindow::TabStripRect() const {
+  if (app_mode_ || !window_) return {0, 0, 0, 0};
+  RECT client{};
+  GetClientRect(window_, &client);
+  return {0, 0, client.right - CaptionButtonWidth() * 3, TabBarHeight()};
+}
+
+bool BrowserWindow::InTabStrip(POINT point) const {
+  if (app_mode_ || full_screen_ || !window_) return false;
+  RECT client{};
+  GetClientRect(window_, &client);
+  return point.y >= 0 && point.y < TabBarHeight() && point.x < client.right - CaptionButtonWidth() * 3;
+}
+
+int BrowserWindow::CaptionButtonWidth() const {
+  return Scaled(46);
+}
+
+int BrowserWindow::CaptionButtonHeight() const {
+  return TabBarHeight();
+}
+
+RECT BrowserWindow::WindowControlsRect() const {
+  if (full_screen_) return {0, 0, 0, 0};
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int width = CaptionButtonWidth() * 3;
+  const int height = CaptionButtonHeight();
+  return {client.right - width, 0, client.right, height};
+}
+
+RECT BrowserWindow::MinimizeButtonRect() const {
+  if (full_screen_) return {0, 0, 0, 0};
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int btn_w = CaptionButtonWidth();
+  const int height = CaptionButtonHeight();
+  return {client.right - btn_w * 3, 0, client.right - btn_w * 2, height};
+}
+
+RECT BrowserWindow::MaximizeButtonRect() const {
+  if (full_screen_) return {0, 0, 0, 0};
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int btn_w = CaptionButtonWidth();
+  const int height = CaptionButtonHeight();
+  return {client.right - btn_w * 2, 0, client.right - btn_w, height};
+}
+
+RECT BrowserWindow::CloseButtonRect() const {
+  if (full_screen_) return {0, 0, 0, 0};
+  RECT client{};
+  GetClientRect(window_, &client);
+  const int btn_w = CaptionButtonWidth();
+  const int height = CaptionButtonHeight();
+  return {client.right - btn_w, 0, client.right, height};
+}
+
+BrowserWindow::CaptionButton BrowserWindow::HitTestCaptionButton(POINT pt) const {
+  if (full_screen_) return CaptionButton::kNone;
+  const RECT min_r = MinimizeButtonRect();
+  if (PtInRect(&min_r, pt)) return CaptionButton::kMinimize;
+  const RECT max_r = MaximizeButtonRect();
+  if (PtInRect(&max_r, pt)) return CaptionButton::kMaximize;
+  const RECT close_r = CloseButtonRect();
+  if (PtInRect(&close_r, pt)) return CaptionButton::kClose;
+  return CaptionButton::kNone;
+}
+
+void BrowserWindow::PaintCaptionButtons(HDC dc, const RECT& client) {
+  if (full_screen_) return;
+
+  const RECT min_r = MinimizeButtonRect();
+  const RECT max_r = MaximizeButtonRect();
+  const RECT close_r = CloseButtonRect();
+  const bool is_light = IsLightAppearance();
+
+  const COLORREF hover_bg = is_light ? RGB(220, 226, 238) : RGB(35, 40, 52);
+  const COLORREF press_bg = is_light ? RGB(205, 214, 228) : RGB(48, 55, 72);
+
+  // Draw Minimize Button background
+  if (hovered_caption_button_ == CaptionButton::kMinimize) {
+    COLORREF bg = (pressed_caption_button_ == CaptionButton::kMinimize) ? press_bg : hover_bg;
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(dc, &min_r, br);
+    DeleteObject(br);
+  }
+
+  // Draw Maximize Button background
+  if (hovered_caption_button_ == CaptionButton::kMaximize) {
+    COLORREF bg = (pressed_caption_button_ == CaptionButton::kMaximize) ? press_bg : hover_bg;
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(dc, &max_r, br);
+    DeleteObject(br);
+  }
+
+  // Draw Close Button background (Distinctive red on hover/press)
+  if (hovered_caption_button_ == CaptionButton::kClose) {
+    COLORREF bg = (pressed_caption_button_ == CaptionButton::kClose)
+        ? RGB(190, 10, 25)
+        : RGB(232, 17, 35);
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(dc, &close_r, br);
+    DeleteObject(br);
+  }
+
+  const int pen_width = (g_dpi >= 144) ? 2 : 1;
+  const COLORREF default_color = is_light ? RGB(60, 64, 75) : kTextColor;
+  const COLORREF hover_color = (hovered_caption_button_ == CaptionButton::kClose)
+                                   ? RGB(255, 255, 255)
+                                   : (is_light ? RGB(15, 23, 42) : RGB(255, 255, 255));
+
+  // 1. Minimize Glyph: Sleek horizontal bar
+  {
+    const COLORREF c = (hovered_caption_button_ == CaptionButton::kMinimize) ? hover_color : default_color;
+    HPEN pen = CreatePen(PS_SOLID, pen_width, c);
+    HPEN old_pen = static_cast<HPEN>(SelectObject(dc, pen));
+    const int cx = (min_r.left + min_r.right) / 2;
+    const int cy = (min_r.top + min_r.bottom) / 2;
+    const int half = Scaled(5);
+    MoveToEx(dc, cx - half, cy, nullptr);
+    LineTo(dc, cx + half + 1, cy);
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+  }
+
+  // 2. Maximize / Restore Glyph
+  {
+    const COLORREF c = (hovered_caption_button_ == CaptionButton::kMaximize) ? hover_color : default_color;
+    HPEN pen = CreatePen(PS_SOLID, pen_width, c);
+    HPEN old_pen = static_cast<HPEN>(SelectObject(dc, pen));
+    HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(HOLLOW_BRUSH)));
+
+    const int cx = (max_r.left + max_r.right) / 2;
+    const int cy = (max_r.top + max_r.bottom) / 2;
+    const int half = Scaled(5);
+
+    if (IsZoomed(window_)) {
+      // Restore: Two clean overlapping squares
+      const int offset = Scaled(2);
+      Rectangle(dc, cx - half + offset, cy - half - offset, cx + half + offset + 1, cy + half - offset + 1);
+      COLORREF front_bg = (hovered_caption_button_ == CaptionButton::kMaximize)
+          ? ((pressed_caption_button_ == CaptionButton::kMaximize) ? press_bg : hover_bg)
+          : (is_light ? RGB(235, 238, 245) : kTabBarTop);
+      HBRUSH front_br = CreateSolidBrush(front_bg);
+      SelectObject(dc, front_br);
+      Rectangle(dc, cx - half, cy - half + offset, cx + half - offset + 1, cy + half + 1);
+      SelectObject(dc, old_brush);
+      DeleteObject(front_br);
+    } else {
+      // Maximize: Crisp single square
+      Rectangle(dc, cx - half, cy - half, cx + half + 1, cy + half + 1);
+    }
+
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    DeleteObject(pen);
+  }
+
+  // 3. Close Glyph: Modern crisp 'X'
+  {
+    const COLORREF c = (hovered_caption_button_ == CaptionButton::kClose) ? hover_color : default_color;
+    HPEN pen = CreatePen(PS_SOLID, pen_width, c);
+    HPEN old_pen = static_cast<HPEN>(SelectObject(dc, pen));
+
+    const int cx = (close_r.left + close_r.right) / 2;
+    const int cy = (close_r.top + close_r.bottom) / 2;
+    const int half = Scaled(4);
+
+    MoveToEx(dc, cx - half, cy - half, nullptr);
+    LineTo(dc, cx + half + 1, cy + half + 1);
+    MoveToEx(dc, cx + half, cy - half, nullptr);
+    LineTo(dc, cx - half - 1, cy + half + 1);
+
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+  }
+}
+
+bool BrowserWindow::IsLightAppearance() const {
+  return mtk::preferences::ShouldUseLightAppearance(
+      mtk::preferences::Store::Get().values().theme_mode);
+}
+
+void BrowserWindow::OnBrowserFaviconUrlsChanged(
+    BrowserClient* client, const std::vector<std::string>& icon_urls) {
+}
+
+void BrowserWindow::OnBrowserMediaAccessChanged(BrowserClient* client,
+                                               bool camera_active,
+                                               bool microphone_active) {
+  const size_t index = FindTab(client);
+  if (index == kNoTab) return;
+  if (tabs_[index].camera_active == camera_active &&
+      tabs_[index].microphone_active == microphone_active) {
+    return;
+  }
+  tabs_[index].camera_active = camera_active;
+  tabs_[index].microphone_active = microphone_active;
+  RECT client_rect{};
+  GetClientRect(window_, &client_rect);
+  RECT strip{0, 0, client_rect.right, TabBarHeight()};
+  InvalidateRect(window_, &strip, FALSE);
+}
+
+void BrowserWindow::OnBrowserPasskeyAction(BrowserClient* client,
+                                          mtk::passkeys::Action action) {
+}
+
+void BrowserWindow::OnBrowserDownloadsAction(
+    BrowserClient* client, const mtk::downloads_page::Action& action) {
+}
+
+void BrowserWindow::OnBrowserSettingsAction(
+    BrowserClient* client, const mtk::settings_page::Action& action) {
+}
+
+void BrowserWindow::OnBrowserFullscreenModeChange(BrowserClient* client,
+                                                 bool fullscreen) {
+  if (FindTab(client) != active_tab_) return;
+  SetFullScreen(fullscreen);
+}
+
+void BrowserWindow::OnBrowserGotFocus(BrowserClient* client) {
+  const size_t index = FindTab(client);
+  if (index != kNoTab && index != active_tab_) {
+    SelectTab(index);
+  }
+}
+
+bool BrowserWindow::IsSplitViewActive() const {
+  return split_tab_ < tabs_.size() && split_tab_ != active_tab_;
+}
+
+void BrowserWindow::OpenLinkInOtherPane(const std::string& url) {
+  if (!IsSplitViewActive()) {
+    CreateTab(url);
+    return;
+  }
+  const size_t other_tab = (split_focus_pane_ == 0) ? split_tab_ : active_tab_;
+  if (other_tab < tabs_.size() && tabs_[other_tab].client && tabs_[other_tab].client->browser()) {
+    tabs_[other_tab].client->browser()->GetMainFrame()->LoadURL(url);
+  }
+}
+
+void BrowserWindow::SetFullScreen(bool enable) {
+  if (full_screen_ != enable) {
+    ToggleFullScreen();
+  }
+}
+
+void BrowserWindow::ShowTabSearch() {
+  std::vector<mtk::tabs::SearchEntry> entries;
+  size_t active_choice = 0;
+  struct Target {
+    HWND window;
+    CefRefPtr<BrowserClient> client;
+  };
+  std::vector<Target> targets;
+  for (BrowserWindow* candidate : g_windows) {
+    if (!candidate || candidate->private_session_ != private_session_) continue;
+    for (size_t tab_index = 0; tab_index < candidate->tabs_.size(); ++tab_index) {
+      const auto& tab = candidate->tabs_[tab_index];
+      std::wstring title = tab.group.empty() ? tab.title
+                                             : L"[" + tab.group + L"] " + tab.title;
+      if (candidate != this && !private_session_) title = L"[other window] " + title;
+      entries.push_back({std::move(title), tab.url});
+      targets.push_back({candidate->window_, tab.client});
+      if (candidate == this && tab_index == active_tab_) {
+        active_choice = targets.size() - 1;
+      }
+    }
+  }
+  const ptrdiff_t choice =
+      mtk::tabs::ShowSearch(instance_, window_, entries, active_choice);
+  if (choice >= 0 && static_cast<size_t>(choice) < targets.size()) {
+    const auto& target = targets[static_cast<size_t>(choice)];
+    for (BrowserWindow* candidate : g_windows) {
+      if (candidate->window_ == target.window) {
+        SetForegroundWindow(candidate->window_);
+        const size_t tab_index = candidate->FindTab(target.client.get());
+        if (tab_index != kNoTab) candidate->SelectTab(tab_index);
+        break;
+      }
+    }
+  }
+}
+
+void BrowserWindow::ToggleVerticalTabs() {
+  auto& prefs = mtk::preferences::Store::Get();
+  auto values = prefs.values();
+  values.vertical_tabs = !values.vertical_tabs;
+  prefs.Save(values);
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+void BrowserWindow::ToggleVerticalTabsCollapsed() {
+  auto& prefs = mtk::preferences::Store::Get();
+  auto values = prefs.values();
+  values.vertical_tabs_collapsed = !values.vertical_tabs_collapsed;
+  prefs.Save(values);
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+void BrowserWindow::SaveActivePagePdf() {
+  const auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return;
+  const auto client = tab->client;
+  const auto browser = client->browser();
+  const auto frame = browser->GetMainFrame();
+  if (!frame || !frame->IsValid()) return;
+  const std::string original_url = frame->GetURL();
+
+  const std::wstring suggested = mtk::downloads::SuggestPdfFileName(tab->title);
+  wchar_t path[MAX_PATH]{};
+  wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
+
+  const std::wstring initial_dir = mtk::downloads::DownloadDirectory();
+  OPENFILENAMEW dialog{};
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = window_;
+  dialog.lpstrFile = path;
+  dialog.nMaxFile = MAX_PATH;
+  dialog.lpstrFilter = L"PDF (*.pdf)\0*.pdf\0\0";
+  dialog.lpstrDefExt = L"pdf";
+  if (!initial_dir.empty()) {
+    dialog.lpstrInitialDir = initial_dir.c_str();
+  }
+  dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+  if (!GetSaveFileNameW(&dialog)) return;
+  if (!frame->IsValid() || frame->GetURL().ToString() != original_url ||
+      FindTab(client.get()) == kNoTab) return;
+
+  CefPdfPrintSettings settings;
+  settings.print_background = 1;
+  browser->GetHost()->PrintToPDF(path, settings, nullptr);
+}
+
+void BrowserWindow::ToggleReaderMode() {
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return;
+  auto frame = tab->client->browser()->GetMainFrame();
+  if (!frame) return;
+
+  tab->reader_mode = !tab->reader_mode;
+  if (tab->reader_mode) {
+    constexpr char kScript[] = R"JS((() => {
+      const source = document.querySelector('article, main, [role="main"]') || document.body;
+      if (!source) return;
+      const title = document.title || 'Reader View';
+      const bodyHtml = source.innerHTML;
+      document.body.innerHTML = `
+        <div style="max-width:740px;margin:40px auto;padding:0 24px;font-family:Georgia,Cambria,serif;font-size:18px;line-height:1.8;color:#1a202c;background:#fafaf9;">
+          <h1 style="font-size:32px;line-height:1.2;margin-bottom:24px;color:#0f172a;">${title}</h1>
+          <div>${bodyHtml}</div>
+        </div>
+      `;
+      document.body.style.backgroundColor = '#fafaf9';
+    })())JS";
+    frame->ExecuteJavaScript(kScript, frame->GetURL(), 0);
+  } else {
+    tab->client->browser()->Reload();
+  }
+}
+
+void BrowserWindow::ApplyFocusMode(Tab& tab) {
+  if (!tab.client || !tab.client->browser()) return;
+  auto frame = tab.client->browser()->GetMainFrame();
+  if (!frame) return;
+  const std::string url = frame->GetURL().ToString();
+  const std::string host = mtk::policy::HostOf(url);
+  if (host.find("youtube.com") == std::string::npos) return;
+
+  if (tab.focus_mode) {
+    frame->ExecuteJavaScript(mtk::focus::kEnableScript, url, 0);
+  } else {
+    frame->ExecuteJavaScript(mtk::focus::kDisableScript, url, 0);
+  }
+}
+
+void BrowserWindow::ToggleFocusMode() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  tab->focus_mode = !tab->focus_mode;
+  ApplyFocusMode(*tab);
+}
+
+void BrowserWindow::ToggleReadingList() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const std::string url = WideToUtf8(tab->url);
+  if (!mtk::policy::EvaluateNavigation(url).allow) return;
+  auto& store = mtk::library::Store::Get();
+  const bool already_saved = store.IsInReadingList(url);
+  const bool changed = already_saved
+      ? store.RemoveReadingListAndFlush(url)
+      : store.SaveReadingListAndFlush(url, tab->title);
+  if (!changed) {
+    MessageBoxW(window_, mtk::strings::Get(Text::kReadingListUpdateFailed),
+                mtk::strings::Get(Text::kReadingList), MB_OK | MB_ICONERROR);
+  }
+}
+
+void BrowserWindow::ShowReadingListDialog() {
+  const auto& entries = mtk::library::Store::Get().reading_list();
+  if (entries.empty()) {
+    MessageBoxW(window_, mtk::strings::Get(Text::kReadingListEmpty),
+                mtk::strings::Get(Text::kReadingList), MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  if (auto* tab = ActiveTab(); tab && tab->client && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(entries[0].url);
+  }
+}
+
+void BrowserWindow::TranslateActivePage(const std::string& target_language) {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const std::string source_url = WideToUtf8(tab->url);
+  const auto decision = mtk::policy::EvaluateNavigation(source_url);
+  if (!decision.allow) return;
+  const std::string translated =
+      mtk::translation::GoogleTranslateUrl(decision.url, target_language);
+  if (translated.empty()) return;
+  if (MessageBoxW(window_, mtk::strings::Get(Text::kTranslationPrivacyNotice),
+                  mtk::strings::Get(Text::kTranslationPrivacyTitle),
+                  MB_YESNO | MB_ICONINFORMATION) != IDYES) {
+    return;
+  }
+  CreateTab(translated);
+}
+
+void BrowserWindow::OpenActiveSiteAsWebApp() {
+  auto* tab = ActiveTab();
+  if (!tab) return;
+  const auto decision = mtk::policy::EvaluateNavigation(WideToUtf8(tab->url));
+  const std::string app_id = decision.allow ? mtk::web_app::IdForUrl(decision.url) : "";
+  if (app_id.empty()) return;
+
+  mtk::web_app::InstallOptions options;
+  if (!mtk::web_app::PromptInstallApp(instance_, window_, decision.url, tab->title, &options)) {
+    return;
+  }
+
+  wchar_t executable[MAX_PATH]{};
+  if (GetModuleFileNameW(nullptr, executable, MAX_PATH)) {
+    mtk::web_app::CreateAppShortcuts(executable, decision.url, options.display_name,
+                                    options.desktop_shortcut, options.start_menu_shortcut);
+  }
+}
+
+void BrowserWindow::ShowPasskeyCheckPage() {
+  auto* tab = ActiveTab();
+  if (tab && tab->client && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(mtk::passkeys::kUrlWide);
+    return;
+  }
+  CreateTab(mtk::passkeys::kUrl);
+}
+
+void BrowserWindow::ShowTaskManager() {
+  mtk::task_manager::Show(instance_, window_);
+}
+
+void BrowserWindow::ToggleSplitView() {
+  if (tabs_.size() < 2) return;
+  if (IsSplitViewActive()) {
+    split_tab_ = kNoTab;
+  } else {
+    split_tab_ = (active_tab_ + 1) % tabs_.size();
+    split_ratio_ = 0.5f;
+  }
+  SyncTabVisibility();
+  InvalidateRect(window_, nullptr, FALSE);
+}
+
+void BrowserWindow::ShowTabGroupsMenu() {
+  std::set<std::wstring> groups;
+  for (const auto& tab : tabs_) {
+    if (!tab.group.empty()) groups.insert(tab.group);
+  }
+  if (groups.empty()) {
+    MessageBoxW(window_, L"No tab groups have been created yet.\n\nUse 'Set tab group...' to name a group for the active tab.",
+                L"Tab groups", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  std::wstring list = L"Active tab groups:\n";
+  for (const auto& g : groups) list += L"\u2022 " + g + L"\n";
+  MessageBoxW(window_, list.c_str(), L"Tab groups", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::ShowWorkspacesMenu() {
+  std::set<std::wstring> workspaces;
+  for (const auto& tab : tabs_) {
+    if (!tab.workspace.empty()) workspaces.insert(tab.workspace);
+  }
+  if (workspaces.empty()) {
+    MessageBoxW(window_, L"No workspaces have been configured yet.\n\nUse 'Set workspace...' to assign the active tab to a workspace.",
+                L"Workspaces", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  std::wstring list = L"Configured workspaces:\n";
+  for (const auto& w : workspaces) list += L"\u2022 " + w + L"\n";
+  MessageBoxW(window_, list.c_str(), L"Workspaces", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::ShowDiagnostics() {
+  const auto& prefs = mtk::preferences::Store::Get().values();
+  const std::wstring message = L"MTK Browser — local diagnostics\n\nBuild SDK: " +
+      Utf8ToWide(CEF_VERSION) + L"\nOpen windows: " + std::to_wstring(g_windows.size()) +
+      L"\nTabs in this window: " + std::to_wstring(tabs_.size()) +
+      L"\nDisplay scaling: " + std::to_wstring(g_dpi) + L" DPI" +
+      L"\nPrivate window: " + (private_session_ ? L"Yes" : L"No") +
+      L"\nMemory saver: " + (prefs.memory_saver ? L"On" : L"Off") +
+      L"\n\nThis information stays on this computer. It contains no browsing addresses or saved credentials.";
+  MessageBoxW(window_, message.c_str(), L"MTK Browser", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::OpenDownloadsPage() {
+  auto* tab = ActiveTab();
+  if (tab && tab->client && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(mtk::downloads_page::kUrlWide);
+    return;
+  }
+  CreateTab(mtk::downloads_page::kUrl);
+}
+
+void BrowserWindow::OpenSettingsPage() {
+  auto* tab = ActiveTab();
+  if (tab && tab->client && tab->client->browser()) {
+    tab->client->browser()->GetMainFrame()->LoadURL(mtk::settings_page::kUrlWide);
+    return;
+  }
+  CreateTab(mtk::settings_page::kUrl);
+}
+
+void BrowserWindow::DeleteProfile() {
+  MessageBoxW(window_, L"Only inactive profiles can be removed.", L"Delete profile", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::RenameProfile() {
+  MessageBoxW(window_, L"The default profile cannot be renamed.", L"Rename profile", MB_OK | MB_ICONINFORMATION);
+}
+
+void BrowserWindow::ShowDeveloperTools() {
+  auto* tab = ActiveTab();
+  if (!tab || !tab->client || !tab->client->browser()) return;
+  CefWindowInfo windowInfo;
+  CefBrowserSettings settings;
+  CefPoint inspectAt;
+#if defined(OS_WIN)
+  windowInfo.SetAsPopup(window_, "DevTools");
+#endif
+  tab->client->browser()->GetHost()->ShowDevTools(windowInfo, tab->client, settings, inspectAt);
 }

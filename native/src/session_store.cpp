@@ -18,6 +18,7 @@ namespace {
 // right after the "U" line of any tab that was pinned when saved.
 constexpr char kHeaderV1[] = "MTK_SESSION_V1\n";
 constexpr char kHeaderV2[] = "MTK_SESSION_V2\n";
+constexpr char kHeaderV3[] = "MTK_SESSION_V3\n";
 constexpr size_t kMaxFileBytes = 64 * 1024;
 constexpr size_t kMaxUrlBytes = 2048;
 
@@ -123,6 +124,140 @@ bool IsRestorable(const std::string& raw_url, std::string* normalized) {
   return true;
 }
 
+bool ParseInt(std::string_view value, int* output) {
+  const auto result = std::from_chars(value.data(), value.data() + value.size(),
+                                      *output);
+  return result.ec == std::errc() && result.ptr == value.data() + value.size();
+}
+
+bool ValidBounds(const Window& window) {
+  return window.width >= 480 && window.height >= 320 &&
+         window.width <= 20000 && window.height <= 20000 &&
+         window.left >= -30000 && window.left <= 30000 &&
+         window.top >= -30000 && window.top <= 30000;
+}
+
+void MirrorFirstWindow(Snapshot* snapshot) {
+  if (snapshot->windows.empty()) return;
+  snapshot->urls = snapshot->windows.front().urls;
+  snapshot->pinned = snapshot->windows.front().pinned;
+  snapshot->active_index = snapshot->windows.front().active_index;
+  snapshot->split_index = snapshot->windows.front().split_index;
+  snapshot->split_ratio = snapshot->windows.front().split_ratio;
+}
+
+Snapshot LoadV3(std::string_view content, size_t offset) {
+  Snapshot result;
+  Window* current = nullptr;
+  bool accepted_tab = false;
+  size_t total_tabs = 0;
+  while (offset < content.size()) {
+    const size_t end = content.find('\n', offset);
+    std::string_view line = content.substr(
+        offset, (end == std::string_view::npos ? content.size() : end) - offset);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line == "W") {
+      accepted_tab = false;
+      if (result.windows.size() < kMaxRestoredWindows) {
+        result.windows.emplace_back();
+        current = &result.windows.back();
+      } else {
+        current = nullptr;
+      }
+    } else if (current && line.starts_with("B\t")) {
+      const std::string_view fields = line.substr(2);
+      int values[5]{};
+      size_t field = 0;
+      size_t begin = 0;
+      while (field < 5) {
+        const size_t tab = fields.find('\t', begin);
+        const std::string_view value = fields.substr(
+            begin, (tab == std::string_view::npos ? fields.size() : tab) - begin);
+        if (!ParseInt(value, &values[field++])) break;
+        if (tab == std::string_view::npos) break;
+        begin = tab + 1;
+      }
+      if (field == 5) {
+        current->left = values[0]; current->top = values[1];
+        current->width = values[2]; current->height = values[3];
+        current->maximized = values[4] != 0;
+        if (!ValidBounds(*current)) {
+          current->left = current->top = current->width = current->height = 0;
+          current->maximized = false;
+        }
+      }
+    } else if (current && line.starts_with("A\t")) {
+      size_t active = 0;
+      const auto value = line.substr(2);
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), active);
+      if (parsed.ec == std::errc() && parsed.ptr == value.data() + value.size()) {
+        current->active_index = active;
+      }
+    } else if (current && line.starts_with("U\t")) {
+      accepted_tab = false;
+      std::string decoded;
+      std::string normalized;
+      if (total_tabs < kMaxRestoredTabs && HexDecode(line.substr(2), &decoded) && IsRestorable(decoded, &normalized)) {
+        accepted_tab = true;
+        current->urls.push_back(std::move(normalized));
+        current->pinned.push_back(false);
+        current->groups.emplace_back();
+        current->workspaces.emplace_back();
+        ++total_tabs;
+      }
+    } else if (current && accepted_tab && line == "P\t1" && !current->pinned.empty()) {
+      current->pinned.back() = true;
+    } else if (current && accepted_tab && line.starts_with("G\t") && !current->groups.empty()) {
+      std::string group;
+      if (HexDecode(line.substr(2), &group) && group.size() <= 128 &&
+          std::none_of(group.begin(), group.end(), [](unsigned char c) { return c < 32 || c == 127; })) {
+        current->groups.back() = std::move(group);
+      }
+    } else if (current && accepted_tab && line.starts_with("K\t") && !current->workspaces.empty()) {
+      std::string ws;
+      if (HexDecode(line.substr(2), &ws) && ws.size() <= 64 &&
+          std::none_of(ws.begin(), ws.end(), [](unsigned char c) { return c < 32 || c == 127; })) {
+        current->workspaces.back() = std::move(ws);
+      }
+    } else if (current && line.starts_with("S\t")) {
+      const std::string_view fields = line.substr(2);
+      const size_t tab = fields.find('\t');
+      size_t split_idx = 0;
+      int ratio = 50;
+      if (tab != std::string_view::npos) {
+        const auto idx_part = fields.substr(0, tab);
+        const auto ratio_part = fields.substr(tab + 1);
+        const auto parsed = std::from_chars(idx_part.data(), idx_part.data() + idx_part.size(), split_idx);
+        if (parsed.ec == std::errc() && parsed.ptr == idx_part.data() + idx_part.size()) {
+          ParseInt(ratio_part, &ratio);
+          current->split_index = split_idx;
+          current->split_ratio = std::clamp(ratio, 20, 80);
+        }
+      } else {
+        const auto parsed = std::from_chars(fields.data(), fields.data() + fields.size(), split_idx);
+        if (parsed.ec == std::errc() && parsed.ptr == fields.data() + fields.size()) {
+          current->split_index = split_idx;
+          current->split_ratio = 50;
+        }
+      }
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  result.windows.erase(std::remove_if(result.windows.begin(), result.windows.end(),
+                                      [](const Window& window) {
+                                        return window.urls.empty();
+                                      }), result.windows.end());
+  for (auto& window : result.windows) {
+    window.active_index = std::min(window.active_index, window.urls.size() - 1);
+    if (window.split_index >= window.urls.size() || window.split_index == window.active_index) {
+      window.split_index = static_cast<size_t>(-1);
+    }
+  }
+  MirrorFirstWindow(&result);
+  return result;
+}
+
 }  // namespace
 
 Snapshot Load() {
@@ -130,7 +265,9 @@ Snapshot Load() {
   std::string content;
   if (!ReadBoundedFile(&content)) return result;
   size_t offset;
-  if (content.starts_with(kHeaderV2)) {
+  if (content.starts_with(kHeaderV3)) {
+    return LoadV3(content, sizeof(kHeaderV3) - 1);
+  } else if (content.starts_with(kHeaderV2)) {
     offset = sizeof(kHeaderV2) - 1;
   } else if (content.starts_with(kHeaderV1)) {
     offset = sizeof(kHeaderV1) - 1;
@@ -165,32 +302,82 @@ Snapshot Load() {
   result.active_index = result.urls.empty()
                             ? 0
                             : std::min(requested_active, result.urls.size() - 1);
+  if (!result.urls.empty()) {
+    Window window;
+    window.urls = result.urls;
+    window.pinned = result.pinned;
+    window.active_index = result.active_index;
+    result.windows.push_back(std::move(window));
+  }
   return result;
 }
 
 bool Save(const std::vector<std::string>& urls, size_t active_index,
           const std::vector<bool>& pinned) {
-  std::vector<std::string> safe_urls;
-  std::vector<bool> safe_pinned;
-  safe_urls.reserve(std::min(urls.size(), kMaxRestoredTabs));
-  safe_pinned.reserve(safe_urls.capacity());
-  size_t safe_active = 0;
-  for (size_t index = 0;
-       index < urls.size() && safe_urls.size() < kMaxRestoredTabs; ++index) {
-    std::string normalized;
-    if (!IsRestorable(urls[index], &normalized)) continue;
-    if (index <= active_index) safe_active = safe_urls.size();
-    safe_urls.push_back(std::move(normalized));
-    safe_pinned.push_back(index < pinned.size() && pinned[index]);
-  }
-  if (safe_urls.empty()) return Clear();
+  Window window;
+  window.urls = urls;
+  window.pinned = pinned;
+  window.active_index = active_index;
+  return SaveWindows({window});
+}
 
-  safe_active = std::min(safe_active, safe_urls.size() - 1);
-  std::string content = kHeaderV2;
-  content += "A\t" + std::to_string(safe_active) + "\n";
-  for (size_t index = 0; index < safe_urls.size(); ++index) {
-    content += "U\t" + HexEncode(safe_urls[index]) + "\n";
-    if (safe_pinned[index]) content += "P\t1\n";
+bool SaveWindows(const std::vector<Window>& windows) {
+  std::vector<Window> safe_windows;
+  safe_windows.reserve(std::min(windows.size(), kMaxRestoredWindows));
+  size_t total_tabs = 0;
+  for (const Window& source : windows) {
+    if (safe_windows.size() >= kMaxRestoredWindows || total_tabs >= kMaxRestoredTabs) break;
+    Window window;
+    if (ValidBounds(source)) {
+      window.left = source.left; window.top = source.top;
+      window.width = source.width; window.height = source.height;
+      window.maximized = source.maximized;
+    }
+    size_t target_split_index = static_cast<size_t>(-1);
+    for (size_t index = 0; index < source.urls.size() &&
+                           total_tabs < kMaxRestoredTabs; ++index) {
+      std::string normalized;
+      if (!IsRestorable(source.urls[index], &normalized)) continue;
+      if (index <= source.active_index) window.active_index = window.urls.size();
+      if (index == source.split_index) target_split_index = window.urls.size();
+      window.urls.push_back(std::move(normalized));
+      window.pinned.push_back(index < source.pinned.size() && source.pinned[index]);
+      const std::string group = index < source.groups.size() ? source.groups[index] : "";
+      window.groups.push_back(group.size() <= 128 &&
+          std::none_of(group.begin(), group.end(), [](unsigned char c) { return c < 32 || c == 127; }) ? group : "");
+      const std::string ws = index < source.workspaces.size() ? source.workspaces[index] : "";
+      window.workspaces.push_back(ws.size() <= 64 &&
+          std::none_of(ws.begin(), ws.end(), [](unsigned char c) { return c < 32 || c == 127; }) ? ws : "");
+      ++total_tabs;
+    }
+    if (!window.urls.empty()) {
+      window.active_index = std::min(window.active_index, window.urls.size() - 1);
+      if (target_split_index < window.urls.size() && target_split_index != window.active_index) {
+        window.split_index = target_split_index;
+        window.split_ratio = std::clamp(source.split_ratio, 20, 80);
+      }
+      safe_windows.push_back(std::move(window));
+    }
+  }
+  if (safe_windows.empty()) return Clear();
+
+  std::string content = kHeaderV3;
+  for (const Window& window : safe_windows) {
+    content += "W\nB\t" + std::to_string(window.left) + "\t" +
+               std::to_string(window.top) + "\t" + std::to_string(window.width) +
+               "\t" + std::to_string(window.height) + "\t" +
+               (window.maximized ? "1" : "0") + "\nA\t" +
+               std::to_string(window.active_index) + "\n";
+    if (window.split_index < window.urls.size() && window.split_index != window.active_index) {
+      content += "S\t" + std::to_string(window.split_index) + "\t" +
+                 std::to_string(window.split_ratio) + "\n";
+    }
+    for (size_t index = 0; index < window.urls.size(); ++index) {
+      content += "U\t" + HexEncode(window.urls[index]) + "\n";
+      if (window.pinned[index]) content += "P\t1\n";
+      if (!window.groups[index].empty()) content += "G\t" + HexEncode(window.groups[index]) + "\n";
+      if (!window.workspaces[index].empty()) content += "K\t" + HexEncode(window.workspaces[index]) + "\n";
+    }
   }
   return WriteAtomically(content);
 }

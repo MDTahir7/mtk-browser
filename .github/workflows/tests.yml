@@ -27,6 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test password form capture and autofill
+        run: node --test tests/password_form_tests.cjs
+
       - name: Show toolchain
         shell: pwsh
         run: |

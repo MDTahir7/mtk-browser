@@ -35,6 +35,11 @@ struct Folder {
 // bounded by kMaxFolderNameCharacters.
 std::wstring NormalizeFolderName(const std::wstring& name);
 
+// Standards-compatible Netscape bookmark HTML for manual backup/import into
+// other browsers. It performs no disk I/O and escapes all user-controlled
+// titles, folders and URLs before producing UTF-8.
+std::string ExportBookmarksHtml(const std::vector<Entry>& bookmarks);
+
 class Store final {
  public:
   static Store& Get();
@@ -49,6 +54,21 @@ class Store final {
   bool UpdateHistoryTitle(const std::string& url, const std::wstring& title);
   bool AddBookmark(const std::string& url, const std::wstring& title,
                    const std::wstring& folder = {});
+  // Explicit editor operation: validates the destination, updates title AND
+  // folder together, and restores memory if the atomic disk write fails.
+  bool SaveBookmarkAndFlush(const std::string& url, const std::wstring& title,
+                            const std::wstring& folder);
+  bool RemoveBookmarkAndFlush(const std::string& url);
+  // Reading-list entries are saved separately from bookmarks. Both operations
+  // roll memory back when the atomic file replacement fails.
+  bool SaveReadingListAndFlush(const std::string& url, const std::wstring& title);
+  bool RemoveReadingListAndFlush(const std::string& url);
+
+  // Offline article archive functions for Reading List items.
+  static bool SaveArticleArchive(const std::string& url, const std::string& html_content);
+  static bool HasArticleArchive(const std::string& url);
+  static std::wstring GetArticleArchivePath(const std::string& url);
+  static bool RemoveArticleArchive(const std::string& url);
   bool RemoveBookmark(const std::string& url);
   bool RemoveHistoryAt(size_t index);
   bool RemoveBookmarkAt(size_t index);
@@ -63,6 +83,7 @@ class Store final {
   // bookmarks would only be a leftover.
   bool ClearBookmarks();
   bool IsBookmarked(const std::string& url) const;
+  bool IsInReadingList(const std::string& url) const;
 
   // Folder names are compared without case, so "Work" and "work" are one folder.
   bool FolderExists(const std::wstring& name) const;
@@ -77,14 +98,20 @@ class Store final {
   // Moves one bookmark. An empty folder means the top level. Fails when the
   // target folder does not exist.
   bool SetBookmarkFolder(const std::string& url, const std::wstring& folder);
+  // Reorders bookmarks within the list and atomically flushes changes.
+  bool MoveBookmark(size_t from, size_t to);
+  // Reorders folders within the list and atomically flushes changes.
+  bool MoveFolder(size_t from, size_t to);
 
   const std::vector<Entry>& history() const;
   const std::vector<Entry>& bookmarks() const;
+  const std::vector<Entry>& reading_list() const;
   const std::vector<Folder>& folders() const;
 
  private:
   std::vector<Entry> history_;
   std::vector<Entry> bookmarks_;
+  std::vector<Entry> reading_list_;
   std::vector<Folder> folders_;
   bool dirty_ = false;
 };

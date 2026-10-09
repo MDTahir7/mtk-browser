@@ -68,6 +68,8 @@ MTK_TEST(FingerprintBuildScriptCarriesTheSeedAndTargetsTheRightApis) {
   MTK_EXPECT_TRUE(script.find("getParameter") != std::string::npos);
   MTK_EXPECT_TRUE(script.find("Generic Renderer") != std::string::npos);
   MTK_EXPECT_TRUE(script.find("getChannelData") != std::string::npos);
+  MTK_EXPECT_TRUE(script.find("hardwareConcurrency") != std::string::npos);
+  MTK_EXPECT_TRUE(script.find("deviceMemory") != std::string::npos);
   // No network access and no persistent observer, matching how every other
   // injected script in this codebase is built.
   MTK_EXPECT_TRUE(script.find("XMLHttpRequest") == std::string::npos);

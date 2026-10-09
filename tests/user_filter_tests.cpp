@@ -104,3 +104,23 @@ MTK_TEST(UserFiltersWithNoRulesDecideNothing) {
   MTK_EXPECT_TRUE(mtk::user_filters::Evaluate("") ==
                   mtk::user_filters::Decision::kNone);
 }
+
+MTK_TEST(UserFilterValidationExplainsRulesThatCannotMatch) {
+  const auto valid = mtk::user_filters::Validate(
+      {L"# note", L"ads.example.com", L"@@cdn.example.com/needed.js", L""});
+  MTK_EXPECT_TRUE(valid.valid);
+  MTK_EXPECT_EQ_INT(valid.active_rule_count, 2);
+
+  const auto empty_allow = mtk::user_filters::Validate({L"ads.test", L"@@"});
+  MTK_EXPECT_FALSE(empty_allow.valid);
+  MTK_EXPECT_EQ_INT(empty_allow.line, 2);
+
+  const auto non_ascii = mtk::user_filters::Validate({L"\u0935\u093f\u091c\u094d\u091e\u093e\u092a\u0928"});
+  MTK_EXPECT_FALSE(non_ascii.valid);
+  MTK_EXPECT_EQ_INT(non_ascii.line, 1);
+
+  const auto too_long = mtk::user_filters::Validate(
+      {std::wstring(mtk::user_filters::kMaxRuleLength + 1, L'a')});
+  MTK_EXPECT_FALSE(too_long.valid);
+  MTK_EXPECT_EQ_INT(too_long.line, 1);
+}

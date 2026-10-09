@@ -133,6 +133,25 @@ MTK_TEST(SiteStoreAllowPlainHttpRoundTrips) {
   store.Clear();
 }
 
+MTK_TEST(SiteSessionPermissionIsMemoryOnlyAndFailsClosedWhenCleared) {
+  auto& store = mtk::sites::Store::Get();
+  store.Clear();
+  mtk::sites::Rule rule;
+  rule.origin = "https://example.com";
+  rule.camera = mtk::sites::Permission::kSession;
+  rule.microphone = mtk::sites::Permission::kSession;
+  MTK_EXPECT_TRUE(store.Set(rule));
+  // Session decisions never appear in the durable list that is written to disk.
+  MTK_EXPECT_FALSE(store.HasRule(rule.origin));
+  const auto active = store.For(rule.origin);
+  MTK_EXPECT_TRUE(active.camera == mtk::sites::Permission::kSession);
+  MTK_EXPECT_TRUE(active.microphone == mtk::sites::Permission::kSession);
+  store.Clear();
+  const auto after_clear = store.For(rule.origin);
+  MTK_EXPECT_TRUE(after_clear.camera == mtk::sites::Permission::kAsk);
+  MTK_EXPECT_TRUE(after_clear.microphone == mtk::sites::Permission::kAsk);
+}
+
 MTK_TEST(SiteShieldsOffNeverWeakensSafetyRules) {
   // The per-site switch may only drop ad and tracker filtering. Everything the
   // request policy refuses for safety has to stay refused with filtering off.

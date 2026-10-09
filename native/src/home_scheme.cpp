@@ -6,8 +6,14 @@
 
 #include <vector>
 
+#include "downloads_page.h"
 #include "history_page.h"
 #include "home_page.h"
+#include "passkey_page.h"
+#include "preferences.h"
+#include "settings_page.h"
+#include "strings.h"
+#include "windows_hello.h"
 #include "include/cef_request.h"
 #include "include/cef_resource_handler.h"
 #include "include/cef_response.h"
@@ -67,8 +73,8 @@ class HomeResourceHandler final : public CefResourceHandler {
 
 constexpr char kBaseCsp[] =
     "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
-    "object-src 'none'; frame-src 'none'; connect-src 'none'; "
-    "img-src 'none'; font-src 'none'; script-src 'none'; form-action ";
+    "object-src 'none'; frame-src 'none'; connect-src https://wttr.in https://dummyjson.com; "
+    "img-src data:; font-src 'none'; script-src 'unsafe-inline'; form-action ";
 
 class Factory final : public CefSchemeHandlerFactory {
  public:
@@ -81,12 +87,14 @@ class Factory final : public CefSchemeHandlerFactory {
         !IsHomeUrl(request->GetURL().ToString())) return nullptr;
     // A private window is served the same document with no profile rows, so
     // nothing from the on-disk profile is visible inside it.
+    const auto prefs = preferences::Store::Get().values();
+    const bool light = preferences::ShouldUseLightAppearance(prefs.theme_mode);
     const std::string csp = std::string(kBaseCsp) + "https://www.google.com";
     if (private_session_) {
-      return new HomeResourceHandler(BuildHtml({}, {}, {}), csp);
+      return new HomeResourceHandler(BuildHtml({}, {}, {}, light), csp);
     }
-    std::string html = SnapshotHtml();
-    if (html.empty()) html = BuildHtml({}, {}, {});
+    std::string html = SnapshotHtml(light);
+    if (html.empty()) html = BuildHtml({}, {}, {}, light);
     return new HomeResourceHandler(std::move(html), csp);
   }
 
@@ -123,6 +131,84 @@ class HistoryFactory final : public CefSchemeHandlerFactory {
   IMPLEMENT_REFCOUNTING(HistoryFactory);
 };
 
+// The passkeys document renders diagnostics for WebAuthn and Windows Hello.
+class PasskeysFactory final : public CefSchemeHandlerFactory {
+ public:
+  CefRefPtr<CefResourceHandler> Create(
+      CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString& scheme_name,
+      CefRefPtr<CefRequest> request) override {
+    if (scheme_name != kScheme || !request || request->GetMethod() != "GET") {
+      return nullptr;
+    }
+    const std::string url = request->GetURL().ToString();
+    if (!passkeys::IsPasskeyUrl(url)) return nullptr;
+
+    const auto prefs = preferences::Store::Get().values();
+    const bool light = preferences::ShouldUseLightAppearance(prefs.theme_mode);
+    const bool hindi = strings::IsHindi();
+    const auto hello_status = hello::CheckAvailability();
+    std::string html = passkeys::BuildHtml(hello_status, light, hindi);
+    return new HomeResourceHandler(std::move(html), passkeys::kPasskeyCsp);
+  }
+
+ private:
+  IMPLEMENT_REFCOUNTING(PasskeysFactory);
+};
+
+class DownloadsFactory final : public CefSchemeHandlerFactory {
+ public:
+  explicit DownloadsFactory(bool private_session)
+      : private_session_(private_session) {}
+
+  CefRefPtr<CefResourceHandler> Create(
+      CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString& scheme_name,
+      CefRefPtr<CefRequest> request) override {
+    if (scheme_name != kScheme || !request || request->GetMethod() != "GET") {
+      return nullptr;
+    }
+    const std::string url = request->GetURL().ToString();
+    if (!downloads_page::IsDownloadsUrl(url)) return nullptr;
+
+    const auto prefs = preferences::Store::Get().values();
+    const bool light = preferences::ShouldUseLightAppearance(prefs.theme_mode);
+    const auto& items = private_session_ ? std::vector<downloads::Item>{}
+                                         : downloads::Manager::Get().items();
+    std::string html = downloads_page::BuildHtml(
+        items, downloads_page::QueryOf(url), downloads_page::CategoryOf(url),
+        light, private_session_);
+    return new HomeResourceHandler(std::move(html),
+                                   std::string(kBaseCsp) + "'self'");
+  }
+
+ private:
+  const bool private_session_ = false;
+  IMPLEMENT_REFCOUNTING(DownloadsFactory);
+};
+
+class SettingsFactory final : public CefSchemeHandlerFactory {
+ public:
+  CefRefPtr<CefResourceHandler> Create(
+      CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString& scheme_name,
+      CefRefPtr<CefRequest> request) override {
+    if (scheme_name != kScheme || !request || request->GetMethod() != "GET") {
+      return nullptr;
+    }
+    const std::string url = request->GetURL().ToString();
+    if (!settings_page::IsSettingsUrl(url)) return nullptr;
+
+    const auto prefs = preferences::Store::Get().values();
+    const bool light = preferences::ShouldUseLightAppearance(prefs.theme_mode);
+    const bool hindi = strings::IsHindi();
+    std::string html = settings_page::BuildHtml(
+        prefs, settings_page::QueryOf(url), light, hindi);
+    return new HomeResourceHandler(std::move(html),
+                                   std::string(kBaseCsp) + "'self'");
+  }
+
+ private:
+  IMPLEMENT_REFCOUNTING(SettingsFactory);
+};
+
 }  // namespace
 
 void RegisterCustomScheme(CefRawPtr<CefSchemeRegistrar> registrar) {
@@ -139,7 +225,13 @@ bool RegisterSchemeHandler(CefRefPtr<CefRequestContext> context,
   return context->RegisterSchemeHandlerFactory(kScheme, kHost,
                                                new Factory(private_session)) &&
          context->RegisterSchemeHandlerFactory(
-             kScheme, history::kHost, new HistoryFactory(private_session));
+             kScheme, history::kHost, new HistoryFactory(private_session)) &&
+         context->RegisterSchemeHandlerFactory(
+             kScheme, passkeys::kHost, new PasskeysFactory()) &&
+         context->RegisterSchemeHandlerFactory(
+             kScheme, downloads_page::kHost, new DownloadsFactory(private_session)) &&
+         context->RegisterSchemeHandlerFactory(
+             kScheme, settings_page::kHost, new SettingsFactory());
 }
 
 }  // namespace mtk::home

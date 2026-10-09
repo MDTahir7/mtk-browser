@@ -139,3 +139,20 @@ MTK_TEST(StringsUnknownIdIsHarmless) {
       true);
   MTK_EXPECT_TRUE(text.empty());
 }
+
+MTK_TEST(StringsPrintAndPdfSupportBothLanguages) {
+  const mtk::strings::Id print_ids[] = {
+      mtk::strings::Id::kPrint,
+      mtk::strings::Id::kSavePageAsPdf,
+      mtk::strings::Id::kPdfSaved,
+      mtk::strings::Id::kPdfSaveFailed,
+      mtk::strings::Id::kPdfCreateFolderFailed,
+  };
+  for (const auto id : print_ids) {
+    const std::wstring en = mtk::strings::GetFor(id, false);
+    const std::wstring hi = mtk::strings::GetFor(id, true);
+    MTK_EXPECT_TRUE(!en.empty());
+    MTK_EXPECT_TRUE(!hi.empty());
+    MTK_EXPECT_TRUE(LooksLikeHindi(hi));
+  }
+}

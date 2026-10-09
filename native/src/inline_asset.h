@@ -11,11 +11,13 @@ namespace mtk::assets {
 // Prefix carried by every URL this module produces. Request filtering keys off
 // it, so it lives here rather than being spelled out at each use site.
 inline constexpr char kWebmDataUrlPrefix[] = "data:video/webm;base64,";
+inline constexpr char kWebpDataUrlPrefix[] = "data:image/webp;base64,";
 
 // Largest asset that may be inlined. A truncated or swapped file must never be
 // able to break a page, and the finished URL has to stay well inside
 // Chromium's 2 MB URL limit.
 inline constexpr size_t kMaxInlineWebmBytes = 700 * 1024;
+inline constexpr size_t kMaxInlineWebpBytes = 700 * 1024;
 
 // Returns "data:video/webm;base64,..." for `file_name`, which must sit beside
 // the executable. Returns an empty string when the file is missing, is larger
@@ -24,5 +26,10 @@ inline constexpr size_t kMaxInlineWebmBytes = 700 * 1024;
 //
 // The result is loaded once per file name and cached for the process lifetime.
 const std::string& WebmDataUrl(const std::wstring& file_name);
+
+// Returns "data:image/webp;base64,..." for `file_name`, which must sit beside
+// the executable. Returns an empty string when the file is missing, is larger
+// than kMaxInlineWebpBytes, or does not start with RIFF...WEBP.
+const std::string& WebpDataUrl(const std::wstring& file_name);
 
 }  // namespace mtk::assets

@@ -20,10 +20,22 @@ struct Credential {
 constexpr size_t kMaxCredentials = 500;
 constexpr size_t kMaxUserNameLength = 256;
 constexpr size_t kMaxPasswordLength = 256;
+constexpr size_t kGeneratedPasswordLength = 20;
+
+// Creates a cryptographically random password locally. It always contains a
+// lowercase letter, uppercase letter, digit and symbol, and never persists the
+// result. The caller should scrub it after copying or displaying it.
+bool GeneratePassword(size_t length, std::wstring* password);
 
 // True when a credential may be saved for `url` at all: https only, and the
 // navigation policy must allow it.
 bool IsStorableUrl(const std::string& url);
+
+// Password origins include non-default HTTPS ports, unlike host-wide site
+// settings. Input is a canonical browser URL; malformed authorities are refused.
+std::string OriginOf(const std::string& url);
+
+enum class SaveDisposition { kInvalid, kNew, kUnchanged, kUpdate, kUnavailable };
 
 class Store final {
  public:
@@ -37,6 +49,13 @@ class Store final {
   // caller is expected to have asked the person first.
   bool Save(const std::string& origin, const std::wstring& user_name,
             const std::wstring& password);
+  // Read-only classification: unchanged credentials need no prompt or rewrite.
+  SaveDisposition ClassifySave(const std::string& origin,
+                               const std::wstring& user_name,
+                               const std::wstring& password) const;
+  // Commit an approved save; restore the in-memory store if disk write fails.
+  bool SaveAndFlush(const std::string& origin, const std::wstring& user_name,
+                    const std::wstring& password);
 
   // Credential for `origin`, if exactly one is stored. Autofill deliberately
   // does nothing when several accounts are saved for a site, rather than

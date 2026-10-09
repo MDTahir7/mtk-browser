@@ -17,6 +17,9 @@ enum class Permission {
   // once someone chooses Allow in the site settings dialog.
   kAsk,
   kAllow,
+  // An explicit one-browser-run Allow. Store::Set keeps this only in memory;
+  // serialised rules always become kAsk, so a restart fails closed.
+  kSession,
   kBlock,
 };
 
@@ -73,6 +76,9 @@ class Store final {
 
  private:
   std::vector<Rule> rules_;
+  // Overlay of kSession decisions. It is intentionally never written to
+  // sites.v1 and applies only to the current browser process.
+  std::vector<Rule> temporary_rules_;
   bool dirty_ = false;
 };
 

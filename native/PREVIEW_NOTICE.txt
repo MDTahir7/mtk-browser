@@ -1,10 +1,11 @@
 MTK Browser 0.3.0 Preview
 
-This is a development preview for local evaluation. Preview packages may be
-unsigned; verify the publisher shown by Windows before installation. The current
-CEF 150 build runs with the Chromium sandbox disabled while bootstrap.exe
-packaging is still under development. Do not deploy this build in production or
-treat it as a finished child-safety guarantee.
+This is a development preview for local evaluation. The packaged Windows build
+uses CEF 150's Chromium sandbox through the CEF bootstrap; keep MTKBrowser.exe,
+MTKBrowser.dll, and the CEF runtime files together in the same folder. Preview
+packages may be unsigned; verify the publisher shown by Windows before
+installation. Do not deploy this build in production or treat filtering as a
+finished child-safety guarantee.
 
 Filtering is defense-in-depth, not a guarantee that every unsafe page or ad can
 be identified. Keep Windows, MTK Browser, and family DNS controls updated.

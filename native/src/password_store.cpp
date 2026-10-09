@@ -1,9 +1,11 @@
 #include "password_store.h"
 
 #include <windows.h>
+#include <bcrypt.h>
 #include <dpapi.h>
 
 #include <algorithm>
+#include <charconv>
 #include <string_view>
 
 #include "policy.h"
@@ -22,6 +24,24 @@ constexpr size_t kMaxBlobBytes = 8192;
 
 std::wstring PasswordsPath() {
   return mtk::preferences::ApplicationDataDirectory() + L"\\passwords.v1";
+}
+
+bool RandomIndex(size_t upper_bound, size_t* index) {
+  if (!index || upper_bound == 0 || upper_bound > 256) return false;
+  const unsigned int threshold =
+      256u - (256u % static_cast<unsigned int>(upper_bound));
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    unsigned char value = 0;
+    if (BCryptGenRandom(nullptr, &value, sizeof(value),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+      return false;
+    }
+    if (value < threshold) {
+      *index = value % upper_bound;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool EnsureDataDirectory() {
@@ -205,10 +225,79 @@ void Scrub(std::wstring* text) {
   text->clear();
 }
 
+bool GeneratePassword(size_t length, std::wstring* password) {
+  if (!password || length < 12 || length > kMaxPasswordLength) return false;
+  static constexpr wchar_t kLower[] = L"abcdefghijkmnopqrstuvwxyz";
+  static constexpr wchar_t kUpper[] = L"ABCDEFGHJKLMNPQRSTUVWXYZ";
+  static constexpr wchar_t kDigits[] = L"23456789";
+  static constexpr wchar_t kSymbols[] = L"!@#$%^&*-_+=";
+  static constexpr wchar_t kAll[] =
+      L"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*-_+=";
+  password->assign(length, L'\0');
+  const wchar_t* required[] = {kLower, kUpper, kDigits, kSymbols};
+  for (size_t slot = 0; slot < std::size(required); ++slot) {
+    size_t choice = 0;
+    if (!RandomIndex(wcslen(required[slot]), &choice)) {
+      Scrub(password);
+      return false;
+    }
+    (*password)[slot] = required[slot][choice];
+  }
+  for (size_t slot = std::size(required); slot < length; ++slot) {
+    size_t choice = 0;
+    if (!RandomIndex(wcslen(kAll), &choice)) {
+      Scrub(password);
+      return false;
+    }
+    (*password)[slot] = kAll[choice];
+  }
+  for (size_t slot = length - 1; slot > 0; --slot) {
+    size_t choice = 0;
+    if (!RandomIndex(slot + 1, &choice)) {
+      Scrub(password);
+      return false;
+    }
+    std::swap((*password)[slot], (*password)[choice]);
+  }
+  return true;
+}
+
+std::string OriginOf(const std::string& url) {
+  if (!url.starts_with("https://") || url.size() > 8192) return {};
+  for (unsigned char c : url) {
+    if (c <= 0x20 || c == 0x7f || c == '\\') return {};
+  }
+  const size_t end = url.find_first_of("/?#", 8);
+  const std::string authority = url.substr(8, end == std::string::npos
+                                                ? end : end - 8);
+  const size_t colon = authority.find(':');
+  std::string host = authority.substr(0, colon);
+  if (host.empty() || host.size() > 253) return {};
+  // IPv6 literals/private-network addresses are not part of the current
+  // browser policy. Fail closed instead of trying to interpret brackets here.
+  for (char& c : host) {
+    if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+          c == '-' || c == '.')) return {};
+  }
+  std::string result = "https://" + host;
+  if (colon != std::string::npos) {
+    const std::string_view text(authority.data() + colon + 1,
+                                authority.size() - colon - 1);
+    unsigned int port = 0;
+    const auto [last, error] = std::from_chars(text.data(),
+                                              text.data() + text.size(), port);
+    if (error != std::errc{} || last != text.data() + text.size() ||
+        port == 0 || port > 65535) return {};
+    if (port != 443) result += ":" + std::to_string(port);
+  }
+  return result;
+}
+
 bool IsStorableUrl(const std::string& url) {
   // https only. A password typed over plain http is already exposed, and
   // remembering it would quietly encourage repeating that.
-  const std::string origin = mtk::sites::OriginOf(url);
+  const std::string origin = OriginOf(url);
   if (origin.empty() || !origin.starts_with("https://")) return false;
   return mtk::policy::EvaluateNavigation(url).allow;
 }
@@ -249,7 +338,7 @@ void Store::Load() {
             HexDecode(line.substr(first + 1, second - first - 1),
                       kMaxUserNameLength * 4, &user_utf8) &&
             HexDecode(line.substr(second + 1), kMaxBlobBytes, &entry.encrypted) &&
-            mtk::sites::OriginOf(origin) == origin &&
+            OriginOf(origin) == origin &&
             origin.starts_with("https://")) {
           entry.credential.origin = std::move(origin);
           entry.credential.user_name = Utf8ToWide(user_utf8);
@@ -284,7 +373,7 @@ bool Store::Flush() {
 
 bool Store::Save(const std::string& origin, const std::wstring& user_name,
                  const std::wstring& password) {
-  if (mtk::sites::OriginOf(origin) != origin || !origin.starts_with("https://")) {
+  if (OriginOf(origin) != origin || !IsStorableUrl(origin)) {
     return false;
   }
   if (user_name.empty() || user_name.size() > kMaxUserNameLength) return false;
@@ -310,6 +399,36 @@ bool Store::Save(const std::string& origin, const std::wstring& user_name,
   }
   dirty_ = true;
   return true;
+}
+
+SaveDisposition Store::ClassifySave(const std::string& origin,
+                                   const std::wstring& user_name,
+                                   const std::wstring& password) const {
+  if (origin.empty() || OriginOf(origin) != origin || !IsStorableUrl(origin) ||
+      user_name.empty() || user_name.size() > kMaxUserNameLength ||
+      password.empty() || password.size() > kMaxPasswordLength) {
+    return SaveDisposition::kInvalid;
+  }
+  const auto found = std::find_if(entries_.begin(), entries_.end(),
+      [&](const Entry& e) { return e.credential.origin == origin &&
+                                 e.credential.user_name == user_name; });
+  if (found == entries_.end()) return SaveDisposition::kNew;
+  std::wstring previous;
+  if (!Reveal(origin, user_name, &previous)) return SaveDisposition::kUnavailable;
+  const bool same = previous == password;
+  Scrub(&previous);
+  return same ? SaveDisposition::kUnchanged : SaveDisposition::kUpdate;
+}
+
+bool Store::SaveAndFlush(const std::string& origin,
+                        const std::wstring& user_name,
+                        const std::wstring& password) {
+  const auto previous = entries_;  // Encrypted blobs only.
+  const bool was_dirty = dirty_;
+  if (Save(origin, user_name, password) && Flush()) return true;
+  entries_ = previous;
+  dirty_ = was_dirty;
+  return false;
 }
 
 bool Store::SingleFor(const std::string& origin, Credential* credential) const {

@@ -3,13 +3,21 @@
 #include <windows.h>
 #include <bcrypt.h>
 
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
+
 #include <array>
+#include <charconv>
+#include <cmath>
 #include <optional>
 #include <string_view>
 #include <vector>
 
+#include "download_manager.h"
 #include "home_page.h"
+#include "library_store.h"
 #include "profile.h"
+#include "session_store.h"
 
 namespace mtk::preferences {
 namespace {
@@ -18,6 +26,10 @@ constexpr wchar_t kLegacyDefaultHomePage[] =
     L"https://www.google.com/?safe=active";
 constexpr char kDefaultAcceptLanguage[] = "en-US,en,hi";
 constexpr size_t kMaxHomePageLength = 2048;
+constexpr int kMinWindowWidth = 480;
+constexpr int kMinWindowHeight = 360;
+constexpr int kMaxWindowDimension = 10000;
+constexpr int kMaxWindowCoordinate = 100000;
 
 std::wstring LocalAppDataRoot() {
   std::wstring path(32767, L'\0');
@@ -201,6 +213,25 @@ bool WriteFileAtomically(const std::string& content) {
 void ReadValues(const std::string& content, Values* values) {
   std::optional<std::wstring> loaded_home;
   std::optional<bool> loaded_home_custom;
+  WindowBounds loaded_bounds{};
+  bool has_left = false;
+  bool has_top = false;
+  bool has_width = false;
+  bool has_height = false;
+  std::optional<bool> loaded_maximized;
+
+  auto parse_int = [](std::string_view sv, int* out) -> bool {
+    if (sv.empty()) return false;
+    int val = 0;
+    const auto [ptr, ec] =
+        std::from_chars(sv.data(), sv.data() + sv.size(), val);
+    if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
+      *out = val;
+      return true;
+    }
+    return false;
+  };
+
   size_t offset = 0;
   while (offset < content.size()) {
     const size_t end = content.find('\n', offset);
@@ -210,16 +241,31 @@ void ReadValues(const std::string& content, Values* values) {
     constexpr std::string_view kHomePage = "home_page=";
     constexpr std::string_view kHomePageMode = "home_page_mode=";
     constexpr std::string_view kAcceptLanguage = "accept_language=";
+    constexpr std::string_view kSearchEngine = "search_engine=";
+    constexpr std::string_view kThemeMode = "theme=";
     constexpr std::string_view kDownloadMode = "download_mode=";
+    constexpr std::string_view kDownloadAskLocation = "download_ask_location=";
     constexpr std::string_view kStartupMode = "startup_mode=";
     constexpr std::string_view kPinSalt = "pin_salt=";
     constexpr std::string_view kPinHash = "pin_hash=";
     constexpr std::string_view kAutoUpdate = "auto_update=";
+    constexpr std::string_view kFamiliarShortcuts = "familiar_shortcuts=";
     constexpr std::string_view kBookmarksBar = "bookmarks_bar=";
+    constexpr std::string_view kVerticalTabs = "vertical_tabs=";
+    constexpr std::string_view kVerticalTabsCollapsed = "vertical_tabs_collapsed=";
+    constexpr std::string_view kMemorySaver = "memory_saver=";
+    constexpr std::string_view kFocusMode = "focus_mode=";
     constexpr std::string_view kHttpsOnly = "https_only=";
     constexpr std::string_view kFingerprintProtection =
         "fingerprint_protection=";
+    constexpr std::string_view kClearActivityOnExit = "clear_activity_on_exit=";
     constexpr std::string_view kDohProvider = "doh_provider=";
+    constexpr std::string_view kWindowsHelloUnlock = "windows_hello_unlock=";
+    constexpr std::string_view kWindowLeft = "window_left=";
+    constexpr std::string_view kWindowTop = "window_top=";
+    constexpr std::string_view kWindowWidth = "window_width=";
+    constexpr std::string_view kWindowHeight = "window_height=";
+    constexpr std::string_view kWindowMaximized = "window_maximized=";
     if (line.starts_with(kHomePage)) {
       const std::wstring home_page = Utf8ToWide(
           std::string(line.substr(kHomePage.size())));
@@ -231,10 +277,23 @@ void ReadValues(const std::string& content, Values* values) {
     } else if (line.starts_with(kAcceptLanguage)) {
       const std::string language(line.substr(kAcceptLanguage.size()));
       if (IsAllowedLanguage(language)) values->accept_language = language;
+    } else if (line.starts_with(kSearchEngine)) {
+      const std::string engine(line.substr(kSearchEngine.size()));
+      if (engine == "google" || engine == "bing" || engine == "duckduckgo") {
+        values->search_engine = engine;
+      }
+    } else if (line.starts_with(kThemeMode)) {
+      const std::string mode(line.substr(kThemeMode.size()));
+      if (mode == "light") values->theme_mode = ThemeMode::kLight;
+      else if (mode == "dark") values->theme_mode = ThemeMode::kDark;
+      else if (mode == "system") values->theme_mode = ThemeMode::kSystem;
     } else if (line.starts_with(kDownloadMode)) {
       const std::string mode(line.substr(kDownloadMode.size()));
       values->download_mode = mode == "standard" ? DownloadMode::kStandard
                                                  : DownloadMode::kSafe;
+    } else if (line.starts_with(kDownloadAskLocation)) {
+      values->download_ask_location =
+          line.substr(kDownloadAskLocation.size()) != "off";
     } else if (line.starts_with(kStartupMode)) {
       const std::string mode(line.substr(kStartupMode.size()));
       values->startup_mode = mode == "continue"
@@ -248,14 +307,32 @@ void ReadValues(const std::string& content, Values* values) {
       if (IsHexOfLength(hash, kPinHashBytes)) values->pin_hash = hash;
     } else if (line.starts_with(kAutoUpdate)) {
       values->auto_update = std::string(line.substr(kAutoUpdate.size())) != "off";
+    } else if (line.starts_with(kFamiliarShortcuts)) {
+      values->familiar_shortcuts =
+          std::string(line.substr(kFamiliarShortcuts.size())) == "on";
     } else if (line.starts_with(kBookmarksBar)) {
       values->show_bookmarks_bar =
           std::string(line.substr(kBookmarksBar.size())) == "on";
+    } else if (line.starts_with(kVerticalTabs)) {
+      values->vertical_tabs =
+          std::string(line.substr(kVerticalTabs.size())) == "on";
+    } else if (line.starts_with(kVerticalTabsCollapsed)) {
+      values->vertical_tabs_collapsed =
+          std::string(line.substr(kVerticalTabsCollapsed.size())) == "on";
+    } else if (line.starts_with(kMemorySaver)) {
+      values->memory_saver =
+          std::string(line.substr(kMemorySaver.size())) != "off";
+    } else if (line.starts_with(kFocusMode)) {
+      values->focus_mode =
+          std::string(line.substr(kFocusMode.size())) != "off";
     } else if (line.starts_with(kHttpsOnly)) {
       values->https_only = std::string(line.substr(kHttpsOnly.size())) != "off";
     } else if (line.starts_with(kFingerprintProtection)) {
       values->fingerprint_protection =
           std::string(line.substr(kFingerprintProtection.size())) != "off";
+    } else if (line.starts_with(kClearActivityOnExit)) {
+      values->clear_activity_on_exit =
+          std::string(line.substr(kClearActivityOnExit.size())) == "on";
     } else if (line.starts_with(kDohProvider)) {
       const std::string name(line.substr(kDohProvider.size()));
       if (name == "system") values->doh_provider = DohProvider::kSystem;
@@ -263,9 +340,31 @@ void ReadValues(const std::string& content, Values* values) {
       else if (name == "quad9") values->doh_provider = DohProvider::kQuad9;
       else if (name == "google") values->doh_provider = DohProvider::kGoogle;
       else values->doh_provider = DohProvider::kCloudflareFamily;
+    } else if (line.starts_with(kWindowsHelloUnlock)) {
+      values->windows_hello_unlock =
+          std::string(line.substr(kWindowsHelloUnlock.size())) == "on";
+    } else if (line.starts_with(kWindowLeft)) {
+      has_left = parse_int(line.substr(kWindowLeft.size()), &loaded_bounds.left);
+    } else if (line.starts_with(kWindowTop)) {
+      has_top = parse_int(line.substr(kWindowTop.size()), &loaded_bounds.top);
+    } else if (line.starts_with(kWindowWidth)) {
+      has_width = parse_int(line.substr(kWindowWidth.size()), &loaded_bounds.width);
+    } else if (line.starts_with(kWindowHeight)) {
+      has_height = parse_int(line.substr(kWindowHeight.size()), &loaded_bounds.height);
+    } else if (line.starts_with(kWindowMaximized)) {
+      loaded_maximized =
+          std::string(line.substr(kWindowMaximized.size())) == "on";
     }
     if (end == std::string::npos) break;
     offset = end + 1;
+  }
+
+  if (has_left && has_top && has_width && has_height &&
+      IsValidWindowBounds(loaded_bounds)) {
+    values->window_bounds = loaded_bounds;
+    if (loaded_maximized.has_value()) {
+      values->window_maximized = *loaded_maximized;
+    }
   }
 
   // Old builds had no mode marker. Their exact Google default is migrated to
@@ -364,7 +463,10 @@ bool Store::Save(const Values& values) {
                              home_page.starts_with("http://"));
   if (!IsSafeHomePage(values.home_page) ||
       (!valid_default && !valid_custom) ||
-      !IsAllowedLanguage(values.accept_language)) {
+      !IsAllowedLanguage(values.accept_language) ||
+      (values.search_engine != "google" &&
+       values.search_engine != "bing" &&
+       values.search_engine != "duckduckgo")) {
     return false;
   }
   const bool pin_present =
@@ -373,13 +475,23 @@ bool Store::Save(const Values& values) {
                       !IsHexOfLength(values.pin_hash, kPinHashBytes))) {
     return false;
   }
+  const bool has_bounds = values.window_bounds.left != 0 ||
+                          values.window_bounds.top != 0 ||
+                          values.window_bounds.width != 0 ||
+                          values.window_bounds.height != 0;
+  if (has_bounds && !IsValidWindowBounds(values.window_bounds)) {
+    return false;
+  }
   std::string content =
       "[MTK Browser]\r\nhome_page=" + home_page +
       "\r\nhome_page_mode=" +
       (values.home_page_custom ? "custom" : "default") +
       "\r\naccept_language=" + values.accept_language +
+      "\r\nsearch_engine=" + values.search_engine +
       "\r\ndownload_mode=" +
       (values.download_mode == DownloadMode::kStandard ? "standard" : "safe") +
+      "\r\ndownload_ask_location=" +
+      (values.download_ask_location ? "on" : "off") +
       "\r\nstartup_mode=" +
       (values.startup_mode == StartupMode::kContinueSession ? "continue"
                                                             : "home") +
@@ -388,14 +500,37 @@ bool Store::Save(const Values& values) {
     content += "pin_salt=" + values.pin_salt + "\r\n";
     content += "pin_hash=" + values.pin_hash + "\r\n";
   }
+  const auto theme_name = [](ThemeMode mode) -> const char* {
+    switch (mode) {
+      case ThemeMode::kLight: return "light";
+      case ThemeMode::kDark: return "dark";
+      case ThemeMode::kSystem: break;
+    }
+    return "system";
+  };
+  content += std::string("theme=") + theme_name(values.theme_mode) + "\r\n";
   content += std::string("auto_update=") +
              (values.auto_update ? "on" : "off") + "\r\n";
+  content += std::string("windows_hello_unlock=") +
+             (values.windows_hello_unlock ? "on" : "off") + "\r\n";
+  content += std::string("familiar_shortcuts=") +
+             (values.familiar_shortcuts ? "on" : "off") + "\r\n";
   content += std::string("bookmarks_bar=") +
              (values.show_bookmarks_bar ? "on" : "off") + "\r\n";
+  content += std::string("vertical_tabs=") +
+             (values.vertical_tabs ? "on" : "off") + "\r\n";
+  content += std::string("vertical_tabs_collapsed=") +
+             (values.vertical_tabs_collapsed ? "on" : "off") + "\r\n";
+  content += std::string("memory_saver=") +
+             (values.memory_saver ? "on" : "off") + "\r\n";
+  content += std::string("focus_mode=") +
+             (values.focus_mode ? "on" : "off") + "\r\n";
   content += std::string("https_only=") + (values.https_only ? "on" : "off") +
              "\r\n";
   content += std::string("fingerprint_protection=") +
              (values.fingerprint_protection ? "on" : "off") + "\r\n";
+  content += std::string("clear_activity_on_exit=") +
+             (values.clear_activity_on_exit ? "on" : "off") + "\r\n";
   const auto doh_name = [](DohProvider provider) -> const char* {
     switch (provider) {
       case DohProvider::kSystem: return "system";
@@ -408,6 +543,14 @@ bool Store::Save(const Values& values) {
   };
   content += std::string("doh_provider=") + doh_name(values.doh_provider) +
              "\r\n";
+  if (IsValidWindowBounds(values.window_bounds)) {
+    content += "window_left=" + std::to_string(values.window_bounds.left) + "\r\n";
+    content += "window_top=" + std::to_string(values.window_bounds.top) + "\r\n";
+    content += "window_width=" + std::to_string(values.window_bounds.width) + "\r\n";
+    content += "window_height=" + std::to_string(values.window_bounds.height) + "\r\n";
+    content += std::string("window_maximized=") +
+               (values.window_maximized ? "on" : "off") + "\r\n";
+  }
   if (!WriteFileAtomically(content)) return false;
   values_ = values;
   return true;
@@ -453,6 +596,53 @@ bool VerifyPin(const std::wstring& pin) {
   }
   SecureZeroMemory(derived.data(), derived.size());
   return difference == 0;
+}
+
+bool IsValidWindowBounds(const WindowBounds& bounds) {
+  if (bounds.width < kMinWindowWidth || bounds.height < kMinWindowHeight) return false;
+  if (bounds.width > kMaxWindowDimension || bounds.height > kMaxWindowDimension) return false;
+  if (std::abs(bounds.left) > kMaxWindowCoordinate || std::abs(bounds.top) > kMaxWindowCoordinate) return false;
+  return true;
+}
+
+Values ResetSettings(const Values& current) {
+  Values defaults;
+  defaults.home_page = mtk::home::kHomeUrlWide;
+  defaults.home_page_custom = false;
+  defaults.accept_language = kDefaultAcceptLanguage;
+  defaults.pin_salt = current.pin_salt;
+  defaults.pin_hash = current.pin_hash;
+  return defaults;
+}
+
+bool ExecuteClearActivityOnExit() {
+  if (!Store::Get().values().clear_activity_on_exit) return false;
+  mtk::session::Clear();
+  mtk::library::Store::Get().ClearHistory();
+  auto& dm = mtk::downloads::Manager::Get();
+  dm.ClearFinished();
+  dm.Flush();
+  return true;
+}
+
+bool ShouldUseLightAppearance(ThemeMode mode) {
+  if (mode == ThemeMode::kLight) return true;
+  if (mode == ThemeMode::kDark) return false;
+  // ThemeMode::kSystem: Query Windows personalization registry setting.
+  DWORD value = 1;
+  DWORD size = sizeof(value);
+  const LSTATUS status = RegGetValueW(
+      HKEY_CURRENT_USER,
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      L"AppsUseLightTheme",
+      RRF_RT_REG_DWORD,
+      nullptr,
+      &value,
+      &size);
+  if (status == ERROR_SUCCESS) {
+    return value != 0;
+  }
+  return true;
 }
 
 }  // namespace mtk::preferences

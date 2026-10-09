@@ -131,3 +131,184 @@ MTK_TEST(LargeDownloadThresholdIsTwoGigabytes) {
   MTK_EXPECT_EQ_INT(mtk::downloads::kLargeDownloadBytes,
                     2LL * 1024 * 1024 * 1024);
 }
+
+MTK_TEST(PartialDownloadRangeHeaderFormatting) {
+  MTK_EXPECT_EQ_STR(mtk::downloads::BuildRangeHeader(1024), "bytes=1024-");
+  MTK_EXPECT_EQ_STR(mtk::downloads::BuildRangeHeader(50000000), "bytes=50000000-");
+  MTK_EXPECT_EQ_STR(mtk::downloads::BuildRangeHeader(0), "");
+  MTK_EXPECT_EQ_STR(mtk::downloads::BuildRangeHeader(-1), "");
+}
+
+MTK_TEST(IfRangeHeaderPrefersEtagOverLastModified) {
+  MTK_EXPECT_EQ_STR(
+      mtk::downloads::BuildIfRangeHeader("\"abc123etag\"", "Wed, 21 Oct 2015 07:28:00 GMT"),
+      "\"abc123etag\"");
+  MTK_EXPECT_EQ_STR(
+      mtk::downloads::BuildIfRangeHeader("", "Wed, 21 Oct 2015 07:28:00 GMT"),
+      "Wed, 21 Oct 2015 07:28:00 GMT");
+  MTK_EXPECT_EQ_STR(mtk::downloads::BuildIfRangeHeader("", ""), "");
+}
+
+MTK_TEST(CanResumeRequiresPausedOrFailedWithReceivedBytesAndValidUrl) {
+  mtk::downloads::Item item;
+  item.url = "https://example.com/archive.zip";
+  item.received_bytes = 1048576;
+  item.state = mtk::downloads::State::kPaused;
+  MTK_EXPECT_TRUE(mtk::downloads::CanResume(item));
+
+  item.state = mtk::downloads::State::kFailed;
+  MTK_EXPECT_TRUE(mtk::downloads::CanResume(item));
+
+  item.state = mtk::downloads::State::kComplete;
+  MTK_EXPECT_FALSE(mtk::downloads::CanResume(item));
+
+  item.state = mtk::downloads::State::kInProgress;
+  MTK_EXPECT_FALSE(mtk::downloads::CanResume(item));
+
+  item.state = mtk::downloads::State::kPaused;
+  item.received_bytes = 0;
+  MTK_EXPECT_FALSE(mtk::downloads::CanResume(item));
+
+  item.received_bytes = 1048576;
+  item.url = "ftp://example.com/archive.zip";
+  MTK_EXPECT_FALSE(mtk::downloads::CanResume(item));
+}
+
+MTK_TEST(PartialFilePathAppendsMtkPart) {
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::PartialFilePath(L"C:\\Downloads\\archive.zip"),
+      L"C:\\Downloads\\archive.zip.mtkpart");
+  MTK_EXPECT_EQ_WSTR(mtk::downloads::PartialFilePath(L""), L"");
+}
+
+MTK_TEST(SuggestPdfFileNameProducesWindowsSafeNames) {
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::SuggestPdfFileName(L"Quantum Computing - Wikipedia"),
+      L"Quantum Computing - Wikipedia.pdf");
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::SuggestPdfFileName(L"Research_Article.html"),
+      L"Research_Article.pdf");
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::SuggestPdfFileName(L"Invoice_2026.pdf"),
+      L"Invoice_2026.pdf");
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::SuggestPdfFileName(L""),
+      L"Saved page.pdf");
+  MTK_EXPECT_EQ_WSTR(
+      mtk::downloads::SuggestPdfFileName(L"   ...   "),
+      L"Saved page.pdf");
+  const std::wstring complex_title =
+      mtk::downloads::SuggestPdfFileName(L"Report: 2026/Q1 *Final* <Draft>? | Test");
+  MTK_EXPECT_TRUE(complex_title.find(L':') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'/') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'*') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'<') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'>') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'?') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.find(L'|') == std::wstring::npos);
+  MTK_EXPECT_TRUE(complex_title.ends_with(L".pdf"));
+}
+
+
+
+MTK_TEST(EvaluateStripsCdnAndObjectTypePrefixes) {
+  const auto decision = Safe(L"objecttype-raw-_photo.jpg", "image/jpeg");
+  MTK_EXPECT_TRUE(decision.allow);
+  MTK_EXPECT_EQ_WSTR(decision.file_name, L"photo.jpg");
+}
+
+MTK_TEST(EvaluateInfersExtensionFromMimeType) {
+  const auto decision = Safe(L"photo_without_ext", "image/jpeg");
+  MTK_EXPECT_TRUE(decision.allow);
+  MTK_EXPECT_EQ_WSTR(decision.file_name, L"photo_without_ext.jpg");
+}
+
+MTK_TEST(EvaluateInfersExtensionFromMimeWithParameters) {
+  const auto decision = Safe(L"document_without_ext", "application/pdf; charset=binary");
+  MTK_EXPECT_TRUE(decision.allow);
+  MTK_EXPECT_EQ_WSTR(decision.file_name, L"document_without_ext.pdf");
+}
+
+MTK_TEST(EvaluateInfersExtensionFromUrlPathFallback) {
+  const auto decision = Evaluate("https://cdn.example.com/assets/graphic.png?v=2",
+                                 L"graphic", "application/octet-stream", Mode::kSafe);
+  MTK_EXPECT_TRUE(decision.allow);
+  MTK_EXPECT_EQ_WSTR(decision.file_name, L"graphic.png");
+}
+
+MTK_TEST(SafeModeBlocksActiveSvgButAllowsAvifImages) {
+  const auto svg_dec = Safe(L"icon.svg", "image/svg+xml");
+  MTK_EXPECT_FALSE(svg_dec.allow);
+  MTK_EXPECT_FALSE(svg_dec.risky);
+
+  const auto avif_dec = Safe(L"photo.avif", "image/avif");
+  MTK_EXPECT_TRUE(avif_dec.allow);
+  MTK_EXPECT_FALSE(avif_dec.risky);
+}
+
+MTK_TEST(SuggestScreenshotFileNameGeneratesCleanTimestampedPng) {
+  const std::wstring empty_title = mtk::downloads::SuggestScreenshotFileName(L"");
+  MTK_EXPECT_TRUE(empty_title.starts_with(L"Screenshot_Webpage_"));
+  MTK_EXPECT_TRUE(empty_title.ends_with(L".png"));
+
+  const std::wstring html_title = mtk::downloads::SuggestScreenshotFileName(L"Google Search.html");
+  MTK_EXPECT_TRUE(html_title.starts_with(L"Screenshot_Google_Search_"));
+  MTK_EXPECT_TRUE(html_title.ends_with(L".png"));
+
+  const std::wstring dirty_title = mtk::downloads::SuggestScreenshotFileName(L"My Page: What / When * Now? <Demo> | Test");
+  MTK_EXPECT_TRUE(dirty_title.find(L':') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'/') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'*') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'<') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'>') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'?') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.find(L'|') == std::wstring::npos);
+  MTK_EXPECT_TRUE(dirty_title.ends_with(L".png"));
+}
+
+MTK_TEST(SaveBitmapToPngEncodesValidPngFile) {
+  HDC screen_dc = GetDC(nullptr);
+  MTK_EXPECT_TRUE(screen_dc != nullptr);
+  HDC mem_dc = CreateCompatibleDC(screen_dc);
+  MTK_EXPECT_TRUE(mem_dc != nullptr);
+  HBITMAP hbm = CreateCompatibleBitmap(screen_dc, 32, 32);
+  MTK_EXPECT_TRUE(hbm != nullptr);
+
+  HGDIOBJ old_bm = SelectObject(mem_dc, hbm);
+  RECT rc = {0, 0, 32, 32};
+  FillRect(mem_dc, &rc, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+  SelectObject(mem_dc, old_bm);
+  DeleteDC(mem_dc);
+  ReleaseDC(nullptr, screen_dc);
+
+  wchar_t temp_path[MAX_PATH]{};
+  GetTempPathW(MAX_PATH, temp_path);
+  std::wstring out_file = std::wstring(temp_path) + L"mtk_test_screenshot.png";
+  DeleteFileW(out_file.c_str());
+
+  const bool saved = mtk::downloads::SaveBitmapToPng(hbm, out_file);
+  DeleteObject(hbm);
+  MTK_EXPECT_TRUE(saved);
+
+  HANDLE hfile = CreateFileW(out_file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  MTK_EXPECT_TRUE(hfile != INVALID_HANDLE_VALUE);
+  if (hfile != INVALID_HANDLE_VALUE) {
+    DWORD bytes_read = 0;
+    unsigned char header[8] = {0};
+    ReadFile(hfile, header, 8, &bytes_read, nullptr);
+    CloseHandle(hfile);
+    DeleteFileW(out_file.c_str());
+
+    MTK_EXPECT_EQ_INT(bytes_read, 8);
+    // Standard PNG magic bytes: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
+    MTK_EXPECT_EQ_INT(header[0], 0x89);
+    MTK_EXPECT_EQ_INT(header[1], 'P');
+    MTK_EXPECT_EQ_INT(header[2], 'N');
+    MTK_EXPECT_EQ_INT(header[3], 'G');
+    MTK_EXPECT_EQ_INT(header[4], 0x0D);
+    MTK_EXPECT_EQ_INT(header[5], 0x0A);
+    MTK_EXPECT_EQ_INT(header[6], 0x1A);
+    MTK_EXPECT_EQ_INT(header[7], 0x0A);
+  }
+}

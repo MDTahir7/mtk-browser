@@ -5,14 +5,18 @@
 #include "include/cef_display_handler.h"
 #include "include/cef_download_handler.h"
 #include "include/cef_find_handler.h"
+#include "include/cef_focus_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_resource_request_handler.h"
+#include "downloads_page.h"
 #include "history_page.h"
 #include "home_page.h"
+#include "passkey_page.h"
+#include "settings_page.h"
 
 class BrowserClient;
 
@@ -29,22 +33,44 @@ class BrowserClientDelegate {
                                        bool can_go_forward) = 0;
   virtual void OnBrowserNavigationCompleted(BrowserClient* client,
                                             const std::string& url) = 0;
+  virtual void OnBrowserFaviconUrlsChanged(
+      BrowserClient* client, const std::vector<std::string>& icon_urls) = 0;
   virtual void OnBrowserFindResult(BrowserClient* client, int identifier,
                                    int count, int active_match_ordinal,
                                    bool final_update) = 0;
   virtual void OnBrowserPopupRequested(BrowserClient* client,
                                        const std::string& url) = 0;
   virtual void OnBrowserDownloadsChanged(BrowserClient* client) = 0;
+  // CEF emits this only while the browser has a live device capture source.
+  // It is intentionally separate from stored permission choices: an allowed
+  // camera is not necessarily a camera currently in use.
+  virtual void OnBrowserMediaAccessChanged(BrowserClient* client,
+                                           bool camera_active,
+                                           bool microphone_active) = 0;
   // Dispatches only allowlisted actions clicked from the exact built-in home
   // document. No arbitrary URL or script payload crosses this boundary.
   virtual void OnBrowserHomeAction(BrowserClient* client,
-                                   mtk::home::Action action) = 0;
+                                   const mtk::home::Action& action) = 0;
   // The same arrangement for the built-in history document. Deleting anything
   // asks for confirmation on the browser side, not on the page.
   virtual void OnBrowserHistoryAction(BrowserClient* client,
                                       const mtk::history::Action& action) = 0;
+  // Dispatches allowlisted actions clicked from the passkey diagnostic document.
+  virtual void OnBrowserPasskeyAction(BrowserClient* client,
+                                      mtk::passkeys::Action action) = 0;
+  virtual void OnBrowserDownloadsAction(
+      BrowserClient* client, const mtk::downloads_page::Action& action) = 0;
+  virtual void OnBrowserSettingsAction(
+      BrowserClient* client, const mtk::settings_page::Action& action) = 0;
   virtual bool OnBrowserShortcut(BrowserClient* client, int virtual_key,
                                  bool control, bool alt, bool shift) = 0;
+  virtual void OnBrowserFullscreenModeChange(BrowserClient* client,
+                                             bool fullscreen) = 0;
+  virtual void OnBrowserGotFocus(BrowserClient* client) = 0;
+  virtual bool IsSplitViewActive() const = 0;
+  virtual void OpenLinkInOtherPane(const std::string& url) = 0;
+  virtual void OnBrowserRequestBlocked(BrowserClient* client) = 0;
+  virtual void TakeActivePageScreenshot() = 0;
 
  protected:
   virtual ~BrowserClientDelegate() = default;
@@ -56,6 +82,7 @@ class BrowserClient final : public CefClient,
                             public CefDisplayHandler,
                             public CefDownloadHandler,
                             public CefFindHandler,
+                            public CefFocusHandler,
                             public CefKeyboardHandler,
                             public CefLifeSpanHandler,
                             public CefLoadHandler,
@@ -63,7 +90,12 @@ class BrowserClient final : public CefClient,
                             public CefResourceRequestHandler,
                             public CefPermissionHandler {
  public:
-  explicit BrowserClient(BrowserClientDelegate* delegate);
+  explicit BrowserClient(BrowserClientDelegate* delegate, bool is_private = false);
+  bool is_private() const { return is_private_; }
+
+  // BrowserWindow uses this only on the CEF UI thread while moving an existing
+  // child browser into another normal top-level MTK window.
+  void SetDelegate(BrowserClientDelegate* delegate);
 
   // Renderer queries for the password channel arrive here.
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
@@ -79,11 +111,14 @@ class BrowserClient final : public CefClient,
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override;
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override;
   CefRefPtr<CefFindHandler> GetFindHandler() override;
+  CefRefPtr<CefFocusHandler> GetFocusHandler() override;
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override;
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override;
   CefRefPtr<CefLoadHandler> GetLoadHandler() override;
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override;
   CefRefPtr<CefRequestHandler> GetRequestHandler() override;
+
+  void OnGotFocus(CefRefPtr<CefBrowser> browser) override;
 
   void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser,
                            CefRefPtr<CefFrame> frame,
@@ -203,12 +238,26 @@ class BrowserClient final : public CefClient,
       const CefString& requesting_origin,
       uint32_t requested_permissions,
       CefRefPtr<CefPermissionPromptCallback> callback) override;
+  bool OnRequestMediaAccessPermission(
+      CefRefPtr<CefBrowser> browser,
+      CefRefPtr<CefFrame> frame,
+      const CefString& requesting_origin,
+      uint32_t requested_permissions,
+      CefRefPtr<CefMediaAccessCallback> callback) override;
+
+  void OnMediaAccessChange(CefRefPtr<CefBrowser> browser,
+                           bool has_video_access,
+                           bool has_audio_access) override;
 
   void OnAddressChange(CefRefPtr<CefBrowser> browser,
                        CefRefPtr<CefFrame> frame,
                        const CefString& url) override;
   void OnTitleChange(CefRefPtr<CefBrowser> browser,
                      const CefString& title) override;
+  void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,
+                          const std::vector<CefString>& icon_urls) override;
+  void OnFullscreenModeChange(CefRefPtr<CefBrowser> browser,
+                              bool fullscreen) override;
 
   CefRefPtr<CefBrowser> browser() const { return browser_; }
 
@@ -244,6 +293,7 @@ class BrowserClient final : public CefClient,
 
   BrowserClientDelegate* delegate_ = nullptr;
   bool block_page_pending_ = false;
+  const bool is_private_ = false;
   CefRefPtr<CefBrowser> browser_;
 
   IMPLEMENT_REFCOUNTING(BrowserClient);

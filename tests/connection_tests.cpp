@@ -115,3 +115,13 @@ MTK_TEST(DohDefaultIsTheFamilyResolver) {
           mtk::preferences::Store::Get().values().doh_provider),
       "https://family.cloudflare-dns.com/dns-query");
 }
+
+MTK_TEST(WindowBoundsRejectCorruptOrTinyPreferenceValues) {
+  using mtk::preferences::IsValidWindowBounds;
+  using mtk::preferences::WindowBounds;
+  MTK_EXPECT_FALSE(IsValidWindowBounds(WindowBounds{}));
+  MTK_EXPECT_FALSE(IsValidWindowBounds(WindowBounds{0, 0, 479, 860}));
+  MTK_EXPECT_FALSE(IsValidWindowBounds(WindowBounds{0, 0, 1360, 359}));
+  MTK_EXPECT_FALSE(IsValidWindowBounds(WindowBounds{100001, 0, 1360, 860}));
+  MTK_EXPECT_TRUE(IsValidWindowBounds(WindowBounds{-1920, 40, 1360, 860}));
+}

@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <commctrl.h>
+#include <shellapi.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -10,13 +12,18 @@
 #include "browser_window.h"
 #include "download_manager.h"
 #include "filter_engine.h"
+#include "history_page.h"
+#include "home_page.h"
 #include "library_store.h"
 #include "mtk_app.h"
+#include "passkey_page.h"
 #include "preferences.h"
 #include "crash_guard.h"
 #include "default_browser.h"
 #include "password_store.h"
+#include "autofill_store.h"
 #include "profile.h"
+#include "policy.h"
 #include "session_store.h"
 #include "site_settings.h"
 #include "strings.h"
@@ -47,16 +54,21 @@ std::wstring RootCachePath() {
   return mtk::preferences::UserDataDirectory();
 }
 
-// The single-instance guard exists because two browser processes cannot share
-// one profile directory. Scope the mutex to that directory (like Chrome does)
-// so a different profile can still run independently.
-std::wstring SingletonName(const std::wstring& profile_path) {
-  std::wstring name = L"MTKBrowser.SingleInstance.";
+uint64_t ProfileHash(const std::wstring& profile_path) {
   uint64_t hash = 1469598103934665603ULL;
   for (const wchar_t character : profile_path) {
     hash ^= static_cast<uint64_t>(towlower(character));
     hash *= 1099511628211ULL;
   }
+  return hash;
+}
+
+// The single-instance guard exists because two browser processes cannot share
+// one profile directory. Scope the mutex to that directory (like Chrome does)
+// so a different profile can still run independently.
+std::wstring SingletonName(const std::wstring& profile_path) {
+  std::wstring name = L"MTKBrowser.SingleInstance.";
+  const uint64_t hash = ProfileHash(profile_path);
   wchar_t suffix[17]{};
   swprintf(suffix, 17, L"%016llx", static_cast<unsigned long long>(hash));
   name += suffix;
@@ -66,17 +78,19 @@ std::wstring SingletonName(const std::wstring& profile_path) {
 // A second browser process cannot share the profile directory, which used to
 // look like "the app does not start". Focus the running window instead.
 //
-// Windows of other profiles run in other processes, so the search is restricted
-// to windows this process's own profile could own: FindWindow finds a window of
-// the class in any process, and focusing another profile's window would be
-// wrong. The mutex already told us a process for *this* profile is running, and
-// only that process has a window whose title matches this profile.
-bool FocusRunningInstance() {
+// In app mode or custom profiles, windows might not carry the profile name in
+// their title. Windows register their profile hash as a window property
+// (MTKProfileHash) on creation, which lets this search find the exact owner.
+bool FocusRunningInstance(uint64_t expected_hash,
+                          const std::vector<std::string>& startup_urls = {},
+                          bool app_mode = false) {
   struct Search {
+    uint64_t hash = 0;
     std::wstring title_suffix;
     HWND found = nullptr;
   };
   Search search;
+  search.hash = expected_hash;
   search.title_suffix = mtk::profile::ActiveIsDefault()
                             ? std::wstring()
                             : L" [" + mtk::profile::ActiveId() + L"]";
@@ -86,6 +100,16 @@ bool FocusRunningInstance() {
         wchar_t class_name[64]{};
         if (GetClassNameW(window, class_name, 64) == 0) return TRUE;
         if (wcscmp(class_name, L"MTKBrowserWindow") != 0) return TRUE;
+
+        // 1. Direct window property match (immune to page title changes)
+        HANDLE prop = GetPropW(window, L"MTKProfileHash");
+        if (prop && reinterpret_cast<uintptr_t>(prop) ==
+                        static_cast<uintptr_t>(state->hash)) {
+          state->found = window;
+          return FALSE;
+        }
+
+        // 2. Title suffix fallback
         wchar_t title[256]{};
         GetWindowTextW(window, title, 256);
         const std::wstring text(title);
@@ -102,8 +126,29 @@ bool FocusRunningInstance() {
       },
       reinterpret_cast<LPARAM>(&search));
   if (!search.found) return false;
-  if (IsIconic(search.found)) ShowWindow(search.found, SW_RESTORE);
+  if (!IsWindowVisible(search.found) || IsIconic(search.found)) {
+    ShowWindow(search.found, SW_RESTORE);
+  }
   SetForegroundWindow(search.found);
+
+  // If a running instance was invoked with URLs and it's not a single-instance app window,
+  // pass each URL via WM_COPYDATA so the running instance opens a new tab.
+  if (!app_mode && !startup_urls.empty()) {
+    for (const auto& url : startup_urls) {
+      const int len = MultiByteToWideChar(CP_UTF8, 0, url.data(),
+                                          static_cast<int>(url.size()), nullptr, 0);
+      if (len <= 0) continue;
+      std::wstring wide(len, L'\0');
+      MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()),
+                          wide.data(), len);
+      COPYDATASTRUCT cds{};
+      cds.dwData = 0x4D544B55;  // mtk::launch::kOpenUrlCopyData
+      cds.cbData = static_cast<DWORD>(wide.size() * sizeof(wchar_t));
+      cds.lpData = const_cast<wchar_t*>(wide.data());
+      SendMessageW(search.found, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
+    }
+  }
+
   return true;
 }
 
@@ -124,8 +169,42 @@ void EnsurePerMonitorDpiAwareness() {
 // Shared entry point. `sandbox_info` is supplied by CEF's bootstrap when the
 // sandbox is enabled and is null for the unsandboxed debugging build.
 int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
+  const std::wstring cmd_line = GetCommandLineW();
+  const bool app_mode =
+      cmd_line.find(L"--app-mode") != std::wstring::npos ||
+      cmd_line.find(L"--profile=webapp-") != std::wstring::npos;
+
+  std::vector<std::string> startup_urls;
+  int argc = 0;
+  if (LPWSTR* argv = CommandLineToArgvW(cmd_line.c_str(), &argc)) {
+    for (int i = 1; i < argc; ++i) {
+      const std::wstring_view arg = argv[i];
+      if (arg.empty() || arg.starts_with(L"-") || arg.starts_with(L"/")) {
+        continue;
+      }
+      const int size = WideCharToMultiByte(CP_UTF8, 0, arg.data(),
+                                           static_cast<int>(arg.size()), nullptr,
+                                           0, nullptr, nullptr);
+      if (size <= 0) continue;
+      std::string url(static_cast<size_t>(size), '\0');
+      WideCharToMultiByte(CP_UTF8, 0, arg.data(), static_cast<int>(arg.size()),
+                          url.data(), size, nullptr, nullptr);
+      const bool is_internal = mtk::home::IsHomeUrl(url) ||
+                               mtk::history::IsHistoryUrl(url) ||
+                               mtk::passkeys::IsPasskeyUrl(url);
+      const auto decision = is_internal
+          ? mtk::policy::NavigationDecision{true, url, {}}
+          : mtk::policy::EvaluateNavigation(url);
+      if (decision.allow) {
+        startup_urls.push_back(decision.url);
+      }
+    }
+    LocalFree(argv);
+  }
+
   CefMainArgs main_args(instance);
-  CefRefPtr<MtkApp> app = new MtkApp(instance, show_command);
+  CefRefPtr<MtkApp> app =
+      new MtkApp(instance, show_command, startup_urls, app_mode);
 
   const int exit_code = CefExecuteProcess(main_args, app, sandbox_info);
   if (exit_code >= 0) return exit_code;
@@ -149,6 +228,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   // Only the browser process reaches this point, so the guard never affects
   // CEF's own renderer/utility child processes.
   const std::wstring profile_path = RootCachePath();
+  const uint64_t profile_hash = ProfileHash(profile_path);
   HANDLE singleton =
       CreateMutexW(nullptr, FALSE, SingletonName(profile_path).c_str());
   if (!singleton) {
@@ -159,16 +239,21 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
     return 1;
   }
   if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    if (!FocusRunningInstance()) {
+    if (!FocusRunningInstance(profile_hash, startup_urls, app_mode)) {
       MessageBoxW(nullptr,
                   L"MTK Browser is already running.\n\n"
                   L"If no window is visible, close the existing "
-                  L"MTKBrowser.exe processes and start the app again.",
+                  L"MTK Browser process from Task Manager.",
                   L"MTK Browser", MB_OK | MB_ICONINFORMATION);
     }
     CloseHandle(singleton);
     return 0;
   }
+
+  INITCOMMONCONTROLSEX icex{};
+  icex.dwSize = sizeof(icex);
+  icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
+  InitCommonControlsEx(&icex);
 
   // Load mutable profile stores only after this process owns the profile.
   // A second launch must never rewrite a running instance's active downloads.
@@ -177,6 +262,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::downloads::Manager::Get().Load();
   mtk::sites::Store::Get().Load();
   mtk::passwords::Store::Get().Load();
+  mtk::autofill::Store::Get().Load();
   mtk::user_filters::Load();
   // UI language follows the language preference, so it is read once the
   // preferences are loaded and before any window exists.
@@ -195,13 +281,21 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   mtk::filters::Engine::Get().LoadFromDirectory(ApplicationDirectory());
 
   CefSettings settings;
+  const auto rdp_pos = cmd_line.find(L"--remote-debugging-port=");
+  if (rdp_pos != std::wstring::npos) {
+    const auto val = cmd_line.substr(rdp_pos + 24);
+    settings.remote_debugging_port = _wtoi(val.c_str());
+  }
   // The sandbox is driven by the bootstrap-supplied sandbox info. It is only
   // disabled when this is the unsandboxed debugging build.
   settings.no_sandbox = sandbox_info == nullptr;
-  settings.persist_session_cookies = false;
+  settings.persist_session_cookies = true;
   CefString(&settings.root_cache_path) = profile_path;
+  CefString(&settings.cache_path) = profile_path;
   CefString(&settings.accept_language_list) =
       mtk::preferences::Store::Get().values().accept_language;
+  CefString(&settings.user_agent) =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
   if (!CefInitialize(main_args, settings, app, sandbox_info)) {
     MessageBoxW(nullptr,
@@ -219,6 +313,7 @@ int RunBrowser(HINSTANCE instance, int show_command, void* sandbox_info) {
   // the marker records. Anything that kills the process skips this line, and the
   // next start finds the marker and offers the tabs back.
   mtk::crash::EndSessionCleanly();
+  mtk::preferences::ExecuteClearActivityOnExit();
   // With the home page as the startup choice, the snapshot only exists for crash
   // recovery, so a clean exit removes it.
   if (mtk::preferences::Store::Get().values().startup_mode !=
