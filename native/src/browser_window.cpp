@@ -1807,17 +1807,20 @@ int TabSlotLeft(size_t index, int width, size_t count, size_t pinned,
 }
 
 RECT TabRect(size_t index, int width, size_t count, size_t pinned,
-             int scroll = 0) {
+             int scroll = 0, bool maximized = false) {
   const int left = TabSlotLeft(index, width, count, pinned, scroll);
   const int right =
       TabSlotLeft(index + 1, width, count, pinned, scroll) - Scaled(kBaseTabGap);
-  return {left, Scaled(6), right, TabBarHeight()};
+  const int top = maximized ? Scaled(2) : Scaled(6);
+  return {left, top, right, TabBarHeight()};
 }
 
-RECT NewTabRect(int width, size_t count, size_t pinned, int scroll = 0) {
+RECT NewTabRect(int width, size_t count, size_t pinned, int scroll = 0,
+                bool maximized = false) {
   const int left = TabSlotLeft(count, width, count, pinned, scroll);
-  return {left + Scaled(2), Scaled(8), left + Scaled(kBaseNewTabWidth),
-          TabBarHeight() - Scaled(4)};
+  const int top = maximized ? Scaled(4) : Scaled(8);
+  return {left + Scaled(2), top, left + Scaled(kBaseNewTabWidth),
+          TabBarHeight() - (maximized ? 0 : Scaled(4))};
 }
 
 // Pinned tabs deliberately have no close button, so an accidental click cannot
@@ -2585,7 +2588,7 @@ bool BrowserWindow::Create(int show_command) {
   current_style &= ~WS_CAPTION;
   SetWindowLongPtrW(window_, GWL_STYLE, current_style);
 
-  const MARGINS margins{0, 0, 1, 0};
+  const MARGINS margins{0, 0, 0, 0};
   DwmExtendFrameIntoClientArea(window_, &margins);
   SetWindowPos(window_, nullptr, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -4137,10 +4140,11 @@ void BrowserWindow::UpdateControls() {
 void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
   SetBkMode(dc, TRANSPARENT);
   const bool is_light = IsLightAppearance();
+  const bool is_maximized = IsZoomed(window_);
   const size_t pinned_count = PinnedCount();
   for (size_t index = 0; index < tabs_.size(); ++index) {
     const RECT rect =
-        TabRect(index, client.right, tabs_.size(), pinned_count, tab_scroll_);
+        TabRect(index, client.right, tabs_.size(), pinned_count, tab_scroll_, is_maximized);
     const bool active = index == active_tab_;
     const bool hovered = index == hovered_tab_;
     const bool pinned = tabs_[index].pinned;
@@ -4220,7 +4224,7 @@ void BrowserWindow::PaintTabStrip(HDC dc, const RECT& client) {
   }
 
   RECT plus =
-      NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_);
+      NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_, is_maximized);
   if (hovered_new_tab_) {
     FillRounded(dc, plus, Scaled(10), is_light ? RGB(218, 224, 235) : kControlHoverColor);
   }
@@ -4240,7 +4244,7 @@ void BrowserWindow::PaintOmniboxFrame(HDC dc) {
   const bool is_light = IsLightAppearance();
   const bool focused = GetFocus() == field;
   const int radius = (box.bottom - box.top) / 2;
-  const COLORREF box_bg = is_light ? RGB(255, 255, 255) : kControlColor;
+  const COLORREF box_bg = is_light ? RGB(241, 245, 249) : kControlColor;
   const COLORREF box_border = focused
       ? (is_light ? RGB(168, 85, 247) : kAccentColor)
       : (is_light ? RGB(226, 232, 240) : kBorderColor);
@@ -4296,7 +4300,7 @@ void BrowserWindow::Paint(HDC dc) {
     FillGradient(dc, toolbar, kPrivateBarBottom, kPrivateBarBottom);
   } else if (is_light) {
     const COLORREF kLightTabBar = RGB(226, 232, 240);
-    const COLORREF kLightToolbar = RGB(241, 245, 249);
+    const COLORREF kLightToolbar = RGB(255, 255, 255);
     FillGradient(dc, tab_bar, kLightTabBar, kLightTabBar);
     FillGradient(dc, toolbar, kLightToolbar, kLightToolbar);
     RECT divider{0, toolbar.bottom - 1, client.right, toolbar.bottom};
@@ -4322,7 +4326,7 @@ void BrowserWindow::PaintBookmarksBar(HDC dc, const RECT& client) {
   RECT bar{0, top, client.right, top + height};
   const bool is_light = IsLightAppearance();
   if (is_light) {
-    HBRUSH bar_br = CreateSolidBrush(RGB(241, 245, 249));
+    HBRUSH bar_br = CreateSolidBrush(RGB(255, 255, 255));
     FillRect(dc, &bar, bar_br);
     DeleteObject(bar_br);
   } else {
@@ -4577,7 +4581,7 @@ void BrowserWindow::DrawButton(const DRAWITEMSTRUCT& item) {
   const bool is_light = IsLightAppearance();
 
   if (is_light) {
-    HBRUSH bg = CreateSolidBrush(RGB(241, 245, 249));
+    HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
     FillRect(item.hDC, &bounds, bg);
     DeleteObject(bg);
   } else {
@@ -4689,9 +4693,10 @@ void BrowserWindow::TrackHover(POINT point) {
 
   if (point.y < TabBarHeight()) {
     const size_t pinned = PinnedCount();
+    const bool is_maximized = IsZoomed(window_);
     for (size_t index = 0; index < tabs_.size(); ++index) {
       const RECT rect =
-          TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+          TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
       if (PtInRect(&rect, point)) {
         hovered_tab_ = index;
         const RECT close = TabCloseRect(rect, tabs_[index].pinned);
@@ -4701,7 +4706,7 @@ void BrowserWindow::TrackHover(POINT point) {
     }
     if (hovered_tab_ == static_cast<size_t>(-1)) {
       RECT plus =
-          NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_);
+          NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
       hovered_new_tab_ = PtInRect(&plus, point) != FALSE;
     }
   }
@@ -4931,6 +4936,15 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       if (full_screen_) return HTCLIENT;
 
       const POINT screen_pt{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+      POINT pt = screen_pt;
+      ScreenToClient(window_, &pt);
+
+      // Caption buttons area (Minimize, Maximize, Close) has highest priority,
+      // ensuring clicks at the window top-right corner hit Close rather than resize.
+      if (HitTestCaptionButton(pt) != CaptionButton::kNone) {
+        return HTCLIENT;
+      }
+
       RECT win_rect{};
       GetWindowRect(window_, &win_rect);
 
@@ -4952,33 +4966,21 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         if (right) return HTRIGHT;
       }
 
-      POINT pt = screen_pt;
-      ScreenToClient(window_, &pt);
       RECT client{};
       GetClientRect(window_, &client);
-
-      // Caption buttons area (Minimize, Maximize, Close)
-      if (HitTestCaptionButton(pt) != CaptionButton::kNone) {
-        return HTCLIENT;
-      }
 
       // Tab strip area
       if (!full_screen_ && pt.y >= 0 && pt.y < TabBarHeight()) {
         const size_t pinned_count = PinnedCount();
+        const bool is_maximized = IsZoomed(window_);
         for (size_t i = 0; i < tabs_.size(); ++i) {
-          RECT tab_r = TabRect(i, client.right, tabs_.size(), pinned_count, tab_scroll_);
-          if (IsZoomed(window_)) {
-            tab_r.top = 0;
-          }
+          RECT tab_r = TabRect(i, client.right, tabs_.size(), pinned_count, tab_scroll_, is_maximized);
           if (PtInRect(&tab_r, pt)) {
             return HTCLIENT;
           }
         }
-        RECT plus_r = NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_);
+        RECT plus_r = NewTabRect(client.right, tabs_.size(), pinned_count, tab_scroll_, is_maximized);
         InflateRect(&plus_r, Scaled(3), Scaled(8));
-        if (IsZoomed(window_)) {
-          plus_r.top = 0;
-        }
         if (PtInRect(&plus_r, pt)) {
           return HTCLIENT;
         }
@@ -5028,6 +5030,13 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
       DeleteObject(bitmap);
       DeleteDC(buffer);
       EndPaint(window_, &paint);
+      return 0;
+    }
+    case WM_PRINTCLIENT: {
+      HDC dc = reinterpret_cast<HDC>(w_param);
+      if (!full_screen_) {
+        Paint(dc);
+      }
       return 0;
     }
     case WM_SYSCHAR:
@@ -5177,9 +5186,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         RECT client{};
         GetClientRect(window_, &client);
         const size_t pinned = PinnedCount();
+        const bool is_maximized = IsZoomed(window_);
         for (size_t index = 0; index < tabs_.size(); ++index) {
           const RECT rect =
-              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
           if (PtInRect(&rect, point)) {
             const RECT close = TabCloseRect(rect, tabs_[index].pinned);
             const RECT mute = TabMuteRect(rect, tabs_[index].pinned);
@@ -5190,7 +5200,7 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
             return 0;
           }
         }
-        RECT plus = NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_);
+        RECT plus = NewTabRect(client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
         InflateRect(&plus, Scaled(3), Scaled(8));
         if (PtInRect(&plus, point)) CreateTab(kHomeUrl);
       }
@@ -5198,11 +5208,13 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
     }
     case WM_LBUTTONUP: {
       if (pressed_caption_button_ != CaptionButton::kNone) {
-        ReleaseCapture();
-        const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
-        const CaptionButton released = HitTestCaptionButton(point);
         const CaptionButton action = pressed_caption_button_;
         pressed_caption_button_ = CaptionButton::kNone;
+        if (GetCapture() == window_) {
+          ReleaseCapture();
+        }
+        const POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+        const CaptionButton released = HitTestCaptionButton(point);
         RECT controls = WindowControlsRect();
         InvalidateRect(window_, &controls, FALSE);
 
@@ -5240,9 +5252,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         RECT client{};
         GetClientRect(window_, &client);
         const size_t pinned = PinnedCount();
+        const bool is_maximized = IsZoomed(window_);
         for (size_t index = 0; index < tabs_.size(); ++index) {
           const RECT rect =
-              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
           if (PtInRect(&rect, point)) {
             CloseTab(index);
             break;
@@ -5275,9 +5288,10 @@ LRESULT BrowserWindow::HandleMessage(UINT message, WPARAM w_param, LPARAM l_para
         RECT client{};
         GetClientRect(window_, &client);
         const size_t pinned = PinnedCount();
+        const bool is_maximized = IsZoomed(window_);
         for (size_t index = 0; index < tabs_.size(); ++index) {
           const RECT rect =
-              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_);
+              TabRect(index, client.right, tabs_.size(), pinned, tab_scroll_, is_maximized);
           if (PtInRect(&rect, point)) {
             POINT screen = point;
             ClientToScreen(window_, &screen);
@@ -6287,7 +6301,7 @@ void BrowserWindow::PaintCaptionButtons(HDC dc, const RECT& client) {
       Rectangle(dc, cx - half + offset, cy - half - offset, cx + half + offset + 1, cy + half - offset + 1);
       COLORREF front_bg = (hovered_caption_button_ == CaptionButton::kMaximize)
           ? ((pressed_caption_button_ == CaptionButton::kMaximize) ? press_bg : hover_bg)
-          : (is_light ? RGB(235, 238, 245) : kTabBarTop);
+          : (is_light ? RGB(226, 232, 240) : kTabBarTop);
       HBRUSH front_br = CreateSolidBrush(front_bg);
       SelectObject(dc, front_br);
       Rectangle(dc, cx - half, cy - half + offset, cx + half - offset + 1, cy + half + 1);
