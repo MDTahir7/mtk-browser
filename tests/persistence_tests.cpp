@@ -429,6 +429,7 @@ MTK_TEST(ClearActivityOnExitPurgesActivityRecordsWhenEnabled) {
   auto& prefs = mtk::preferences::Store::Get();
   auto& library = mtk::library::Store::Get();
   auto& dm = mtk::downloads::Manager::Get();
+  dm.ClearFinished();
 
   library.RecordVisit("https://example.com/test", L"Test Page");
   MTK_EXPECT_TRUE(!library.history().empty());

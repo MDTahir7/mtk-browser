@@ -15,17 +15,16 @@
 #include <string_view>
 #include <vector>
 
+#include "filter_engine.h"
 #include "preferences.h"
 #include "update_public_key.h"
 
 namespace mtk::update {
 namespace {
 
-// The manifest and signature are tiny; anything larger is a sign of trouble.
 constexpr DWORD kMaxManifestBytes = 8 * 1024;
 constexpr DWORD kMaxSignatureBytes = 512;
-// Installer size ceiling. Generous, but bounded so a hostile server cannot fill
-// the disk even before the hash is checked.
+constexpr DWORD kMaxFilterBytes = 8 * 1024 * 1024;
 constexpr uint64_t kMaxInstallerBytes = 400ULL * 1024 * 1024;
 constexpr size_t kSha256Bytes = 32;
 
@@ -40,8 +39,6 @@ std::wstring Utf8ToWide(std::string_view value) {
   return result;
 }
 
-// Minimal HTTPS GET. Plain http is impossible to request: the scheme is fixed
-// and only https redirects are followed.
 bool HttpsGet(const std::string& url, DWORD max_bytes, std::string* body,
               std::wstring* error) {
   body->clear();
@@ -68,7 +65,6 @@ bool HttpsGet(const std::string& url, DWORD max_bytes, std::string* body,
     *error = L"Could not start the update request.";
     return false;
   }
-  // Modern TLS only.
   DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 |
                     WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
   WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols,
@@ -76,8 +72,7 @@ bool HttpsGet(const std::string& url, DWORD max_bytes, std::string* body,
   DWORD timeout = 20000;
   WinHttpSetTimeouts(session, timeout, timeout, timeout, timeout);
 
-  HINTERNET connection =
-      WinHttpConnect(session, host, parts.nPort, 0);
+  HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
   if (!connection) {
     WinHttpCloseHandle(session);
     *error = L"Could not reach the update server.";
@@ -92,8 +87,6 @@ bool HttpsGet(const std::string& url, DWORD max_bytes, std::string* body,
     *error = L"Could not create the update request.";
     return false;
   }
-  // Certificate errors must never be ignored, so no security flags are relaxed
-  // here. Redirects stay inside https because of this policy.
   DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
   WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
                    sizeof(redirect_policy));
@@ -136,8 +129,6 @@ bool HttpsGet(const std::string& url, DWORD max_bytes, std::string* body,
   return ok;
 }
 
-// Downloads to `target`, enforcing a byte ceiling. The file is not executed or
-// marked as trusted anywhere in this function.
 bool HttpsDownload(const std::string& url, const std::wstring& target,
                    uint64_t max_bytes, uint64_t* written, std::wstring* error) {
   *written = 0;
@@ -242,12 +233,9 @@ bool HttpsDownload(const std::string& url, const std::wstring& target,
   return ok;
 }
 
-// Verifies a raw ECDSA P-256 (r||s) signature over `data` using the compiled-in
-// public key.
-bool VerifySignature(const std::string& data,
-                     const std::vector<unsigned char>& signature) {
-  if (signature.size() != 64) return false;
-
+bool VerifySignatureWithKey(const std::array<unsigned char, 72>& public_key,
+                            const std::array<unsigned char, kSha256Bytes>& digest,
+                            const std::vector<unsigned char>& signature) {
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
           &algorithm, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0))) {
@@ -256,26 +244,12 @@ bool VerifySignature(const std::string& data,
   BCRYPT_KEY_HANDLE key = nullptr;
   bool ok = BCRYPT_SUCCESS(BCryptImportKeyPair(
       algorithm, nullptr, BCRYPT_ECCPUBLIC_BLOB, &key,
-      const_cast<PUCHAR>(kUpdatePublicKey.data()),
-      static_cast<ULONG>(kUpdatePublicKey.size()), 0));
-
-  std::array<unsigned char, kSha256Bytes> digest{};
-  if (ok) {
-    BCRYPT_ALG_HANDLE hash_algorithm = nullptr;
-    ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
-        &hash_algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0));
-    if (ok) {
-      ok = BCRYPT_SUCCESS(BCryptHash(
-          hash_algorithm, nullptr, 0,
-          reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
-          static_cast<ULONG>(data.size()), digest.data(),
-          static_cast<ULONG>(digest.size())));
-      BCryptCloseAlgorithmProvider(hash_algorithm, 0);
-    }
-  }
+      const_cast<PUCHAR>(public_key.data()),
+      static_cast<ULONG>(public_key.size()), 0));
   if (ok) {
     ok = BCRYPT_SUCCESS(BCryptVerifySignature(
-        key, nullptr, digest.data(), static_cast<ULONG>(digest.size()),
+        key, nullptr, const_cast<PUCHAR>(digest.data()),
+        static_cast<ULONG>(digest.size()),
         const_cast<PUCHAR>(signature.data()),
         static_cast<ULONG>(signature.size()), 0));
   }
@@ -284,7 +258,32 @@ bool VerifySignature(const std::string& data,
   return ok;
 }
 
+// Verifies a raw ECDSA P-256 (r||s) signature over `data` using either the
+// primary or backup compiled-in public key.
+bool VerifySignature(const std::string& data,
+                     const std::vector<unsigned char>& signature) {
+  if (signature.size() != 64) return false;
+
+  std::array<unsigned char, kSha256Bytes> digest{};
+  BCRYPT_ALG_HANDLE hash_algorithm = nullptr;
+  if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
+          &hash_algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0))) {
+    return false;
+  }
+  const bool hashed = BCRYPT_SUCCESS(BCryptHash(
+      hash_algorithm, nullptr, 0,
+      reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+      static_cast<ULONG>(data.size()), digest.data(),
+      static_cast<ULONG>(digest.size())));
+  BCryptCloseAlgorithmProvider(hash_algorithm, 0);
+  if (!hashed) return false;
+
+  return VerifySignatureWithKey(kUpdatePublicKey, digest, signature) ||
+         VerifySignatureWithKey(kBackupUpdatePublicKey, digest, signature);
+}
+
 std::vector<unsigned char> DecodeBase64(const std::string& text) {
+  if (text.empty()) return {};
   DWORD size = 0;
   if (!CryptStringToBinaryA(text.c_str(), static_cast<DWORD>(text.size()),
                             CRYPT_STRING_BASE64, nullptr, &size, nullptr,
@@ -301,8 +300,30 @@ std::vector<unsigned char> DecodeBase64(const std::string& text) {
   return bytes;
 }
 
-// Reads one string or number field out of the manifest. Deliberately small and
-// strict: the manifest is our own fixed-shape document, not arbitrary JSON.
+std::string MemorySha256(std::string_view data) {
+  std::array<unsigned char, kSha256Bytes> digest{};
+  BCRYPT_ALG_HANDLE hash_algorithm = nullptr;
+  if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
+          &hash_algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0))) {
+    return {};
+  }
+  const bool ok = BCRYPT_SUCCESS(BCryptHash(
+      hash_algorithm, nullptr, 0,
+      reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+      static_cast<ULONG>(data.size()), digest.data(),
+      static_cast<ULONG>(digest.size())));
+  BCryptCloseAlgorithmProvider(hash_algorithm, 0);
+  if (!ok) return {};
+  static constexpr char kDigits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(64);
+  for (const unsigned char byte : digest) {
+    result.push_back(kDigits[byte >> 4]);
+    result.push_back(kDigits[byte & 0x0F]);
+  }
+  return result;
+}
+
 std::string Field(const std::string& json, const std::string& name) {
   const std::string key = "\"" + name + "\":";
   size_t at = json.find(key);
@@ -391,7 +412,52 @@ std::string FileSha256(const std::wstring& path, std::wstring* error) {
   return result;
 }
 
+bool WriteFilterFileAtomically(const std::wstring& path,
+                               const std::string& content) {
+  const std::wstring temp = path + L".tmp";
+  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = WriteFile(file, content.data(),
+                            static_cast<DWORD>(content.size()), &written,
+                            nullptr) != FALSE &&
+                  written == content.size() && FlushFileBuffers(file) != FALSE;
+  CloseHandle(file);
+  if (!ok) {
+    DeleteFileW(temp.c_str());
+    return false;
+  }
+  if (!MoveFileExW(temp.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temp.c_str());
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
+
+bool VerifySignedPayload(const std::string& data,
+                         const std::string& base64_signature) {
+  if (data.empty() || base64_signature.empty()) return false;
+  return VerifySignature(data, DecodeBase64(base64_signature));
+}
+
+bool ValidateSignedFilterBundle(const std::string& manifest_json,
+                                const std::string& base64_signature,
+                                const std::string& filter_payload) {
+  if (!VerifySignedPayload(manifest_json, base64_signature)) return false;
+  const std::string version_text = Field(manifest_json, "version");
+  const std::string sha256 = Field(manifest_json, "sha256");
+  const std::string url = Field(manifest_json, "url");
+  int version[3]{};
+  if (!ParseVersion(version_text, version) || !IsLowerHex(sha256, 64) ||
+      !url.starts_with("https://") || filter_payload.empty()) {
+    return false;
+  }
+  return MemorySha256(filter_payload) == sha256;
+}
 
 Result Check() {
   Result result;
@@ -415,7 +481,6 @@ Result Check() {
     return result;
   }
 
-  // Verification happens before a single manifest field is trusted.
   if (!VerifySignature(manifest, DecodeBase64(signature_text))) {
     result.status = Status::kRejected;
     result.detail =
@@ -436,8 +501,6 @@ Result Check() {
                     L"form, so it was refused.";
     return result;
   }
-  // A version that is not strictly newer is ignored, which also blocks a
-  // downgrade to an older build.
   if (!IsNewer(version)) {
     result.status = Status::kUpToDate;
     result.detail = L"MTK Browser is up to date.";
@@ -489,6 +552,74 @@ Result Check() {
   result.version = wide_version;
   result.installer_path = target;
   result.detail = L"MTK Browser " + wide_version + L" is ready to install.";
+  return result;
+}
+
+FilterUpdateResult CheckAndUpdateFilters() {
+  FilterUpdateResult result;
+  if (!mtk::preferences::Store::Get().values().auto_update) {
+    result.status = Status::kDisabled;
+    result.detail = L"Automatic updates are switched off in Settings.";
+    return result;
+  }
+
+  std::string manifest;
+  std::wstring error;
+  if (!HttpsGet(kFilterManifestUrl, kMaxManifestBytes, &manifest, &error)) {
+    result.status = Status::kCheckFailed;
+    result.detail = error;
+    return result;
+  }
+  std::string signature_text;
+  if (!HttpsGet(kFilterSignatureUrl, kMaxSignatureBytes, &signature_text,
+                &error)) {
+    result.status = Status::kCheckFailed;
+    result.detail = error;
+    return result;
+  }
+  if (!VerifySignedPayload(manifest, signature_text)) {
+    result.status = Status::kRejected;
+    result.detail = L"The filter feed signature was invalid and was refused.";
+    return result;
+  }
+
+  const std::string url = Field(manifest, "url");
+  const std::string version_text = Field(manifest, "version");
+  if (!url.starts_with("https://")) {
+    result.status = Status::kRejected;
+    result.detail = L"The filter feed URL was not HTTPS.";
+    return result;
+  }
+
+  std::string filter_payload;
+  if (!HttpsGet(url, kMaxFilterBytes, &filter_payload, &error)) {
+    result.status = Status::kCheckFailed;
+    result.detail = error;
+    return result;
+  }
+  if (!ValidateSignedFilterBundle(manifest, signature_text, filter_payload)) {
+    result.status = Status::kRejected;
+    result.detail =
+        L"The downloaded filter list did not match its signed SHA-256 digest.";
+    return result;
+  }
+
+  const size_t loaded =
+      mtk::filters::Engine::Get().ReloadFromText(filter_payload);
+  if (loaded == 0) {
+    result.status = Status::kRejected;
+    result.detail = L"The filter list contained no valid rules.";
+    return result;
+  }
+
+  const std::wstring filter_path = DownloadDirectory() + L"\\mtk_filters.txt";
+  WriteFilterFileAtomically(filter_path, filter_payload);
+
+  result.status = Status::kUpdateReady;
+  result.rules_loaded = loaded;
+  result.version = Utf8ToWide(version_text);
+  result.detail = L"Security filter lists updated (" +
+                  std::to_wstring(loaded) + L" rules).";
   return result;
 }
 

@@ -88,3 +88,32 @@ MTK_TEST(FingerprintBuildScriptDiffersAcrossSeeds) {
   const std::string b = mtk::fingerprint::BuildScript(true, 2);
   MTK_EXPECT_TRUE(a != b);
 }
+
+
+MTK_TEST(FingerprintSwitchEncodesAndDecodesExemptOrigins) {
+  const std::vector<std::string> origins = {
+      "https://example.com", "https://trusted.co.in"};
+  const std::string encoded =
+      mtk::fingerprint::EncodeSwitchValue(true, 0xabcdef0123456789ULL, origins);
+  MTK_EXPECT_TRUE(mtk::fingerprint::IsEnabledSwitchValue(encoded));
+  MTK_EXPECT_EQ_INT(mtk::fingerprint::DecodeSeed(encoded),
+                    0xabcdef0123456789ULL);
+  const auto decoded = mtk::fingerprint::DecodeExemptOrigins(encoded);
+  MTK_EXPECT_EQ_INT(decoded.size(), 2);
+  if (decoded.size() == 2) {
+    MTK_EXPECT_EQ_STR(decoded[0], "https://example.com");
+    MTK_EXPECT_EQ_STR(decoded[1], "https://trusted.co.in");
+  }
+}
+
+MTK_TEST(FingerprintBuildScriptIncludesExemptOriginsAndExpandedSurfaces) {
+  const std::vector<std::string> origins = {"https://canvas-app.example.com"};
+  const std::string script =
+      mtk::fingerprint::BuildScript(true, 424242, origins);
+  MTK_EXPECT_TRUE(script.find("https://canvas-app.example.com") !=
+                  std::string::npos);
+  MTK_EXPECT_TRUE(script.find("toBlob") != std::string::npos);
+  MTK_EXPECT_TRUE(script.find("convertToBlob") != std::string::npos);
+  MTK_EXPECT_TRUE(script.find("getFloatFrequencyData") != std::string::npos);
+  MTK_EXPECT_TRUE(script.find("WorkerNavigator") != std::string::npos);
+}

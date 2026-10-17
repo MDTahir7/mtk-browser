@@ -1,5 +1,7 @@
 #include "fingerprint_script.h"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 
 namespace mtk::fingerprint {
@@ -8,69 +10,124 @@ namespace {
 constexpr char kOnPrefix[] = "on:";
 constexpr char kOffPrefix[] = "off:";
 
+bool IsSafeOriginToken(const std::string& origin) {
+  if (origin.empty() || origin.size() > 256) return false;
+  if (!origin.starts_with("https://") && !origin.starts_with("http://")) {
+    return false;
+  }
+  return std::all_of(origin.begin(), origin.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == ':' || c == '/' || c == '.' ||
+           c == '-';
+  });
+}
+
+std::string EscapeJsString(const std::string& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const unsigned char c : value) {
+    if (c == '\'' || c == '\\') out.push_back('\\');
+    if (c >= 0x20 && c < 0x7f) out.push_back(static_cast<char>(c));
+  }
+  return out;
+}
+
 }  // namespace
 
 bool IsEnabledSwitchValue(const std::string& value) {
   return value.starts_with(kOnPrefix);
 }
 
-std::string EncodeSwitchValue(bool enabled, uint64_t seed) {
+std::string EncodeSwitchValue(
+    bool enabled, uint64_t seed,
+    const std::vector<std::string>& exempt_origins) {
   char hex[17]{};
   const auto result = std::to_chars(hex, hex + sizeof(hex) - 1, seed, 16);
   *result.ptr = '\0';
-  return std::string(enabled ? kOnPrefix : kOffPrefix) + hex;
+  std::string encoded =
+      std::string(enabled ? kOnPrefix : kOffPrefix) + hex;
+
+  std::string joined;
+  for (const std::string& origin : exempt_origins) {
+    if (!IsSafeOriginToken(origin)) continue;
+    if (!joined.empty()) joined.push_back(',');
+    joined += origin;
+  }
+  if (!joined.empty()) {
+    encoded.push_back('|');
+    encoded += joined;
+  }
+  return encoded;
 }
 
 uint64_t DecodeSeed(const std::string& value) {
   const size_t colon = value.find(':');
   if (colon == std::string::npos) return 0;
-  const std::string_view hex(value.data() + colon + 1, value.size() - colon - 1);
+  const size_t pipe = value.find('|', colon + 1);
+  const size_t end = (pipe == std::string::npos) ? value.size() : pipe;
+  if (end <= colon + 1) return 0;
+  const std::string_view hex(value.data() + colon + 1, end - (colon + 1));
   uint64_t seed = 0;
   const auto result =
       std::from_chars(hex.data(), hex.data() + hex.size(), seed, 16);
-  return result.ec == std::errc{} ? seed : 0;
+  return (result.ec == std::errc{} && result.ptr == hex.data() + hex.size())
+             ? seed
+             : 0;
 }
 
-std::string BuildScript(bool enabled, uint64_t seed) {
+std::vector<std::string> DecodeExemptOrigins(const std::string& value) {
+  std::vector<std::string> origins;
+  const size_t pipe = value.find('|');
+  if (pipe == std::string::npos || pipe + 1 >= value.size()) return origins;
+  size_t start = pipe + 1;
+  while (start < value.size()) {
+    const size_t comma = value.find(',', start);
+    const std::string token = value.substr(
+        start, (comma == std::string::npos ? value.size() : comma) - start);
+    if (IsSafeOriginToken(token)) {
+      origins.push_back(token);
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return origins;
+}
+
+std::string BuildScript(bool enabled, uint64_t seed,
+                        const std::vector<std::string>& exempt_origins) {
   if (!enabled) return {};
 
-  // Decimal literal, substituted into the template below by find/replace
-  // rather than printf-style formatting, since the template is JS text that
-  // could in principle contain a literal '%' character somewhere and a
-  // format-string call would misread that as a directive.
   const std::string seed_literal = std::to_string(seed);
+  std::string exempt_array_literal = "[";
+  bool first = true;
+  for (const std::string& origin : exempt_origins) {
+    if (!IsSafeOriginToken(origin)) continue;
+    if (!first) exempt_array_literal += ",";
+    first = false;
+    exempt_array_literal += "'" + EscapeJsString(origin) + "'";
+  }
+  exempt_array_literal += "]";
 
-  // mulberry32, seeded from the process-lifetime seed. Deterministic within one
-  // run, so repeated reads of the same canvas or WebGL call agree with each
-  // other (a page comparing two reads of its own canvas must see the same
-  // answer both times, or the noise itself becomes a stronger signal than the
-  // fingerprint it was meant to hide), and the exact bytes still differ between
-  // one run of the browser and the next.
-  //
-  // Canvas: 2D readback (getImageData and everything built on it, including
-  // toDataURL/toBlob, which call it internally in every real implementation)
-  // gets its low bits perturbed per pixel. The visible image is unaffected;
-  // only the exact byte values a fingerprinting script would hash change.
-  //
-  // WebGL: UNMASKED_VENDOR_WEBGL/UNMASKED_RENDERER_WEBGL (read through the
-  // WEBGL_debug_renderer_info extension, which exists specifically to expose
-  // real GPU model strings) are replaced with generic values. The ordinary
-  // VENDOR/RENDERER parameters are left alone, since browsers already report
-  // those as "WebKit"/generic strings and changing them would itself be an
-  // unusual signal.
-  //
-  // AudioContext: getChannelData is perturbed the same way as canvas reads,
-  // since audio-fingerprinting scripts render a fixed buffer and hash the
-  // resulting samples.
   static constexpr char kTemplate[] = R"JS(
 (() => {
-  const host = (window.location && window.location.hostname) || '';
+  if (window.__mtkFpGuardApplied) return;
+  Object.defineProperty(window, '__mtkFpGuardApplied', {
+    value: true, configurable: false, enumerable: false
+  });
+
+  const origin = (window.location && window.location.origin
+      ? window.location.origin.toLowerCase() : '');
+  const host = (window.location && window.location.hostname
+      ? window.location.hostname.toLowerCase() : '');
   const path = (window.location && window.location.pathname) || '';
-  if (host.endsWith('openai.com') || host.endsWith('chatgpt.com') ||
-      host.endsWith('cloudflare.com') || host.endsWith('live.com') ||
-      host.endsWith('microsoft.com') || host.endsWith('google.com') ||
-      host.endsWith('oaistatic.com') || host.endsWith('oaiusercontent.com') ||
-      host.includes('.within.website') || host.includes('techaro') ||
+
+  // User-configured per-site exemptions from sites.v1 (Alt+S Site Settings).
+  const exemptOrigins = new Set(__MTK_EXEMPT_ORIGINS__);
+  if (origin && exemptOrigins.has(origin)) {
+    return;
+  }
+
+  // Bot-challenge proof-of-work pages must not have canvas/worker state altered.
+  if (host.includes('.within.website') || host.includes('techaro') ||
       path.includes('.within.website')) {
     return;
   }
@@ -85,24 +142,40 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     return fn;
   };
 
-  let state = (__MTK_SEED__ >>> 0) || 0x9e3779b9;
-  const rand32 = () => {
-    state |= 0; state = (state + 0x6D2B79F5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0);
+  const baseSeed = (__MTK_SEED__ >>> 0) || 0x9e3779b9;
+  const makePrng = (contentHash) => {
+    let state = (baseSeed ^ (contentHash >>> 0)) || 0x9e3779b9;
+    return () => {
+      state |= 0; state = (state + 0x6D2B79F5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0);
+    };
+  };
+
+  // Deterministic content hash so repeated reads of the same canvas in the
+  // same session produce identical perturbed bytes (preventing multi-read
+  // noise detection) while differing across browser sessions.
+  const hashPixels = (data) => {
+    let h = 2166136261 >>> 0;
+    const step = Math.max(4, ((data.length >> 8) & ~3));
+    for (let i = 0; i < data.length; i += step) {
+      h ^= data[i] & 0xfe;
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h;
   };
 
   const perturb = (data) => {
-    // A cheap per-call stream keeps two reads of the same buffer content
-    // consistent with each other without caching the whole image.
-    let local = rand32();
+    if (!data || !data.length) return;
+    const nextRand = makePrng(hashPixels(data));
+    let local = nextRand();
     for (let i = 0; i < data.length; i += 4) {
       local = (local + 0x6D2B79F5) | 0;
       const bump = (local >>> 28) & 1;
-      if (data[i] !== undefined) data[i] = (data[i] + bump) & 0xff;
-      if (data[i + 1] !== undefined) data[i + 1] = (data[i + 1] + bump) & 0xff;
-      if (data[i + 2] !== undefined) data[i + 2] = (data[i + 2] + bump) & 0xff;
+      if (data[i] !== undefined) data[i] = (data[i] ^ bump) & 0xff;
+      if (data[i + 1] !== undefined) data[i + 1] = (data[i + 1] ^ bump) & 0xff;
+      if (data[i + 2] !== undefined) data[i + 2] = (data[i + 2] ^ bump) & 0xff;
     }
   };
 
@@ -122,21 +195,41 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     patchGetImageData(OffscreenCanvasRenderingContext2D.prototype);
   }
 
-  const patchToDataUrlFamily = (proto) => {
-    if (!proto) return;
-    if (proto.toDataURL) {
-      const original = proto.toDataURL;
-      proto.toDataURL = makeNative(function (...args) {
-        try {
-          const ctx = this.getContext && this.getContext('2d');
-          if (ctx) perturb(ctx.getImageData(0, 0, this.width, this.height).data);
-        } catch (_) {}
-        return original.apply(this, args);
-      }, original);
-    }
+  const perturbCanvas2D = (canvas) => {
+    try {
+      const ctx = canvas && canvas.getContext && canvas.getContext('2d');
+      if (ctx && canvas.width > 0 && canvas.height > 0) {
+        const img = CanvasRenderingContext2D.prototype.getImageData.call(
+            ctx, 0, 0, Math.min(canvas.width, 64), Math.min(canvas.height, 64));
+        ctx.putImageData(img, 0, 0);
+      }
+    } catch (_) {}
   };
+
   if (window.HTMLCanvasElement) {
-    patchToDataUrlFamily(HTMLCanvasElement.prototype);
+    const proto = HTMLCanvasElement.prototype;
+    if (proto.toDataURL) {
+      const originalToDataURL = proto.toDataURL;
+      proto.toDataURL = makeNative(function (...args) {
+        perturbCanvas2D(this);
+        return originalToDataURL.apply(this, args);
+      }, originalToDataURL);
+    }
+    if (proto.toBlob) {
+      const originalToBlob = proto.toBlob;
+      proto.toBlob = makeNative(function (...args) {
+        perturbCanvas2D(this);
+        return originalToBlob.apply(this, args);
+      }, originalToBlob);
+    }
+  }
+
+  if (window.OffscreenCanvas && OffscreenCanvas.prototype.convertToBlob) {
+    const originalConvertToBlob = OffscreenCanvas.prototype.convertToBlob;
+    OffscreenCanvas.prototype.convertToBlob = makeNative(function (...args) {
+      perturbCanvas2D(this);
+      return originalConvertToBlob.apply(this, args);
+    }, originalConvertToBlob);
   }
 
   if (window.WebGLRenderingContext || window.WebGL2RenderingContext) {
@@ -144,9 +237,7 @@ std::string BuildScript(bool enabled, uint64_t seed) {
       if (!proto || !proto.getParameter) return;
       const original = proto.getParameter;
       proto.getParameter = makeNative(function (parameter) {
-        // 37445/37446 are UNMASKED_VENDOR_WEBGL/UNMASKED_RENDERER_WEBGL from
-        // the WEBGL_debug_renderer_info extension; the numeric literals avoid
-        // depending on that extension object existing to read the constants.
+        // 37445/37446: UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL
         if (parameter === 37445) return 'Google Inc. (Generic)';
         if (parameter === 37446) return 'ANGLE (Generic Renderer)';
         return original.call(this, parameter);
@@ -165,7 +256,8 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     AudioBuffer.prototype.getChannelData = makeNative(function (channel) {
       const data = original.call(this, channel);
       try {
-        let local = rand32();
+        const nextRand = makePrng((channel | 0) + data.length);
+        let local = nextRand();
         for (let i = 0; i < data.length; i += 97) {
           local = (local + 0x6D2B79F5) | 0;
           data[i] += ((local >>> 24) & 1) ? 1e-7 : -1e-7;
@@ -175,27 +267,54 @@ std::string BuildScript(bool enabled, uint64_t seed) {
     }, original);
   }
 
-  try {
-    if (window.Navigator && Navigator.prototype) {
-      Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
-        get: function () { return 4; },
+  if (window.AnalyserNode && AnalyserNode.prototype.getFloatFrequencyData) {
+    const original = AnalyserNode.prototype.getFloatFrequencyData;
+    AnalyserNode.prototype.getFloatFrequencyData = makeNative(function (array) {
+      const res = original.call(this, array);
+      try {
+        if (array && array.length) {
+          const nextRand = makePrng(array.length);
+          let local = nextRand();
+          for (let i = 0; i < array.length; i += 16) {
+            local = (local + 0x6D2B79F5) | 0;
+            array[i] += ((local >>> 24) & 1) ? 1e-4 : -1e-4;
+          }
+        }
+      } catch (_) {}
+      return res;
+    }, original);
+  }
+
+  const patchNavigatorProto = (proto) => {
+    if (!proto) return;
+    try {
+      Object.defineProperty(proto, 'hardwareConcurrency', {
+        get: makeNative(function () { return 4; }, { name: 'get hardwareConcurrency' }),
         configurable: true,
         enumerable: true
       });
-      Object.defineProperty(Navigator.prototype, 'deviceMemory', {
-        get: function () { return 8; },
+      Object.defineProperty(proto, 'deviceMemory', {
+        get: makeNative(function () { return 8; }, { name: 'get deviceMemory' }),
         configurable: true,
         enumerable: true
       });
-    }
-  } catch (_) {}
+    } catch (_) {}
+  };
+  if (window.Navigator) patchNavigatorProto(Navigator.prototype);
+  if (window.WorkerNavigator) patchNavigatorProto(WorkerNavigator.prototype);
 })();
 )JS";
 
   std::string script(kTemplate);
-  const std::string placeholder = "__MTK_SEED__";
-  const size_t at = script.find(placeholder);
-  if (at != std::string::npos) script.replace(at, placeholder.size(), seed_literal);
+  const std::string seed_placeholder = "__MTK_SEED__";
+  if (const size_t at = script.find(seed_placeholder); at != std::string::npos) {
+    script.replace(at, seed_placeholder.size(), seed_literal);
+  }
+  const std::string exempt_placeholder = "__MTK_EXEMPT_ORIGINS__";
+  if (const size_t at = script.find(exempt_placeholder);
+      at != std::string::npos) {
+    script.replace(at, exempt_placeholder.size(), exempt_array_literal);
+  }
   return script;
 }
 

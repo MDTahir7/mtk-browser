@@ -11,4 +11,5 @@ vendor/*.tar.bz2
 .playwright-mcp/
 *.obj
 scratch/
+*.zip
 

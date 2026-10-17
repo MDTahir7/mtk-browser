@@ -1,3 +1,4 @@
+#include "ole_drag_drop.h"
 #include "test_support.h"
 
 #include "download_manager.h"
@@ -311,4 +312,66 @@ MTK_TEST(SaveBitmapToPngEncodesValidPngFile) {
     MTK_EXPECT_EQ_INT(header[6], 0x1A);
     MTK_EXPECT_EQ_INT(header[7], 0x0A);
   }
+}
+
+
+MTK_TEST(InterruptedDownloadPersistsEtagAndResumptionAcrossRestart) {
+  auto& mgr = mtk::downloads::Manager::Get();
+  mgr.ClearFinished();
+
+  wchar_t temp_dir[MAX_PATH]{};
+  GetTempPathW(MAX_PATH, temp_dir);
+  const std::wstring target =
+      std::wstring(temp_dir) + L"mtk_resume_test_archive.zip";
+  const std::wstring part = mtk::downloads::PartialFilePath(target);
+
+  // Write a 1024-byte partial file on disk.
+  HANDLE hpart = CreateFileW(part.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  MTK_EXPECT_TRUE(hpart != INVALID_HANDLE_VALUE);
+  if (hpart != INVALID_HANDLE_VALUE) {
+    std::vector<char> dummy(1024, 'A');
+    DWORD written = 0;
+    WriteFile(hpart, dummy.data(), static_cast<DWORD>(dummy.size()), &written,
+              nullptr);
+    CloseHandle(hpart);
+  }
+
+  mtk::downloads::Item item;
+  item.id = 777;
+  item.file_name = L"mtk_resume_test_archive.zip";
+  item.full_path = target;
+  item.url = "https://example.com/files/mtk_resume_test_archive.zip";
+  item.state = mtk::downloads::State::kInProgress;
+  item.received_bytes = 1024;
+  item.total_bytes = 4096;
+  item.percent = 25;
+  item.etag = "etag-v1-xyz";
+  item.last_modified = "Wed, 16 Oct 2026 12:00:00 GMT";
+  mgr.Upsert(item);
+  MTK_EXPECT_TRUE(mgr.Flush());
+
+  mgr.Load();
+  MTK_EXPECT_TRUE(!mgr.items().empty());
+  if (!mgr.items().empty()) {
+    const auto& loaded = mgr.items().back();
+    MTK_EXPECT_TRUE(loaded.state == mtk::downloads::State::kFailed);
+    MTK_EXPECT_EQ_INT(loaded.received_bytes, 1024);
+    MTK_EXPECT_EQ_STR(loaded.etag, "etag-v1-xyz");
+    MTK_EXPECT_EQ_STR(loaded.last_modified, "Wed, 16 Oct 2026 12:00:00 GMT");
+    MTK_EXPECT_TRUE(loaded.can_resume);
+    MTK_EXPECT_TRUE(mtk::downloads::CanResume(loaded));
+  }
+
+  mgr.Remove(777);
+  mgr.Flush();
+  DeleteFileW(part.c_str());
+  DeleteFileW(target.c_str());
+}
+
+MTK_TEST(OleDragDropBuildsValidHdropPayload) {
+  std::vector<unsigned char> payload;
+  const std::wstring sample_path = L"C:\\Users\\Test\\Downloads\\report.pdf";
+  MTK_EXPECT_TRUE(mtk::dragdrop::BuildHdropPayload(sample_path, &payload));
+  MTK_EXPECT_TRUE(payload.size() > sizeof(wchar_t) * sample_path.size());
 }

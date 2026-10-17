@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -62,45 +63,26 @@ struct Decision {
   bool risky = false;
 };
 
-// Downloads bigger than this are warned about in safe mode, not blocked. No
-// mode enforces a size cap.
 constexpr int64_t kLargeDownloadBytes = 2LL * 1024 * 1024 * 1024;
 
-// Download behaviour selected in Settings.
 enum class Mode {
-  // Allowlisted file types only, with a confirmation for every download.
   kSafe,
-  // Mainstream browser behaviour: any file type saves straight to the download
-  // folder, with a warning only for types that can execute code.
   kStandard,
 };
 
-// Reads the mode saved in preferences. Safe mode is the default.
 Mode CurrentMode();
 
-// Decides whether a download may proceed. In both modes the URL must be an
-// allowed http(s) address under the active safety policy and the file name is
-// sanitized. Safe mode additionally restricts the file type; standard mode only
-// flags risky types.
 Decision Evaluate(const std::string& url, const std::wstring& suggested_name,
                   const std::string& mime_type, Mode mode);
 
-// True when the file name carries an extension that can execute code. Used for
-// the standard-mode save warning and the "Open file" confirmation.
 bool IsRiskyFileName(const std::wstring& file_name);
 
-// Case-insensitive local search for the full Downloads view. It never makes a
-// network request and matches the visible file name, disk path, source address
-// and current status detail.
 bool MatchesSearch(const Item& item, const std::wstring& query);
 
-// A retry always starts a fresh request. It is available only for an attempt
-// that ended unsuccessfully; a completed or currently active item cannot be
-// accidentally downloaded again.
 bool CanRetry(const Item& item);
 
 // Returns true when an interrupted download has recorded partial progress
-// and a valid web address, allowing HTTP Range resumption.
+// and a valid web address, allowing HTTP Range resumption across restarts.
 bool CanResume(const Item& item);
 
 // Computes the partial file path (e.g. "<full_path>.mtkpart") used during transfer.
@@ -116,42 +98,34 @@ std::string BuildIfRangeHeader(const std::string& etag,
 // Reads the byte length of any existing partial download file on disk.
 int64_t GetExistingPartialBytes(const std::wstring& full_path);
 
-// "%USERPROFILE%\Downloads\MTK Browser", created on demand. Falls back to the
-// application data directory when the known folder cannot be resolved.
+// Resumes an interrupted download across browser restarts using WinHTTP with
+// `Range: bytes=<offset>-` and `If-Range`. Appends on HTTP 206 Partial Content
+// or safely restarts from byte 0 on HTTP 200 OK.
+bool ResumeDownloadWithRange(uint64_t id,
+                             std::function<void()> on_progress = {});
+
 std::wstring DownloadDirectory();
 
-// Full target path inside DownloadDirectory() that does not overwrite an
-// existing file. Returns an empty string when no free name is available.
 std::wstring UniqueTargetPath(const std::wstring& file_name);
 
-// Prompts the user with a standard Windows "Save As" file dialog to select the
-// target folder and file name. Returns true if the user clicked Save, or false
-// if the user canceled.
 bool PromptDownloadLocation(HWND owner, const std::wstring& suggested_name,
                             std::wstring* out_full_path,
                             std::wstring* out_file_name);
 
-// Generates a sanitized, Windows-safe filename for offline PDF export from a page title.
 std::wstring SuggestPdfFileName(const std::wstring& page_title);
 
-// Generates a sanitized, timestamped filename for webpage screenshot PNG export.
 std::wstring SuggestScreenshotFileName(const std::wstring& page_title);
 
-// Saves an HBITMAP to a lossless PNG file using Windows Imaging Component (WIC).
 bool SaveBitmapToPng(HBITMAP hbitmap, const std::wstring& file_path);
 
-// Copies an HBITMAP to the Windows clipboard as CF_BITMAP.
 bool CopyBitmapToClipboard(HWND owner, HBITMAP hbitmap);
 
-// Session list of downloads. All methods are called on the CEF browser-process
-// UI thread, which is also the Win32 UI thread, so no locking is required.
 class Manager final {
  public:
   static Manager& Get();
 
   void Load();
   bool Flush();
-  // Inserts a new record, or updates the existing record with the same id.
   void Upsert(const Item& item);
   bool Remove(uint64_t id);
   size_t ClearFinished();
@@ -166,16 +140,8 @@ class Manager final {
   bool dirty_ = false;
 };
 
-// Human readable status line for the downloads UI.
 std::wstring DescribeItem(const Item& item);
 
-// Writes the Windows "mark of the web" onto a finished download, recording that
-// the file came from the internet zone. Windows, Defender/SmartScreen and
-// Office then treat it as untrusted: execution warns, and Office documents open
-// in Protected View. Returns false when the marker could not be written, which
-// happens on file systems without alternate data stream support.
-//
-// This marks the file; it does not itself run an antivirus scan.
 bool ApplyMarkOfTheWeb(const std::wstring& full_path, const std::string& url);
 
 }  // namespace mtk::downloads

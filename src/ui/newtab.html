@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>New Tab - MTK Safe Browser</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/icon-16.png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
   <style>
     :root {
       color-scheme: dark;
@@ -31,6 +35,17 @@
       text-align: center;
       margin-bottom: 32px;
     }
+    .brand-logo-img {
+      width: 58px;
+      height: 58px;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 16px rgba(138, 180, 248, 0.45));
+      border-radius: 14px;
+      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .brand-logo-img:hover {
+      transform: scale(1.08) rotate(3deg);
+    }
     .logo {
       font-size: 54px;
       font-weight: 800;
@@ -40,7 +55,7 @@
       -webkit-text-fill-color: transparent;
       display: inline-flex;
       align-items: center;
-      gap: 12px;
+      gap: 16px;
     }
     .badge {
       display: inline-block;
@@ -152,7 +167,8 @@
 <body>
   <div class="logo-container">
     <div class="logo">
-      <span>🛡️</span> MTK Browser
+      <img src="assets/icon-64.png" alt="MTK Browser Logo" class="brand-logo-img">
+      MTK Browser
     </div>
     <br>
     <div class="badge">SafeSearch & AdBlock Protection Active</div>

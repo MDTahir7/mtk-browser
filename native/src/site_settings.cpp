@@ -135,14 +135,15 @@ bool IsDefault(const Rule& rule) {
          rule.microphone == Permission::kAsk &&
          rule.location == Permission::kAsk &&
          rule.notifications == Permission::kAsk && rule.ad_filtering &&
-         rule.cookies && !rule.allow_plain_http;
+         rule.cookies && !rule.allow_plain_http &&
+         !rule.allow_fingerprinting;
 }
 
 // Field layout, tab separated: origin, zoom, four permission codes, ad
-// filtering, cookies, allow-plain-http. The last field is new and optional on
-// read, so a file written before it existed still parses with the field
-// defaulting to false. Any malformed line is skipped rather than failing the
-// whole file, so one bad row cannot lose every other rule.
+// filtering, cookies, allow-plain-http, allow-fingerprinting. Trailing fields
+// are optional on read, so a file written before they existed still parses
+// with those fields defaulting to false. Any malformed line is skipped rather
+// than failing the whole file, so one bad row cannot lose every other rule.
 std::string Serialize(const std::vector<Rule>& rules) {
   std::string content = std::string(kHeader) + "\r\n";
   for (const Rule& rule : rules) {
@@ -161,6 +162,8 @@ std::string Serialize(const std::vector<Rule>& rules) {
     content += rule.cookies ? '1' : '0';
     content += '\t';
     content += rule.allow_plain_http ? '1' : '0';
+    content += '\t';
+    content += rule.allow_fingerprinting ? '1' : '0';
     content += "\r\n";
   }
   return content;
@@ -169,7 +172,7 @@ std::string Serialize(const std::vector<Rule>& rules) {
 std::vector<std::string_view> SplitFields(std::string_view line) {
   std::vector<std::string_view> fields;
   size_t start = 0;
-  while (start <= line.size() && fields.size() < 8) {
+  while (start <= line.size() && fields.size() < 9) {
     const size_t tab = line.find('\t', start);
     if (tab == std::string_view::npos) {
       fields.push_back(line.substr(start));
@@ -204,9 +207,6 @@ std::string OriginOf(const std::string& url) {
   const bool http = lowered.starts_with("http://");
   if (!https && !http) return {};
   const size_t host_start = https ? 8 : 7;
-  // The authority runs to the first path, query or fragment character. The port
-  // is found inside it, after any credentials, so the whole authority has to be
-  // isolated before looking for ':'.
   size_t authority_end = lowered.size();
   for (size_t index = host_start; index < lowered.size(); ++index) {
     const char character = lowered[index];
@@ -217,8 +217,6 @@ std::string OriginOf(const std::string& url) {
   }
   const std::string authority =
       lowered.substr(host_start, authority_end - host_start);
-  // Credentials would let two different strings name the same site, so a URL
-  // carrying them has no usable origin here.
   if (authority.find('@') != std::string::npos) return {};
   const size_t port = authority.find(':');
   const std::string host =
@@ -230,7 +228,6 @@ std::string OriginOf(const std::string& url) {
 double ZoomLevelForPercent(int percent) {
   const int clamped = std::clamp(percent, kMinZoomPercent, kMaxZoomPercent);
   if (clamped == kDefaultZoomPercent) return 0.0;
-  // Chromium's zoom level is log base 1.2 of the scale factor.
   return std::log(static_cast<double>(clamped) / 100.0) / std::log(1.2);
 }
 
@@ -280,6 +277,7 @@ void Store::Load() {
         rule.ad_filtering = fields[3] != "0";
         rule.cookies = fields.size() < 5 || fields[4] != "0";
         rule.allow_plain_http = fields.size() >= 6 && fields[5] == "1";
+        rule.allow_fingerprinting = fields.size() >= 7 && fields[6] == "1";
         if (!HasRule(rule.origin)) rules_.push_back(std::move(rule));
       }
     }
@@ -347,7 +345,6 @@ bool Store::Set(const Rule& rule) {
   persistent.location = move_session_decision(rule.location, &temporary.location);
   persistent.notifications =
       move_session_decision(rule.notifications, &temporary.notifications);
-  // Replacing an existing setting with Ask cancels its temporary overlay too.
   const auto existing_temporary = std::find_if(
       temporary_rules_.begin(), temporary_rules_.end(),
       [&rule](const Rule& value) { return value.origin == rule.origin; });
@@ -361,12 +358,7 @@ bool Store::Set(const Rule& rule) {
   } else if (existing_temporary != temporary_rules_.end()) {
     temporary_rules_.erase(existing_temporary);
   }
-  // A rule that says nothing is removed instead of stored, so the file only
-  // ever holds real decisions.
   if (IsDefault(persistent)) {
-    // Do not call Forget here: that public operation intentionally clears the
-    // session overlay too, while this path is precisely how a session-only
-    // allow is installed. Remove just the durable part, if it existed.
     const auto persistent_match = std::find_if(
         rules_.begin(), rules_.end(), [&persistent](const Rule& value) {
           return value.origin == persistent.origin;
@@ -416,5 +408,15 @@ bool Store::Clear() {
 }
 
 const std::vector<Rule>& Store::rules() const { return rules_; }
+
+std::vector<std::string> Store::FingerprintingExemptOrigins() const {
+  std::vector<std::string> exempt;
+  for (const Rule& rule : rules_) {
+    if (rule.allow_fingerprinting && !rule.origin.empty()) {
+      exempt.push_back(rule.origin);
+    }
+  }
+  return exempt;
+}
 
 }  // namespace mtk::sites

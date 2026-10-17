@@ -3,6 +3,7 @@ set(MTK_BROWSER_SOURCES
   src/mtk_browser.rc
   src/resource.h
   resources/mtk_browser.ico
+  resources/mtk_browser_logo.png
   src/preferences.cpp
   src/preferences.h
   src/profile.cpp
@@ -59,7 +60,16 @@ set(MTK_BROWSER_SOURCES
   src/browser_client.h
   src/fullpage_screenshot.cpp
   src/browser_window.cpp
+  src/browser_window_dialogs.cpp
+  src/browser_window_tabs.cpp
+  src/browser_window_bookmarks.cpp
+  src/browser_window_paint.cpp
+  src/browser_window_internal.h
   src/browser_window.h
+  src/ole_drag_drop.cpp
+  src/ole_drag_drop.h
+  src/tab_preview.cpp
+  src/tab_preview.h
   src/memory_saver.h
   src/tab_search.cpp
   src/tab_search.h
@@ -187,6 +197,12 @@ set_target_properties(mtk_browser PROPERTIES
 # Stage the MTK Shields filter list and the two rendered loops beside the
 # executable so all three can be loaded at runtime.
 add_custom_command(TARGET mtk_browser POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_browser_logo.png"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_browser_logo.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_browser.ico"
+          "$<TARGET_FILE_DIR:mtk_browser>/mtk_browser.ico"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/resources/mtk_filters.txt"
           "$<TARGET_FILE_DIR:mtk_browser>/mtk_filters.txt"

@@ -8,44 +8,61 @@ namespace mtk::update {
 // Current shipped version, compared against the manifest.
 inline constexpr int kCurrentVersion[3] = {0, 3, 0};
 
-// Address of the signed update manifest and its detached signature. Both are
-// fetched over HTTPS with certificate validation; the signature is what makes
-// the update trustworthy, not the host.
+// Address of the signed update manifest and its detached signature.
 inline constexpr char kManifestUrl[] =
     "https://mdtahir7.github.io/mtk-browser-releases/update.json";
 inline constexpr char kSignatureUrl[] =
     "https://mdtahir7.github.io/mtk-browser-releases/update.json.sig";
 
+// Address of the signed security & ad/tracker filter feed manifest.
+inline constexpr char kFilterManifestUrl[] =
+    "https://mdtahir7.github.io/mtk-browser-releases/filters.json";
+inline constexpr char kFilterSignatureUrl[] =
+    "https://mdtahir7.github.io/mtk-browser-releases/filters.json.sig";
+
 enum class Status {
-  // No newer version is published.
   kUpToDate,
-  // A newer version is available and has been verified end to end.
   kUpdateReady,
-  // The check could not complete (offline, server error, bad manifest).
   kCheckFailed,
-  // A manifest was served but failed verification. Treated as hostile.
   kRejected,
-  // Updates are switched off in Settings.
   kDisabled,
 };
 
 struct Result {
   Status status = Status::kCheckFailed;
   std::wstring version;
-  // Human readable detail for the UI. Never contains a URL supplied by the
-  // server, so a hostile manifest cannot craft the message the user sees.
   std::wstring detail;
-  // Downloaded installer, only set when status is kUpdateReady.
   std::wstring installer_path;
 };
 
-// Performs a full check: fetch manifest, verify signature, compare versions,
-// download the installer and verify its SHA-256. Blocking, so it must be called
-// on a background thread. Nothing is executed by this function.
+struct FilterUpdateResult {
+  Status status = Status::kCheckFailed;
+  size_t rules_loaded = 0;
+  std::wstring version;
+  std::wstring detail;
+};
+
+// Verifies a detached base64-encoded ECDSA P-256 signature over `data` against
+// either the primary or backup pinned public key.
+bool VerifySignedPayload(const std::string& data,
+                         const std::string& base64_signature);
+
+// Validates a signed filter manifest + filter list payload in memory (offline
+// testable) and returns true when signature, SHA-256 checksum, and version are
+// valid.
+bool ValidateSignedFilterBundle(const std::string& manifest_json,
+                                const std::string& base64_signature,
+                                const std::string& filter_payload);
+
+// Performs a full browser update check.
 Result Check();
 
-// Launches a verified installer and returns true when the process started. The
-// caller is expected to close the browser afterwards.
+// Fetches, verifies, atomically saves, and hot-reloads the signed security
+// filter list (`mtk_filters.txt`). Falls back safely to the existing bundled
+// rules if offline or if verification fails.
+FilterUpdateResult CheckAndUpdateFilters();
+
+// Launches a verified installer and returns true when the process started.
 bool LaunchInstaller(const std::wstring& installer_path);
 
 // Removes installers left behind by earlier runs.

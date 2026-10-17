@@ -46,6 +46,9 @@ struct Rule {
   // subresources. For the rare page that has no https at all; it never affects
   // the main-frame upgrade, which HTTPS-only leaves alone regardless.
   bool allow_plain_http = false;
+  // Exempts this site from renderer-side Canvas/WebGL/Audio/Navigator
+  // fingerprinting perturbations when a trusted web app breaks under noise.
+  bool allow_fingerprinting = false;
 };
 
 // Scheme and host of `url`, lowercased, or an empty string when the URL is not
@@ -73,6 +76,9 @@ class Store final {
   bool Clear();
 
   const std::vector<Rule>& rules() const;
+  // Returns all origins that have explicitly opted out of fingerprinting
+  // protection (`allow_fingerprinting == true`).
+  std::vector<std::string> FingerprintingExemptOrigins() const;
 
  private:
   std::vector<Rule> rules_;

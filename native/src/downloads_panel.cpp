@@ -17,6 +17,7 @@ using std::max;
 #include <vector>
 
 #include "download_manager.h"
+#include "ole_drag_drop.h"
 #include "strings.h"
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
@@ -104,6 +105,8 @@ bool g_dragging_scrollbar = false;
 int g_drag_start_y = 0;
 int g_drag_scroll_start = 0;
 RECT g_scrollbar_thumb_rect{};
+uint64_t g_file_drag_candidate_id = 0;
+POINT g_file_drag_origin{};
 
 int Scaled(int value) { return MulDiv(value, g_dpi, 96); }
 
@@ -1241,6 +1244,24 @@ LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
         return 0;
       }
 
+      if (g_file_drag_candidate_id != 0 && (w_param & MK_LBUTTON) != 0) {
+        if (std::abs(point.x - g_file_drag_origin.x) >= GetSystemMetrics(SM_CXDRAG) ||
+            std::abs(point.y - g_file_drag_origin.y) >= GetSystemMetrics(SM_CYDRAG)) {
+          const uint64_t drag_id = g_file_drag_candidate_id;
+          g_file_drag_candidate_id = 0;
+          if (GetCapture() == window) ReleaseCapture();
+          if (const auto* item = FindItem(drag_id);
+              item && item->state == mtk::downloads::State::kComplete &&
+              !item->full_path.empty()) {
+            const bool prev_dismiss = g_dismiss_armed;
+            g_dismiss_armed = false;
+            mtk::dragdrop::StartFileDrag(item->full_path);
+            g_dismiss_armed = prev_dismiss;
+          }
+          return 0;
+        }
+      }
+
       uint64_t hovered_id = 0;
       Action hovered_action = Action::kNone;
       bool close_hovered = false;
@@ -1304,9 +1325,21 @@ LRESULT CALLBACK PanelProc(HWND window, UINT message, WPARAM w_param,
         InvalidateRect(window, nullptr, FALSE);
         return 0;
       }
+      g_file_drag_candidate_id = 0;
+      for (const Hit& hit : g_hits) {
+        if (hit.action == Action::kItem && PtInRect(&hit.bounds, point)) {
+          if (const auto* item = FindItem(hit.id);
+              item && item->state == mtk::downloads::State::kComplete) {
+            g_file_drag_candidate_id = hit.id;
+            g_file_drag_origin = point;
+          }
+          break;
+        }
+      }
       break;
     }
     case WM_LBUTTONUP: {
+      g_file_drag_candidate_id = 0;
       if (g_dragging_scrollbar) {
         g_dragging_scrollbar = false;
         ReleaseCapture();

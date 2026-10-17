@@ -172,3 +172,30 @@ MTK_TEST(SiteShieldsOffNeverWeakensSafetyRules) {
   MTK_EXPECT_FALSE(blocked_with_filtering_off(
       "https://example.com/", mtk::policy::ResourceType::kMainFrame));
 }
+
+
+MTK_TEST(SiteStoreAllowFingerprintingRoundTripsAndListsExemptOrigins) {
+  auto& store = mtk::sites::Store::Get();
+  store.Clear();
+
+  mtk::sites::Rule rule;
+  rule.origin = "https://design.example.com";
+  rule.allow_fingerprinting = true;
+  MTK_EXPECT_TRUE(store.Set(rule));
+  MTK_EXPECT_TRUE(store.Flush());
+
+  store.Load();
+  MTK_EXPECT_TRUE(store.HasRule("https://design.example.com"));
+  MTK_EXPECT_TRUE(store.For("https://design.example.com").allow_fingerprinting);
+
+  const auto exempt = store.FingerprintingExemptOrigins();
+  MTK_EXPECT_EQ_INT(exempt.size(), 1);
+  if (!exempt.empty()) {
+    MTK_EXPECT_EQ_STR(exempt[0], "https://design.example.com");
+  }
+
+  rule.allow_fingerprinting = false;
+  MTK_EXPECT_TRUE(store.Set(rule));
+  MTK_EXPECT_FALSE(store.HasRule("https://design.example.com"));
+  store.Clear();
+}

@@ -85,7 +85,10 @@ $sources = @(
     (Join-Path $sourceDir 'download_manager.cpp'),
     (Join-Path $sourceDir 'session_store.cpp'),
     (Join-Path $sourceDir 'preferences.cpp'),
-    (Join-Path $sourceDir 'icon_strip.cpp')
+    (Join-Path $sourceDir 'icon_strip.cpp'),
+    (Join-Path $sourceDir 'ole_drag_drop.cpp'),
+    (Join-Path $sourceDir 'tab_preview.cpp'),
+    (Join-Path $sourceDir 'updater.cpp')
 )
 foreach ($source in $sources) {
     if (-not (Test-Path $source)) { throw "Missing source file: $source" }
@@ -181,7 +184,7 @@ $quoted = ($sources | ForEach-Object { '"' + $_ + '"' }) -join ' '
 $command = "cl /nologo /std:c++20 /utf-8 /EHsc /W3 /permissive- /DNOMINMAX /I`"$sourceDir`" " +
            "/I`"$testDir`" $quoted /Fo`"$outputDir\\`" /Fe`"$exe`" " +
            "shell32.lib ole32.lib bcrypt.lib crypt32.lib windowscodecs.lib " +
-           "msimg32.lib gdi32.lib user32.lib comctl32.lib comdlg32.lib"
+           "msimg32.lib gdi32.lib user32.lib comctl32.lib comdlg32.lib dwmapi.lib winhttp.lib"
 
 $batch = Join-Path $outputDir 'run_tests.cmd'
 @(

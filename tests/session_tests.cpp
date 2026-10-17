@@ -1,3 +1,4 @@
+#include "tab_preview.h"
 #include "test_support.h"
 
 #include <windows.h>
@@ -411,4 +412,23 @@ MTK_TEST(SessionSplitViewInvalidIndexDiscarded) {
     const auto& restored = snapshot.windows.front();
     MTK_EXPECT_EQ_INT(restored.split_index, static_cast<size_t>(-1));
   }
+}
+
+
+MTK_TEST(TabPreviewFormattingAndGroupAccentColors) {
+  mtk::tab_preview::PreviewCardData data;
+  data.title = L"Research Paper";
+  data.url = "https://scholar.example.com/paper?id=42";
+  data.group = L"Study";
+  data.is_https = true;
+  data.sleeping = true;
+
+  const std::wstring sub = mtk::tab_preview::FormatPreviewSubtitle(data);
+  MTK_EXPECT_TRUE(sub.find(L"HTTPS") != std::wstring::npos);
+  MTK_EXPECT_TRUE(sub.find(L"scholar.example.com") != std::wstring::npos);
+  MTK_EXPECT_TRUE(sub.find(L"Sleeping") != std::wstring::npos);
+
+  const COLORREF c1 = mtk::tab_preview::GroupAccentColor(L"Study");
+  const COLORREF c2 = mtk::tab_preview::GroupAccentColor(L"study");
+  MTK_EXPECT_EQ_INT(c1, c2);
 }

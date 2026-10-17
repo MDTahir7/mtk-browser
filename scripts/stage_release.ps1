@@ -144,6 +144,12 @@ Copy-Item (Join-Path $repoRoot 'SOURCE_OFFER_REQUIREMENTS.md') $legal
 Copy-Item (Join-Path $repoRoot 'RELEASE_NOTES_0.3.0.md') $target
 Copy-Item (Join-Path $repoRoot 'vendor\cef-sdk\LICENSE.txt') (Join-Path $legal 'CEF_LICENSE.txt')
 Copy-Item (Join-Path $repoRoot 'vendor\cef-sdk\CREDITS.html') (Join-Path $legal 'CEF_CREDITS.html')
+if (Test-Path (Join-Path $repoRoot 'native\resources\mtk_browser_logo.png')) {
+    Copy-Item (Join-Path $repoRoot 'native\resources\mtk_browser_logo.png') $target
+}
+if (Test-Path (Join-Path $repoRoot 'native\resources\mtk_browser.ico')) {
+    Copy-Item (Join-Path $repoRoot 'native\resources\mtk_browser.ico') $target
+}
 
 $exe = Join-Path $target 'MTKBrowser.exe'
 Write-Output "Staged: $exe"

@@ -1,3 +1,4 @@
+#include "filter_engine.h"
 #include "test_support.h"
 
 #include "policy.h"
@@ -241,4 +242,48 @@ MTK_TEST(SearchTermBlockingCatchesSearchEngineXhrAndSuggestions) {
       "https://www.google.com/complete/search?client=chrome&q=weather+today",
       ResourceType::kXhr, "https://www.google.com/");
   MTK_EXPECT_TRUE(clean_xhr.allow);
+}
+
+
+MTK_TEST(FilterEngineMultiPartPublicSuffixesAndHotReload) {
+  MTK_EXPECT_EQ_STR(mtk::filters::EffectiveTldPlusOne("news.example.co.in"),
+                    "example.co.in");
+  MTK_EXPECT_EQ_STR(mtk::filters::EffectiveTldPlusOne("tracker.adnet.co.in"),
+                    "adnet.co.in");
+  MTK_EXPECT_EQ_STR(mtk::filters::EffectiveTldPlusOne("portal.uni.ac.in"),
+                    "uni.ac.in");
+  MTK_EXPECT_EQ_STR(mtk::filters::EffectiveTldPlusOne("shop.brand.co.uk"),
+                    "brand.co.uk");
+  MTK_EXPECT_EQ_STR(mtk::filters::EffectiveTldPlusOne("app.user.github.io"),
+                    "user.github.io");
+
+  auto& engine = mtk::filters::Engine::Get();
+  const size_t loaded = engine.ReloadFromText(
+      "||adnet.co.in^$third-party,script\n"
+      "/banner/*/promo/*^$image\n"
+      "@@||adnet.co.in/safeloader.js$script\n"
+      "example.co.in##.sponsored-slot\n");
+  MTK_EXPECT_EQ_INT(loaded, 4);
+
+  // Request from news.example.co.in to tracker.adnet.co.in MUST be treated as
+  // third-party even though both end in ".co.in"!
+  MTK_EXPECT_TRUE(engine.ShouldBlock(
+      "https://tracker.adnet.co.in/tag.js", "tracker.adnet.co.in",
+      "news.example.co.in", mtk::filters::RequestType::kScript));
+
+  // First-party request on adnet.co.in itself is not blocked by $third-party.
+  MTK_EXPECT_FALSE(engine.ShouldBlock(
+      "https://tracker.adnet.co.in/tag.js", "tracker.adnet.co.in",
+      "www.adnet.co.in", mtk::filters::RequestType::kScript));
+
+  // Exception rule wins over block rule.
+  MTK_EXPECT_FALSE(engine.ShouldBlock(
+      "https://tracker.adnet.co.in/safeloader.js", "tracker.adnet.co.in",
+      "news.example.co.in", mtk::filters::RequestType::kScript));
+
+  // Iterative multi-wildcard rule matches cleanly.
+  MTK_EXPECT_TRUE(engine.ShouldBlock(
+      "https://cdn.example.com/banner/2026/promo/hero.png?x=1",
+      "cdn.example.com", "news.example.co.in",
+      mtk::filters::RequestType::kImage));
 }

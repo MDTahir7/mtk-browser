@@ -1,51 +1,28 @@
-import binascii, struct, zlib
+import io, struct
 from pathlib import Path
+from PIL import Image
 
-SIZE = 256
-pixels = bytearray()
+root = Path(__file__).resolve().parents[1] / "native" / "resources"
+logo_png = root / "mtk_browser_logo.png"
+ico_out = root / "mtk_browser.ico"
 
-def inside_rounded(x, y, r=48):
-    cx = min(max(x, r), SIZE - 1 - r)
-    cy = min(max(y, r), SIZE - 1 - r)
-    return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+img = Image.open(logo_png).convert("RGBA")
+sizes = [256, 128, 64, 48, 32, 24, 16]
+frames = []
+for s in sizes:
+    buf = io.BytesIO()
+    img.resize((s, s), Image.Resampling.LANCZOS).save(buf, format="PNG", optimize=True)
+    frames.append((s, buf.getvalue()))
 
-def in_poly(x, y, points):
-    hit = False
-    j = len(points) - 1
-    for i, (xi, yi) in enumerate(points):
-        xj, yj = points[j]
-        if ((yi > y) != (yj > y)) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
-            hit = not hit
-        j = i
-    return hit
+header = struct.pack("<HHH", 0, 1, len(frames))
+offset = 6 + 16 * len(frames)
+entries = bytearray()
+payloads = bytearray()
+for s, data in frames:
+    b = 0 if s == 256 else s
+    entries.extend(struct.pack("<BBBBHHII", b, b, 0, 0, 1, 32, len(data), offset))
+    payloads.extend(data)
+    offset += len(data)
 
-def segment_distance(px, py, ax, ay, bx, by):
-    dx, dy = bx - ax, by - ay
-    t = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-    return ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
-
-shield = [(128, 39), (203, 72), (191, 164), (128, 220), (65, 164), (53, 72)]
-for y in range(SIZE):
-    pixels.append(0)
-    for x in range(SIZE):
-        if not inside_rounded(x, y):
-            pixels.extend((0, 0, 0, 0)); continue
-        t = (x + y) / (2 * (SIZE - 1))
-        bg = (int(89 + 25*t), int(65 + 52*t), int(210 + 35*t), 255)
-        if in_poly(x, y, shield): bg = (17, 24, 43, 255)
-        edge = min(segment_distance(x,y,*shield[i],*shield[(i+1)%6]) for i in range(6))
-        if edge < 4: bg = (241, 245, 255, 255)
-        m = min(segment_distance(x,y,88,151,88,94), segment_distance(x,y,88,94,128,137),
-                segment_distance(x,y,128,137,168,94), segment_distance(x,y,168,94,168,151))
-        if m < 8: bg = (74, 222, 128, 255)
-        pixels.extend(bg)
-
-raw = bytes(pixels)
-def chunk(kind, data):
-    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', binascii.crc32(kind + data) & 0xffffffff)
-png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', SIZE,SIZE,8,6,0,0,0)) + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b'')
-ico = struct.pack('<HHHBBBBHHII', 0,1,1,0,0,0,0,1,32,len(png),22) + png
-out = Path(__file__).resolve().parents[1] / 'native' / 'resources'
-out.mkdir(parents=True, exist_ok=True)
-(out / 'mtk_browser.ico').write_bytes(ico)
-print(out / 'mtk_browser.ico')
+ico_out.write_bytes(header + bytes(entries) + bytes(payloads))
+print(f"Generated {ico_out} ({ico_out.stat().st_size} bytes, {len(frames)} resolutions)")

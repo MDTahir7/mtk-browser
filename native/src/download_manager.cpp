@@ -8,10 +8,12 @@
 #include <commdlg.h>
 #include <shlobj_core.h>
 #include <wincodec.h>
+#include <winhttp.h>
 #include <wrl/client.h>
 
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "winhttp.lib")
 
 #include <algorithm>
 #include <array>
@@ -29,6 +31,30 @@ namespace {
 
 constexpr size_t kMaxItems = 200;
 constexpr size_t kMaxFileNameLength = 120;
+
+std::string WideToUtf8(const std::wstring& value) {
+  if (value.empty()) return {};
+  const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                       static_cast<int>(value.size()), nullptr,
+                                       0, nullptr, nullptr);
+  if (size <= 0) return {};
+  std::string result(static_cast<size_t>(size), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                      result.data(), size, nullptr, nullptr);
+  return result;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return {};
+  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                       value.data(), static_cast<int>(value.size()),
+                                       nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring result(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                      static_cast<int>(value.size()), result.data(), size);
+  return result;
+}
 
 // Only these types are ever written to disk. An allowlist is used instead of a
 // blocklist so a new dangerous extension does not become downloadable by
@@ -260,6 +286,183 @@ int64_t GetExistingPartialBytes(const std::wstring& full_path) {
   const bool ok = GetFileSizeEx(file, &size);
   CloseHandle(file);
   return (ok && size.QuadPart > 0) ? static_cast<int64_t>(size.QuadPart) : 0;
+}
+
+bool ResumeDownloadWithRange(uint64_t id, std::function<void()> on_progress) {
+  Item* item = Manager::Get().FindItem(id);
+  if (!item || !CanResume(*item) || item->full_path.empty()) return false;
+
+  const auto nav = mtk::policy::EvaluateNavigation(item->url);
+  if (!nav.allow ||
+      (!nav.url.starts_with("https://") && !nav.url.starts_with("http://"))) {
+    item->state = State::kFailed;
+    item->detail = L"blocked by safety policy";
+    Manager::Get().Flush();
+    if (on_progress) on_progress();
+    return false;
+  }
+
+  const int64_t disk_bytes = GetExistingPartialBytes(item->full_path);
+  int64_t offset = disk_bytes > 0 ? disk_bytes : item->received_bytes;
+  if (offset <= 0) return false;
+
+  const std::wstring wide_url = Utf8ToWide(nav.url);
+  URL_COMPONENTS parts{};
+  parts.dwStructSize = sizeof(parts);
+  wchar_t host[256]{};
+  wchar_t path[4096]{};
+  parts.lpszHostName = host;
+  parts.dwHostNameLength = static_cast<DWORD>(std::size(host));
+  parts.lpszUrlPath = path;
+  parts.dwUrlPathLength = static_cast<DWORD>(std::size(path));
+  if (!WinHttpCrackUrl(wide_url.c_str(), 0, 0, &parts) ||
+      (parts.nScheme != INTERNET_SCHEME_HTTPS &&
+       parts.nScheme != INTERNET_SCHEME_HTTP)) {
+    return false;
+  }
+
+  HINTERNET session = WinHttpOpen(L"MTKBrowser-Downloader/0.3",
+                                  WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                  WINHTTP_NO_PROXY_NAME,
+                                  WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!session) return false;
+  DWORD protocols =
+      WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+  WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols,
+                   sizeof(protocols));
+  DWORD timeout = 30000;
+  WinHttpSetTimeouts(session, timeout, timeout, timeout, timeout);
+
+  HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
+  const DWORD req_flags =
+      parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
+  HINTERNET request =
+      connection ? WinHttpOpenRequest(connection, L"GET", path, nullptr,
+                                      WINHTTP_NO_REFERER,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, req_flags)
+                 : nullptr;
+  if (!request) {
+    if (connection) WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return false;
+  }
+  DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+  WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy,
+                   sizeof(redirect_policy));
+
+  std::wstring headers =
+      L"Range: " + Utf8ToWide(BuildRangeHeader(offset)) + L"\r\n";
+  const std::string if_range =
+      BuildIfRangeHeader(item->etag, item->last_modified);
+  if (!if_range.empty()) {
+    headers += L"If-Range: " + Utf8ToWide(if_range) + L"\r\n";
+  }
+
+  item->state = State::kInProgress;
+  item->detail = L"resuming from " + FormatBytes(offset);
+  if (on_progress) on_progress();
+
+  bool ok = false;
+  if (WinHttpSendRequest(request, headers.c_str(),
+                         static_cast<DWORD>(headers.size()),
+                         WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+      WinHttpReceiveResponse(request, nullptr)) {
+    DWORD status = 0;
+    DWORD status_size = sizeof(status);
+    WinHttpQueryHeaders(request,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
+                        WINHTTP_NO_HEADER_INDEX);
+
+    const std::wstring part_path = PartialFilePath(item->full_path);
+    const std::wstring active_path =
+        FileExists(part_path) ? part_path : item->full_path;
+
+    if (status == 206 || status == 200) {
+      const bool partial = (status == 206);
+      HANDLE file = CreateFileW(
+          active_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+          partial ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        if (partial) {
+          LARGE_INTEGER move_to{};
+          move_to.QuadPart = offset;
+          SetFilePointerEx(file, move_to, nullptr, FILE_BEGIN);
+          SetEndOfFile(file);
+          item->received_bytes = offset;
+        } else {
+          offset = 0;
+          item->received_bytes = 0;
+        }
+
+        wchar_t etag_buf[256]{};
+        DWORD etag_len = sizeof(etag_buf);
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_ETAG,
+                                WINHTTP_HEADER_NAME_BY_INDEX, etag_buf,
+                                &etag_len, WINHTTP_NO_HEADER_INDEX)) {
+          item->etag = WideToUtf8(etag_buf);
+        }
+        wchar_t lm_buf[256]{};
+        DWORD lm_len = sizeof(lm_buf);
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_LAST_MODIFIED,
+                                WINHTTP_HEADER_NAME_BY_INDEX, lm_buf, &lm_len,
+                                WINHTTP_NO_HEADER_INDEX)) {
+          item->last_modified = WideToUtf8(lm_buf);
+        }
+
+        ok = true;
+        std::vector<char> chunk(64 * 1024);
+        DWORD read = 0;
+        while (WinHttpReadData(request, chunk.data(),
+                               static_cast<DWORD>(chunk.size()), &read) &&
+               read > 0) {
+          DWORD written = 0;
+          if (!WriteFile(file, chunk.data(), read, &written, nullptr) ||
+              written != read) {
+            ok = false;
+            break;
+          }
+          item->received_bytes += written;
+          if (item->total_bytes > 0) {
+            item->percent = static_cast<int>(
+                std::clamp<int64_t>((item->received_bytes * 100) /
+                                        std::max<int64_t>(1, item->total_bytes),
+                                    0, 100));
+          }
+          if (on_progress) on_progress();
+        }
+        FlushFileBuffers(file);
+        CloseHandle(file);
+
+        if (ok) {
+          if (active_path != item->full_path) {
+            MoveFileExW(active_path.c_str(), item->full_path.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+          }
+          item->total_bytes = item->received_bytes;
+          item->percent = 100;
+          item->state = State::kComplete;
+          item->can_resume = false;
+          item->detail.clear();
+          ApplyMarkOfTheWeb(item->full_path, item->url);
+        }
+      }
+    }
+  }
+
+  WinHttpCloseHandle(request);
+  WinHttpCloseHandle(connection);
+  WinHttpCloseHandle(session);
+
+  if (!ok) {
+    item->state = State::kFailed;
+    item->can_resume = CanResume(*item);
+    item->detail = L"resume failed — partial progress kept";
+  }
+  Manager::Get().Upsert(*item);
+  Manager::Get().Flush();
+  if (on_progress) on_progress();
+  return ok;
 }
 
 std::wstring CleanSuggestedPrefixes(const std::wstring& raw) {
@@ -697,30 +900,6 @@ std::wstring DownloadsHistoryPath() {
   return mtk::preferences::ApplicationDataDirectory() + L"\\downloads.v1";
 }
 
-std::string WideToUtf8(const std::wstring& value) {
-  if (value.empty()) return {};
-  const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
-                                       static_cast<int>(value.size()), nullptr,
-                                       0, nullptr, nullptr);
-  if (size <= 0) return {};
-  std::string result(static_cast<size_t>(size), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-                      result.data(), size, nullptr, nullptr);
-  return result;
-}
-
-std::wstring Utf8ToWide(const std::string& value) {
-  if (value.empty()) return {};
-  const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                       value.data(), static_cast<int>(value.size()),
-                                       nullptr, 0);
-  if (size <= 0) return {};
-  std::wstring result(static_cast<size_t>(size), L'\0');
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                      static_cast<int>(value.size()), result.data(), size);
-  return result;
-}
-
 std::string EncodeField(std::string_view value) {
   constexpr char digits[] = "0123456789ABCDEF";
   std::string output;
@@ -842,7 +1021,7 @@ void Manager::Load() {
                           (end == std::string::npos ? content.size() : end) - offset);
     if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
     const auto fields = SplitTabs(line);
-    if (fields.size() == 10 && fields[0] == "D") {
+    if ((fields.size() == 10 || fields.size() == 12) && fields[0] == "D") {
       int state_value = 0;
       Item item;
       int risky = 0;
@@ -850,8 +1029,14 @@ void Manager::Load() {
       std::string file_name;
       std::string full_path;
       std::string url;
-      std::string detail;
-      if (ParseNumber(fields[1], &state_value) &&
+      std::string etag;
+      std::string last_modified;
+      const bool optional_ok =
+          fields.size() < 12 ||
+          (DecodeField(fields[10], &etag) &&
+           DecodeField(fields[11], &last_modified));
+      if (optional_ok &&
+          ParseNumber(fields[1], &state_value) &&
           ParseNumber(fields[2], &item.received_bytes) &&
           ParseNumber(fields[3], &item.total_bytes) &&
           ParseNumber(fields[4], &item.percent) &&
@@ -862,6 +1047,8 @@ void Manager::Load() {
         item.file_name = Utf8ToWide(file_name);
         item.full_path = Utf8ToWide(full_path);
         item.url = std::move(url);
+        item.etag = std::move(etag);
+        item.last_modified = std::move(last_modified);
         item.risky = risky != 0;
         item.size_warned = warned != 0;
         item.state = state_value >= static_cast<int>(State::kStarting) &&
@@ -873,6 +1060,14 @@ void Manager::Load() {
           item.state = State::kFailed;
           item.detail = L"interrupted when MTK Browser closed";
           dirty_ = true;
+        }
+        if (item.state == State::kFailed || item.state == State::kPaused) {
+          const int64_t disk_bytes = GetExistingPartialBytes(item.full_path);
+          if (disk_bytes > 0) item.received_bytes = disk_bytes;
+          if (item.received_bytes > 0) {
+            item.partial_path = PartialFilePath(item.full_path);
+            item.can_resume = CanResume(item);
+          }
         }
         if (!item.file_name.empty() && item.file_name.size() <= 260 &&
             item.full_path.size() <= 32767 && item.url.size() <= 4096) {
@@ -894,8 +1089,8 @@ bool Manager::Flush() {
     // to the persistent profile on disk.
     if (item.is_private) continue;
 
-    // Active callbacks are not resumable across a process restart; Load marks
-    // these records as interrupted while preserving the history row.
+    // Persist optional ETag and Last-Modified fields when present so HTTP
+    // Range + If-Range resumption works across browser restarts.
     content += "D\t" + std::to_string(static_cast<int>(item.state)) + "\t" +
                std::to_string(item.received_bytes) + "\t" +
                std::to_string(item.total_bytes) + "\t" +
@@ -904,7 +1099,12 @@ bool Manager::Flush() {
                (item.size_warned ? "1" : "0") + "\t" +
                EncodeField(WideToUtf8(item.file_name)) + "\t" +
                EncodeField(WideToUtf8(item.full_path)) + "\t" +
-               EncodeField(item.url) + "\n";
+               EncodeField(item.url);
+    if (!item.etag.empty() || !item.last_modified.empty()) {
+      content += "\t" + EncodeField(item.etag) + "\t" +
+                 EncodeField(item.last_modified);
+    }
+    content += "\n";
   }
   if (!WriteDownloadsFile(content)) return false;
   dirty_ = false;

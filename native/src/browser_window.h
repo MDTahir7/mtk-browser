@@ -334,6 +334,9 @@ class BrowserWindow final : public BrowserClientDelegate {
   void BeginTabDrag(size_t index, POINT point);
   void UpdateTabDrag(POINT point);
   void EndTabDrag();
+  void BeginBookmarkDrag(size_t hit_index, POINT point);
+  void UpdateBookmarkDrag(POINT point);
+  void EndBookmarkDrag(POINT point);
   void NavigateFromOmnibox();
   void Layout();
   void Paint(HDC dc);
@@ -465,6 +468,10 @@ class BrowserWindow final : public BrowserClientDelegate {
   bool dragging_ = false;
   std::vector<BookmarkHit> bookmark_bar_hits_;
   size_t hovered_bookmark_ = static_cast<size_t>(-1);
+  size_t bookmark_drag_index_ = static_cast<size_t>(-1);
+  size_t bookmark_drop_target_ = static_cast<size_t>(-1);
+  POINT bookmark_drag_origin_{};
+  bool bookmark_dragging_ = false;
   std::vector<std::pair<size_t, bool>> bookmark_overflow_entries_;
   std::vector<std::string> folder_menu_urls_;
   std::string context_bookmark_url_;

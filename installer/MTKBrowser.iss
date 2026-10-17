@@ -44,8 +44,8 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "..\dist\MTK Browser\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\MTK Browser"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\MTK Browser"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\MTK Browser"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\mtk_browser_globe.ico"
+Name: "{autodesktop}\MTK Browser"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\mtk_browser_globe.ico"
 Name: "{autoprograms}\MTK Browser\Preview notice"; Filename: "{app}\PREVIEW_NOTICE.txt"
 Name: "{autoprograms}\MTK Browser\Uninstall MTK Browser"; Filename: "{uninstallexe}"
 

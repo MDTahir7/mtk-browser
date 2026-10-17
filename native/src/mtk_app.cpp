@@ -7,6 +7,7 @@
 #include "home_scheme.h"
 #include "password_bridge.h"
 #include "preferences.h"
+#include "site_settings.h"
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
 #include "include/cef_frame.h"
@@ -16,18 +17,6 @@
 
 namespace {
 
-// Executed from CefRenderProcessHandler::OnContextCreated, i.e. as soon as the
-// page V8 context exists and before the page has produced its player data.
-// This timing matters: YouTube embeds its ad payload in the initial player
-// response, which a late OnLoadEnd script would see only after the ad player
-// was already built. V8 extension registration is deliberately not used here;
-// it stalled the renderer in this CEF build.
-// Guard against proof-of-work challenge scripts (such as Anubis / BotStopper)
-// that query progress/status elements before the HTML streaming parser has reached
-// them in the DOM. When scripts execute from cache, premature document.getElementById
-// lookups return null, causing an unhandled TypeError that halts execution on
-// "Calculating... Difficulty: X". Providing fallback elements ensures the challenge
-// computes its proof-of-work immediately and redirects seamlessly to the target site.
 constexpr char kBotChallengeCompatScript[] = R"JS(
 (() => {
   if (window.__mtkBotCompat) return;
@@ -88,8 +77,6 @@ constexpr char kShieldsPageScript[] = R"JS(
     'playerAdParams', 'adParams', 'adRequestParams', 'adSignalsInfo'
   ]);
 
-  // This intentionally examines only player-response shaped fields. Walking
-  // all of ytInitialData is both unnecessary and expensive on long pages.
   const prune = value => {
     if (!value || typeof value !== 'object') return value;
     for (const key of AD_KEYS) {
@@ -130,9 +117,6 @@ constexpr char kShieldsPageScript[] = R"JS(
     });
   };
 
-  // YouTube assigns these globals during startup and during every SPA
-  // navigation. Guard the assignment itself instead of only inspecting it
-  // after the ad player has already been created.
   const guardGlobal = name => {
     const descriptor = Object.getOwnPropertyDescriptor(window, name);
     if (descriptor && !descriptor.configurable) {
@@ -169,11 +153,6 @@ constexpr char kShieldsPageScript[] = R"JS(
     }
   };
 
-  // CSS from the filter engine hides known ad surfaces declaratively. Avoid a
-  // MutationObserver or interval here: a busy YouTube page can produce enough
-  // mutations to starve the renderer. Global assignment guards above sanitize
-  // every player-data replacement; this is only a bounded recheck for SPA
-  // navigation and an exact native skip control.
   const refreshPlayerData = () => {
     try {
       prune(window.ytInitialPlayerResponse);
@@ -192,11 +171,6 @@ constexpr char kShieldsPageScript[] = R"JS(
 })();
 )JS";
 
-// Instagram has no network-enforceable safe mode, and its single-page
-// navigation changes the URL without issuing a main-frame request, so the
-// request policy alone cannot stop an in-app jump to Explore or Reels. This
-// guard closes those two unfiltered discovery surfaces from inside the page.
-// It is deliberately small: no DOM scanning and no mutation observer.
 constexpr char kInstagramGuardScript[] = R"JS(
 (() => {
   if (!/(^|\.)instagram\.com$/.test(location.hostname)) return;
@@ -205,11 +179,6 @@ constexpr char kInstagramGuardScript[] = R"JS(
     value: true, configurable: false, enumerable: false
   });
 
-  // On Instagram web, Search and Explore are the same nav entry (/explore/).
-  // Hiding it would remove search, so the browse grid is swapped for the
-  // keyword search page instead: the user keeps search, and the endless
-  // unfiltered grid never renders. Hashtag and search routes are untouched;
-  // the request policy still refuses adult terms on them.
   const SEARCH_PATH = '/explore/search/keyword/?q=';
   const GRID = /^\/explore\/?$|^\/explore\/(?:people|locations)/i;
   const REELS = /^\/reels\/?$/i;
@@ -226,12 +195,6 @@ constexpr char kInstagramGuardScript[] = R"JS(
     if (REELS.test(path) && path !== '/') location.replace(location.origin + '/');
   };
 
-  // Instagram delivers sponsored posts inside the same GraphQL feed payload as
-  // organic posts, so no network rule can separate them. Measured on a real
-  // feed, these units carry no "Sponsored" text in the DOM at all; what they
-  // do carry is Meta's ad click-through link, which organic posts never use.
-  // That link is the primary signal, and the visible label is kept as a
-  // secondary one for the variants that still render it.
   const AD_LINK = 'a[href*="/ads/ig_redirect"],a[href*="ig_redirect"]';
   const AD_LABEL = /(?:^|\n)[ \t]*(?:sponsored|paid partnership[^\n]*|\u092a\u094d\u0930\u093e\u092f\u094b\u091c\u093f\u0924)[ \t]*(?:\n|$)/i;
   const hideSponsored = () => {
@@ -259,7 +222,6 @@ constexpr char kInstagramGuardScript[] = R"JS(
   }
   addEventListener('popstate', enforce, true);
   addEventListener('hashchange', enforce, true);
-  // Cheap string check for route changes the app makes without history hooks.
   let previous = location.pathname;
   setInterval(() => {
     if (location.pathname !== previous) {
@@ -269,8 +231,6 @@ constexpr char kInstagramGuardScript[] = R"JS(
     hideSponsored();
   }, 1500);
 
-  // The feed loads more posts on scroll, so sponsored checks run there too,
-  // throttled so fast scrolling cannot flood the renderer.
   let lastRun = 0;
   addEventListener('scroll', () => {
     const now = Date.now();
@@ -284,9 +244,6 @@ constexpr char kInstagramGuardScript[] = R"JS(
 })();
 )JS";
 
-// Turns on Chromium's local spellchecker and, just as importantly, keeps the
-// server-backed "enhanced" spellcheck off. Enhanced spellcheck uploads what the
-// user types to Google, which this browser must never do silently.
 void ConfigureSpellcheck() {
   CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
   if (!context) return;
@@ -306,8 +263,6 @@ void ConfigureSpellcheck() {
   disabled->SetBool(false);
   set_preference("spellcheck.use_spelling_service", disabled);
 
-  // Hunspell dictionaries Chromium ships support for. Hindi has no Hunspell
-  // dictionary in Chromium, so requesting it would only fail quietly.
   CefRefPtr<CefListValue> dictionaries = CefListValue::Create();
   dictionaries->SetString(0, "en-US");
   CefRefPtr<CefValue> languages = CefValue::Create();
@@ -315,10 +270,6 @@ void ConfigureSpellcheck() {
   set_preference("spellcheck.dictionaries", languages);
 }
 
-// Encrypted DNS. Chromium resolves through the configured template, so lookups
-// stop travelling in the clear to whatever resolver the network handed out. The
-// default provider also refuses malware and adult domains, which is a second
-// line behind the browser's own rules.
 void ConfigureSecureDns() {
   CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
   if (!context) return;
@@ -334,9 +285,6 @@ void ConfigureSecureDns() {
   };
 
   CefRefPtr<CefValue> mode = CefValue::Create();
-  // "secure" would fail closed if the resolver is unreachable, which would look
-  // like a broken internet connection. "automatic" uses encrypted DNS when it
-  // works and falls back when it does not.
   mode->SetString(templates.empty() ? "off" : "automatic");
   set_preference("dns_over_https.mode", mode);
 
@@ -350,8 +298,6 @@ void ConfigureSecureDns() {
 MtkApp::MtkApp(HINSTANCE instance, int show_command,
                std::vector<std::string> startup_urls,
                bool app_mode)
-    // A browser started in a very short window has almost no page area. Start
-    // the primary window maximized so even a stale shell show-state opens fully.
     : instance_(instance), show_command_(SW_SHOWMAXIMIZED),
       startup_urls_(std::move(startup_urls)),
       app_mode_(app_mode) {
@@ -375,20 +321,13 @@ void MtkApp::OnRegisterCustomSchemes(
 
 void MtkApp::OnBeforeCommandLineProcessing(
     const CefString& process_type, CefRefPtr<CefCommandLine> command_line) {
-  // Only the browser process line carries these; renderers inherit what they
-  // need from it.
   if (!command_line || !process_type.empty()) return;
 
-  // Allow embedded media players (such as Twitter/X tweet video embeds, muted
-  // previews and custom media elements) to initialize and play without crashing
-  // with "The media could not be played".
   if (!command_line->HasSwitch("autoplay-policy")) {
     command_line->AppendSwitchWithValue("autoplay-policy",
                                         "no-user-gesture-required");
   }
 
-  // Picture-in-picture and the hardware media keys are Chromium features that
-  // are compiled in but not enabled by default in this runtime.
   const char* features =
       "MediaSessionService,HardwareMediaKeyHandling,PictureInPictureWindow";
   if (command_line->HasSwitch("enable-features")) {
@@ -399,9 +338,6 @@ void MtkApp::OnBeforeCommandLineProcessing(
     command_line->AppendSwitchWithValue("enable-features", features);
   }
 
-  // Screen readers need the renderer's accessibility tree. "complete" is the
-  // documented value; it costs a little memory per tab and is what makes the
-  // page content reachable by assistive technology at all.
   if (!command_line->HasSwitch("force-renderer-accessibility")) {
     command_line->AppendSwitchWithValue("force-renderer-accessibility",
                                         "complete");
@@ -411,17 +347,8 @@ void MtkApp::OnBeforeCommandLineProcessing(
 void MtkApp::OnBeforeChildProcessLaunch(
     CefRefPtr<CefCommandLine> command_line) {
   if (!command_line) return;
-  // The renderer process reads this back through its own global command line
-  // in OnContextCreated. Preferences are loaded only in the browser process
-  // (see main.cpp), so this is the one channel that carries the choice across
-  // the process boundary; there is no shared memory or IPC message for it.
-  // The seed is generated once per browser-process launch (not per child
-  // process) so every renderer of this run agrees on it.
   static const uint64_t seed = []() {
     unsigned char bytes[8]{};
-    // A cryptographic RNG is overkill for a value whose only job is to differ
-    // between runs; GetTickCount64 plus the address of a stack variable (ASLR)
-    // is enough entropy for that and needs no extra dependency.
     const ULONGLONG tick = GetTickCount64();
     const uintptr_t address = reinterpret_cast<uintptr_t>(&bytes);
     memcpy(bytes, &tick, 4);
@@ -434,7 +361,8 @@ void MtkApp::OnBeforeChildProcessLaunch(
       mtk::fingerprint::kSwitchName,
       mtk::fingerprint::EncodeSwitchValue(
           mtk::preferences::Store::Get().values().fingerprint_protection,
-          seed));
+          seed,
+          mtk::sites::Store::Get().FingerprintingExemptOrigins()));
 }
 
 void MtkApp::OnContextInitialized() {
@@ -444,8 +372,6 @@ void MtkApp::OnContextInitialized() {
     CefQuitMessageLoop();
     return;
   }
-  // Windows own themselves and end the message loop when the last one closes,
-  // so nothing is held here.
   if (!BrowserWindow::Open(instance_, show_command_, startup_urls_, false, false,
                            app_mode_)) {
     CefQuitMessageLoop();
@@ -455,21 +381,13 @@ void MtkApp::OnContextInitialized() {
 void MtkApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame> frame,
                               CefRefPtr<CefV8Context> context) {
-  // The router has to see every context, including subframes, or its replies
-  // have nowhere to land.
   mtk::password_bridge::RendererOnContextCreated(browser, frame, context);
   if (!frame || !frame->IsMain()) return;
-  // Run in the freshly-created page context. All these scripts are
-  // intentionally bounded and check the page themselves: no mutation observer
-  // and no periodic page-data traversal.
   frame->ExecuteJavaScript(kBotChallengeCompatScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kShieldsPageScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kInstagramGuardScript, frame->GetURL(), 0);
   frame->ExecuteJavaScript(mtk::password_bridge::PageScript(), frame->GetURL(), 0);
 
-  // Read once per render process: the switch was set for this whole process
-  // in OnBeforeChildProcessLaunch, so it cannot change between frames of the
-  // same renderer.
   static const std::string kFingerprintScript = []() {
     auto command_line = CefCommandLine::GetGlobalCommandLine();
     if (!command_line ||
@@ -480,7 +398,8 @@ void MtkApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
         command_line->GetSwitchValue(mtk::fingerprint::kSwitchName).ToString();
     return mtk::fingerprint::BuildScript(
         mtk::fingerprint::IsEnabledSwitchValue(value),
-        mtk::fingerprint::DecodeSeed(value));
+        mtk::fingerprint::DecodeSeed(value),
+        mtk::fingerprint::DecodeExemptOrigins(value));
   }();
   if (!kFingerprintScript.empty()) {
     frame->ExecuteJavaScript(kFingerprintScript, frame->GetURL(), 0);
