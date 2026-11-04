@@ -1,67 +1,113 @@
-name: Logic tests
-
-# The logic suite covers navigation and request policy, download rules and file
-# name hardening, session restore, the bookmarks importer, profile ids, per-site
-# settings, UI string encoding and the password store. None of it needs CEF, so
-# it runs on a plain Windows runner with the MSVC toolchain that is already
-# installed there.
-#
-# A full Release build is deliberately not run here: it needs the 1 GB CEF binary
-# distribution, which would have to be downloaded and cached on every runner. That
-# belongs in a separate, slower workflow if it is ever wanted, and the local build
-# is what gates a commit today.
+name: CI & Quality Verification
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  logic-tests:
+  lint-and-scripts:
+    name: Syntax & Asset Integrity
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate JavaScript syntax
+        run: npm run check
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate Python scripts syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = Get-ChildItem -Path scripts\*.py, *.py -File
+          foreach ($script in $scripts) {
+            Write-Host "Compiling $($script.FullName)..."
+            python -m py_compile $script.FullName
+          }
+          Write-Host "All Python scripts passed compilation check."
+
+      - name: Verify media assets & icon strips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $inlineAnimations = @('mtk_block_shield.webm', 'mtk_siren_alert.webm')
+          foreach ($name in $inlineAnimations) {
+            $file = Get-Item "native/resources/$name"
+            if ($file.Length -le 0 -or $file.Length -gt 700KB) {
+              throw "$name is $($file.Length) bytes; maximum allowed inline size is 700 KB."
+            }
+          }
+          $strips = @('mtk_shield_hover.png', 'mtk_home_hover.png', 'mtk_refresh_strip.png', 'mtk_store_hover.png', 'mtk_notes_hover.png', 'mtk_download_hover.png', 'mtk_history_hover.png', 'mtk_settings_hover.png', 'mtk_focus_strip.png', 'mtk_screenshot_hover.png', 'mtk_screenshot_strip.png')
+          foreach ($stripName in $strips) {
+            $path = Resolve-Path "native/resources/$stripName" -ErrorAction SilentlyContinue
+            if ($path) {
+              $img = [System.Drawing.Image]::FromFile($path)
+              try { $w = $img.Width; $h = $img.Height } finally { $img.Dispose() }
+              if ($h -le 0 -or $h -gt 256 -or $w -gt 4096 -or ($w % $h) -ne 0) {
+                throw "$stripName is ${w}x${h}; frames must be square (<= 256px) and strip width <= 4096px."
+              }
+              Write-Host "Strip OK: $stripName (${w}x${h})"
+            }
+          }
+
+      - name: Check repository hygiene (No private keys or raw 3D blend files)
+        shell: pwsh
+        run: |
+          $bannedExtensions = @('*.pfx', '*.p12', '*.key', '*.pem', '*.jks', '*.keystore')
+          $found = Get-ChildItem -Path . -Recurse -File -Include $bannedExtensions -Exclude 'node_modules', '.git'
+          if ($found) {
+            throw "Found forbidden private key/certificate files in repository: $($found -join ', ')"
+          }
+          Write-Host "Repository clean of private keys."
+
+  native-logic-tests:
+    name: Native C++20 Logic Tests
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
 
-      - name: Test password form capture and autofill
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run password form DOM fixture tests
         run: node --test tests/password_form_tests.cjs
 
-      - name: Show toolchain
+      - name: Locate MSVC Toolchain
         shell: pwsh
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 
-      - name: Run logic tests
+      - name: Compile and run C++ logic test suite
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_tests.ps1
-
-      - name: Check the shipped animation and icon assets
-        shell: pwsh
-        # These are committed binaries that no build step regenerates, and the
-        # release staging script refuses to package them when they drift outside
-        # the loader's limits. Checking here means a bad asset fails on push
-        # rather than at packaging time.
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Add-Type -AssemblyName System.Drawing
-          foreach ($name in 'mtk_block_shield.webm', 'mtk_siren_alert.webm') {
-            $file = Get-Item "native/resources/$name"
-            if ($file.Length -le 0 -or $file.Length -gt 700KB) {
-              throw "$name is $($file.Length) bytes; the browser only inlines assets up to 700 KB."
-            }
-          }
-          $strip = [System.Drawing.Image]::FromFile((Resolve-Path 'native/resources/mtk_shield_hover.png'))
-          try { $width = $strip.Width; $height = $strip.Height } finally { $strip.Dispose() }
-          if ($height -le 0 -or $height -gt 256 -or $width -gt 4096 -or ($width % $height) -ne 0) {
-            throw "Shield hover strip is ${width}x${height}; frames must be square, at most 256 px, and the strip at most 4096 px wide."
-          }
-          Write-Output "Assets OK: strip ${width}x${height}"

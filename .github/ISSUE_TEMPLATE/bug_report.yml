@@ -1,0 +1,60 @@
+name: Bug Report
+description: Create a report to help us reproduce and fix a bug in MTK Browser
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue!
+        **Important:** If you have discovered a security vulnerability or bypass of content filtering, please do **not** open a public issue. Follow the instructions in [SECURITY.md](https://github.com/MDTahir7/mtk-browser/blob/main/SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: MTK Browser Version
+      description: What version of MTK Browser are you running? (e.g., 0.3.0 Preview, commit hash)
+      placeholder: "0.3.0 Preview"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows 11 (23H2 or newer)
+        - Windows 11 (22H2 or older)
+        - Windows 10 (22H2 / Build 19045)
+        - Windows 10 (Older Build)
+        - Other (please specify in description)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed step-by-step instructions to reproduce the behavior.
+      placeholder: |
+        1. Launch MTK Browser
+        2. Navigate to '...'
+        3. Click on '....'
+        4. Observe behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Screenshots
+      description: Attach logs or screenshots if applicable. (Do not include sensitive personal data).

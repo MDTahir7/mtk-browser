@@ -1,34 +1,41 @@
 {
-  "name": "mtk-safe-browser",
+  "name": "mtk-browser",
   "version": "0.3.0",
-  "description": "Privacy-first family-safe browser",
+  "description": "MTK Browser is a privacy-first, family-safe Windows browser built with C++20 and Chromium Embedded Framework (CEF), featuring content filtering, ad and tracker blocking, and enhanced browsing security.",
   "main": "src/main.js",
-  "author": "MTK Browser",
-  "license": "UNLICENSED",
-  "private": true,
+  "author": "Mohammad Tahir Khan",
+  "license": "MIT",
+  "homepage": "https://github.com/MDTahir7/mtk-browser#readme",
+  "bugs": {
+    "url": "https://github.com/MDTahir7/mtk-browser/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mtk/safe-browser.git"
+    "url": "https://github.com/MDTahir7/mtk-browser.git"
   },
   "scripts": {
     "start": "cmd /c \"Launch MTK Browser.cmd\"",
     "start:legacy": "electron .",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/security.js && node --check src/ui/app.js",
+    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_tests.ps1",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_installer.ps1",
     "dist:legacy": "electron-builder --win nsis --publish never"
   },
-
   "devDependencies": {
     "electron": "43.2.0",
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.mtk.safebrowser",
+    "appId": "com.mtk.browser",
     "productName": "MTK Browser",
     "asar": true,
-
-    "files": ["src/**/*", "package.json"],
-    "win": { "target": "nsis" },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

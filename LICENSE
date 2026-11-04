@@ -1,0 +1,43 @@
+MIT License
+
+Copyright (c) 2026 Mohammad Tahir Khan (MTK Browser Contributors)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### Third-Party Code, Binaries, and Media Assets Notice
+
+1. **Chromium & Chromium Embedded Framework (CEF)**:
+   The native browser integrates with the Chromium Embedded Framework (CEF),
+   which is licensed under the BSD 3-Clause License. See `vendor/cef-sdk/LICENSE.txt`
+   and `vendor/cef-sdk/CREDITS.html` for complete upstream copyright notices.
+
+2. **Proprietary & Licensed Media Assets**:
+   Certain 3D artwork and rendered animations included in `native/resources/`
+   and documented in `THIRD_PARTY_NOTICES.md` are derived from third-party
+   subscription assets (e.g., Magnific / Freepik). The source 3D `.blend` files
+   and raw textures are not open-source and are excluded from this repository.
+   Their rendered output is subject to the usage conditions documented in
+   `THIRD_PARTY_NOTICES.md`.
+
+3. **Trademarks & Brand Identity**:
+   The "MTK Browser" name, logo (`assets/logo/`), and icon (`native/resources/mtk_browser.ico`)
+   are project brand assets and may not be used to endorse or promote derivative
+   products without prior written permission.

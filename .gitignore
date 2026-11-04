@@ -12,4 +12,5 @@ vendor/*.tar.bz2
 *.obj
 scratch/
 *.zip
-
+__pycache__/
+*.pyc
